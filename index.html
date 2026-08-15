@@ -27,15 +27,15 @@
     --safe-bottom: env(safe-area-inset-bottom, 0px);
   }
   *{box-sizing:border-box; -webkit-tap-highlight-color: transparent;}
-  html,body{margin:0;padding:0;}
-  body{
+  html,body{margin:0;padding:0; height:100%; overflow:hidden; overscroll-behavior:none; background:var(--paper);}
+  #appScroll{
+    position:fixed; inset:0; overflow-y:auto; -webkit-overflow-scrolling:touch; overscroll-behavior:contain;
     background:
       linear-gradient(var(--paper), var(--paper)),
       repeating-linear-gradient(0deg, rgba(44,92,115,0.035) 0px, rgba(44,92,115,0.035) 1px, transparent 1px, transparent 40px),
       repeating-linear-gradient(90deg, rgba(44,92,115,0.035) 0px, rgba(44,92,115,0.035) 1px, transparent 1px, transparent 40px);
     color:var(--ink);
     font-family:'Inter', sans-serif;
-    min-height:100vh;
     padding-bottom: calc(80px + var(--safe-bottom));
   }
   h1,h2,h3,.display{font-family:'Oswald', sans-serif; text-transform:uppercase; letter-spacing:0.02em;}
@@ -204,12 +204,16 @@
   .field label{display:block; font-size:12.5px; font-weight:600; color:var(--ink-soft); margin-bottom:6px; letter-spacing:0.02em;}
   .req{color:var(--orange-dark);}
   .field input[type=text], .field input[type=number], .field input[type=date], .field select, .field textarea{
-    width:100%; padding:13px 13px; border-radius:11px; border:1.5px solid var(--line);
+    width:100%; min-width:0; padding:13px 13px; border-radius:11px; border:1.5px solid var(--line);
     background:#fff; font-size:15px; font-family:'Inter',sans-serif; color:var(--ink);
+  }
+  @media (max-width:370px){
+    .row2 .field input[type=date]{font-size:14px; padding:12px 6px;}
   }
   .field textarea{resize:vertical; min-height:64px;}
   .field input:focus, .field select:focus, .field textarea:focus{outline:2px solid var(--orange); outline-offset:1px; border-color:var(--orange);}
   .row2{display:grid; grid-template-columns:1fr 1fr; gap:10px;}
+  .row2 > .field{min-width:0;}
   .form-card{background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:18px; box-shadow:var(--shadow);}
   .form-actions{display:flex; gap:10px; margin-top:6px;}
   .form-actions .btn{flex:1;}
@@ -241,7 +245,34 @@
   }
   .total-strip b{font-family:'Oswald',sans-serif; font-size:15px;}
 
-  .filter-toggle-row{display:flex; gap:8px; margin-bottom:12px;}
+  .filter-toggle-row{display:flex; align-items:center; gap:8px; margin-bottom:12px;}
+  .view-toggle{display:flex; gap:4px; margin-left:auto; background:var(--paper-2); border:1px solid var(--line); border-radius:10px; padding:3px;}
+  .view-toggle button{
+    background:none; border:none; width:32px; height:32px; border-radius:7px; cursor:pointer;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .view-toggle button svg{width:17px;height:17px; stroke:var(--ink-soft); fill:none; stroke-width:2; stroke-linecap:round;}
+  .view-toggle button.active{background:#fff; box-shadow:0 1px 3px rgba(0,0,0,0.12);}
+  .view-toggle button.active svg{stroke:var(--orange-dark);}
+
+  .entry-table-wrap{background:var(--card); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); overflow:hidden;}
+  .etr-header{display:flex; align-items:center; gap:7px; padding:7px 12px; background:var(--paper-2); font-size:9.5px; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-soft); border-bottom:1px solid var(--line);}
+  .entry-table-row{display:flex; align-items:center; gap:7px; padding:6.5px 12px; border-bottom:1px solid var(--line); cursor:pointer;}
+  .entry-table-row:last-child{border-bottom:none;}
+  .entry-table-row:active{background:var(--paper-2);}
+  .etr-date{flex:0 0 36px; font-size:10.5px; font-weight:600; color:var(--ink-soft); line-height:1.2;}
+  .etr-header .etr-date{flex:0 0 36px;}
+  .etr-name{flex:1; min-width:0; font-size:12.5px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:1.2;}
+  .etr-header .etr-name{flex:1;}
+  .etr-und{flex:0 0 32px; font-size:10px; color:var(--ink-soft); text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .etr-header .etr-und{flex:0 0 32px; text-align:center;}
+  .etr-forn{flex:0 0 74px; font-size:10.5px; color:var(--ink-soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .etr-header .etr-forn{flex:0 0 74px;}
+  .etr-valor{flex:0 0 auto; min-width:58px; text-align:right; font-family:'Oswald',sans-serif; font-size:12.5px; font-weight:600; line-height:1.2;}
+  .etr-header .etr-valor{font-family:'Inter',sans-serif; font-weight:700;}
+  @media (max-width:380px){
+    .etr-forn{display:none;}
+  }
   .btn-ghost.active-filter{border-color:var(--orange); color:var(--orange-dark); background:rgba(224,101,31,0.06);}
   .filter-panel{background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:14px 14px 4px; margin-bottom:14px; box-shadow:var(--shadow);}
 
@@ -329,6 +360,24 @@
     display:none; align-items:flex-end; justify-content:center;
   }
   .modal-overlay.open{display:flex;}
+  .modal-overlay.center-modal{align-items:center; padding:0 24px;}
+
+  .modal-overlay.dropdown-overlay{align-items:flex-start; justify-content:stretch; background:rgba(33,29,25,0.32);}
+  .dropdown-panel{
+    position:absolute; left:16px; right:16px; max-width:608px; margin:0 auto;
+    background:var(--paper); border-radius:16px; box-shadow:0 16px 38px rgba(0,0,0,0.3);
+    padding:16px 18px calc(16px); max-height:70vh; overflow-y:auto;
+    animation: dropdownIn .18s ease;
+  }
+  @keyframes dropdownIn{from{opacity:0; transform:translateY(-10px);} to{opacity:1; transform:translateY(0);}}
+  .dialog-card{
+    background:var(--paper); width:100%; max-width:400px; border-radius:16px;
+    padding:20px 20px calc(18px); box-shadow:0 12px 34px rgba(0,0,0,0.3);
+    animation: dialogPop .18s ease;
+  }
+  @keyframes dialogPop{from{transform:scale(0.94); opacity:0;} to{transform:scale(1); opacity:1;}}
+  .dialog-title{font-family:'Oswald',sans-serif; font-size:16px; font-weight:600; text-transform:none; letter-spacing:0.01em; margin-bottom:8px;}
+  .dialog-msg{font-size:14px; color:var(--ink-soft); line-height:1.45;}
   .modal-sheet{
     background:var(--paper); width:100%; max-width:640px; max-height:92vh; overflow-y:auto;
     border-radius:18px 18px 0 0; padding:18px 18px calc(22px + var(--safe-bottom));
@@ -359,9 +408,24 @@
   .toast svg{width:15px;height:15px; stroke:#7fd99a; fill:none; stroke-width:2.5; flex:0 0 auto;}
 
   .storage-note{font-size:11px; color:#9c9385; text-align:center; margin-top:14px; line-height:1.5;}
+
+  #orientationGuard{
+    display:none; position:fixed; inset:0; z-index:300; background:var(--ink);
+    color:#fff; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding:30px;
+  }
+  #orientationGuard svg{width:56px;height:56px; stroke:var(--orange); fill:none; stroke-width:1.6; margin-bottom:18px; animation: rotateHint 2.2s ease-in-out infinite;}
+  @keyframes rotateHint{0%,100%{transform:rotate(0deg);} 50%{transform:rotate(-90deg);}}
+  #orientationGuard h2{font-family:'Oswald',sans-serif; font-size:18px; margin:0 0 8px; text-transform:uppercase; letter-spacing:0.03em;}
+  #orientationGuard p{font-size:13.5px; color:#c9c2b4; max-width:280px; line-height:1.5; margin:0;}
+  /* Only phone-sized landscape (short viewport height) — never blocks tablets or desktop browsers. */
+  @media (orientation:landscape) and (max-height:500px){
+    #orientationGuard{display:flex;}
+  }
 </style>
 </head>
 <body>
+
+<div id="appScroll">
 
 <div class="topbar">
   <div class="toprow">
@@ -388,9 +452,9 @@
   </button>
 </div>
 
-<!-- Project switch sheet -->
-<div class="modal-overlay" id="projectSwitchModal">
-  <div class="modal-sheet">
+<!-- Project switch dropdown (anchored near the button, not a bottom sheet — easier thumb reach) -->
+<div class="modal-overlay dropdown-overlay" id="projectSwitchModal">
+  <div class="dropdown-panel" id="projectSwitchPanel">
     <div class="modal-head">
       <h2>Selecionar projeto</h2>
       <button class="modal-close" data-close="projectSwitchModal"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
@@ -449,6 +513,14 @@
     <div class="filter-toggle-row">
       <button class="btn btn-ghost btn-sm" id="filterToggleBtn">Filtros</button>
       <button class="btn btn-ghost btn-sm" id="clearFilterBtn" style="display:none;">Limpar filtros</button>
+      <div class="view-toggle" id="entriesViewToggle">
+        <button type="button" data-mode="card" class="active" title="Visualização em cartões" aria-label="Visualização em cartões">
+          <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="1.8"/><rect x="3" y="14" width="18" height="6" rx="1.8"/></svg>
+        </button>
+        <button type="button" data-mode="table" title="Visualização em tabela" aria-label="Visualização em tabela">
+          <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+      </div>
     </div>
     <div class="filter-panel" id="filterPanel" style="display:none;">
       <div class="row2">
@@ -617,6 +689,8 @@
 
 </main>
 
+</div>
+
 <nav class="tabbar">
   <button data-view="dashboard" class="tab-btn active">
     <svg viewBox="0 0 24 24"><path d="M3 13h4v8H3zM10 8h4v13h-4zM17 3h4v18h-4z"/></svg>
@@ -731,10 +805,51 @@
   </div>
 </div>
 
+<!-- Generic confirm dialog (replaces native confirm()) -->
+<div class="modal-overlay center-modal" id="confirmModal">
+  <div class="dialog-card">
+    <div class="dialog-title" id="confirmTitle">Confirmar</div>
+    <div class="dialog-msg" id="confirmMsg"></div>
+    <div class="form-actions" style="margin-top:16px;">
+      <button type="button" class="btn btn-ghost" id="confirmCancelBtn">Cancelar</button>
+      <button type="button" class="btn btn-danger btn-block" id="confirmOkBtn">Confirmar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Generic text prompt dialog (replaces native prompt()) -->
+<div class="modal-overlay center-modal" id="promptModal">
+  <div class="dialog-card">
+    <div class="dialog-title" id="promptTitle">Editar</div>
+    <div class="field" style="margin-bottom:6px;">
+      <textarea id="promptInput" rows="2"></textarea>
+    </div>
+    <div class="form-actions" style="margin-top:10px;">
+      <button type="button" class="btn btn-ghost" id="promptCancelBtn">Cancelar</button>
+      <button type="button" class="btn btn-primary btn-block" id="promptOkBtn">Salvar</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"><svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg><span id="toastMsg"></span></div>
+
+<div id="orientationGuard">
+  <svg viewBox="0 0 24 24"><rect x="6" y="3" width="12" height="18" rx="2.5"/><path d="M10 19h4"/></svg>
+  <h2>Gire seu celular</h2>
+  <p>Este app funciona melhor na posição vertical. Volte para o modo retrato para continuar.</p>
+</div>
 
 <script>
 (function(){
+
+  // Best-effort orientation lock. iOS Safari doesn't support this API for regular
+  // web pages, so this silently no-ops there — the #orientationGuard overlay
+  // (CSS-only) is what actually keeps the app usable-in-portrait-only on iPhone.
+  try{
+    if(screen.orientation && screen.orientation.lock){
+      screen.orientation.lock('portrait').catch(()=>{});
+    }
+  }catch(e){}
 
   const $ = (sel) => document.querySelector(sel);
   const $all = (sel) => document.querySelectorAll(sel);
@@ -863,6 +978,64 @@
     toastTimer = setTimeout(()=> t.classList.remove('show'), 2200);
   }
 
+  // ---------- In-app confirm/prompt dialogs (replace native confirm()/prompt()) ----------
+  function showConfirm(message, opts){
+    opts = opts || {};
+    return new Promise(resolve=>{
+      $('#confirmTitle').textContent = opts.title || 'Confirmar';
+      $('#confirmMsg').textContent = message;
+      $('#confirmOkBtn').textContent = opts.okLabel || 'Confirmar';
+      const overlay = $('#confirmModal');
+      const okBtn = $('#confirmOkBtn');
+      const cancelBtn = $('#confirmCancelBtn');
+      function cleanup(result){
+        overlay.classList.remove('open');
+        okBtn.removeEventListener('click', onOk);
+        cancelBtn.removeEventListener('click', onCancel);
+        overlay.removeEventListener('click', onOverlay);
+        resolve(result);
+      }
+      function onOk(){ cleanup(true); }
+      function onCancel(){ cleanup(false); }
+      function onOverlay(e){ if(e.target === overlay) cleanup(false); }
+      okBtn.addEventListener('click', onOk);
+      cancelBtn.addEventListener('click', onCancel);
+      overlay.addEventListener('click', onOverlay);
+      overlay.classList.add('open');
+    });
+  }
+
+  function showPrompt(currentValue, opts){
+    opts = opts || {};
+    return new Promise(resolve=>{
+      $('#promptTitle').textContent = opts.title || 'Editar';
+      const input = $('#promptInput');
+      input.value = currentValue || '';
+      input.placeholder = opts.placeholder || '';
+      const overlay = $('#promptModal');
+      const okBtn = $('#promptOkBtn');
+      const cancelBtn = $('#promptCancelBtn');
+      function cleanup(result){
+        overlay.classList.remove('open');
+        okBtn.removeEventListener('click', onOk);
+        cancelBtn.removeEventListener('click', onCancel);
+        overlay.removeEventListener('click', onOverlay);
+        resolve(result);
+      }
+      function onOk(){
+        const val = input.value.trim();
+        cleanup(val ? val : null);
+      }
+      function onCancel(){ cleanup(null); }
+      function onOverlay(e){ if(e.target === overlay) cleanup(null); }
+      okBtn.addEventListener('click', onOk);
+      cancelBtn.addEventListener('click', onCancel);
+      overlay.addEventListener('click', onOverlay);
+      overlay.classList.add('open');
+      setTimeout(()=>{ input.focus(); input.select(); }, 50);
+    });
+  }
+
   // ---------- Project switcher ----------
   function renderProjectPills(){
     const mono = $('#projSwitchMonogram');
@@ -897,13 +1070,15 @@
   }
   $('#projectSwitchBtn').addEventListener('click', ()=>{
     renderProjectPills();
+    const rect = $('#projectSwitchBtn').getBoundingClientRect();
+    $('#projectSwitchPanel').style.top = Math.round(rect.bottom + 10) + 'px';
     $('#projectSwitchModal').classList.add('open');
   });
 
   // ---------- Navigation ----------
   function scrollTopNow(){
-    window.scrollTo({top:0, behavior:'smooth'});
-    if(document.scrollingElement) document.scrollingElement.scrollTop = 0;
+    const sc = document.getElementById('appScroll');
+    if(sc) sc.scrollTo({top:0, behavior:'smooth'});
   }
   function switchView(name){
     $all('.view').forEach(v => v.classList.remove('active'));
@@ -1000,8 +1175,20 @@
     </div>`;
   }
 
+  function entryTableRowHTML(e){
+    const d = parseDateLocal(e.data);
+    const dateStr = String(d.getDate()).padStart(2,'0') + '/' + String(d.getMonth()+1).padStart(2,'0');
+    return `<div class="entry-table-row" data-id="${e.id}" data-kind="${e.kind}">
+      <span class="etr-date">${dateStr}</span>
+      <span class="etr-name">${escapeHTML(e.nome)}</span>
+      <span class="etr-und">${escapeHTML(e.unidade || '—')}</span>
+      <span class="etr-forn">${escapeHTML(e.fornecedor || '—')}</span>
+      <span class="etr-valor">${fmtBRL(e.valor)}</span>
+    </div>`;
+  }
+
   function attachCardHandlers(container){
-    container.querySelectorAll('.entry-card').forEach(card=>{
+    container.querySelectorAll('.entry-card, .entry-table-row').forEach(card=>{
       card.addEventListener('click', ()=> openDetail(card.dataset.kind, card.dataset.id));
     });
   }
@@ -1009,6 +1196,15 @@
   // ---------- Lançamentos ----------
   const ENTRIES_PAGE_SIZE = 60;
   let entriesPage = 1;
+  let entriesViewMode = 'card';
+
+  $('#entriesViewToggle').querySelectorAll('button[data-mode]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      entriesViewMode = btn.dataset.mode;
+      $('#entriesViewToggle').querySelectorAll('button[data-mode]').forEach(b=>b.classList.toggle('active', b===btn));
+      renderEntries();
+    });
+  });
 
   $all('.segmented button[data-kind]').forEach(btn=>{
     btn.addEventListener('click', ()=>{
@@ -1109,15 +1305,20 @@
       return;
     }
 
-    // Only render a page's worth of cards at a time so the list stays smooth
+    // Only render a page's worth of rows at a time so the list stays smooth
     // even with thousands of lançamentos — the rest load on demand.
     const visibleCount = Math.min(entriesPage * ENTRIES_PAGE_SIZE, list.length);
     const visible = list.slice(0, visibleCount);
-    let html = visible.map(entryCardHTML).join('');
-    if(visibleCount < list.length){
-      html += `<button class="btn btn-ghost btn-block" id="loadMoreEntriesBtn" style="margin-top:4px;">Carregar mais (${list.length - visibleCount} restantes)</button>`;
+    const loadMoreHTML = visibleCount < list.length
+      ? `<button class="btn btn-ghost btn-block" id="loadMoreEntriesBtn" style="margin-top:10px;">Carregar mais (${list.length - visibleCount} restantes)</button>`
+      : '';
+
+    if(entriesViewMode === 'table'){
+      const header = `<div class="etr-header"><span class="etr-date">Data</span><span class="etr-name">Nome</span><span class="etr-und">Und</span><span class="etr-forn">Fornecedor</span><span class="etr-valor">Valor</span></div>`;
+      box.innerHTML = `<div class="entry-table-wrap">${header}${visible.map(entryTableRowHTML).join('')}</div>${loadMoreHTML}`;
+    } else {
+      box.innerHTML = visible.map(entryCardHTML).join('') + loadMoreHTML;
     }
-    box.innerHTML = html;
     attachCardHandlers(box);
     const loadMoreBtn = $('#loadMoreEntriesBtn');
     if(loadMoreBtn){
@@ -1142,14 +1343,13 @@
     const sel = $('#f_tipo');
     sel.innerHTML = '<option value="">—</option>' + tipos.map(t=>`<option value="${escapeHTML(t)}">${escapeHTML(t)}</option>`).join('') + '<option value="__novo__">+ Novo tipo...</option>';
   }
-  $('#f_tipo').addEventListener('change', (e)=>{
+  $('#f_tipo').addEventListener('change', async (e)=>{
     if(e.target.value === '__novo__'){
-      const nt = prompt('Nome do novo tipo de despesa:');
-      if(nt && nt.trim()){
-        const clean = nt.trim();
-        if(!tipos.includes(clean)){ tipos.push(clean); saveKey('tipos', tipos); }
+      const nt = await showPrompt('', {title:'Novo tipo de despesa', placeholder:'Ex: Aluguel de equipamento'});
+      if(nt){
+        if(!tipos.includes(nt)){ tipos.push(nt); saveKey('tipos', tipos); }
         populateTipoSelect();
-        $('#f_tipo').value = clean;
+        $('#f_tipo').value = nt;
       } else {
         e.target.value = '';
       }
@@ -1160,14 +1360,13 @@
     const sel = $('#f_unidade');
     sel.innerHTML = unidades.map(u=>`<option value="${escapeHTML(u)}">${escapeHTML(u)}</option>`).join('') + '<option value="__novo__">+ Nova unidade...</option>';
   }
-  $('#f_unidade').addEventListener('change', (e)=>{
+  $('#f_unidade').addEventListener('change', async (e)=>{
     if(e.target.value === '__novo__'){
-      const nu = prompt('Nome da nova unidade (ex: caixa, viagem):');
-      if(nu && nu.trim()){
-        const clean = nu.trim();
-        if(!unidades.includes(clean)){ unidades.push(clean); saveKey('unidades', unidades); }
+      const nu = await showPrompt('', {title:'Nova unidade', placeholder:'Ex: caixa, viagem'});
+      if(nu){
+        if(!unidades.includes(nu)){ unidades.push(nu); saveKey('unidades', unidades); }
         populateUnidadeSelect();
-        $('#f_unidade').value = clean;
+        $('#f_unidade').value = nu;
       } else {
         $('#f_unidade').value = 'und';
       }
@@ -1179,6 +1378,11 @@
   $('#f_qtd').addEventListener('input', ()=>{
     $('#f_qtd').classList.remove('hint-highlight');
     $('#qtdHint').style.display = 'none';
+  });
+  $('#f_qtd').addEventListener('focus', function(){
+    // If it still holds the untouched default (1), select it so the first keystroke replaces it
+    // instead of appending to it (e.g. typing "5" would otherwise produce "15").
+    if(this.classList.contains('hint-highlight')) this.select();
   });
 
   function updateDateHint(){
@@ -1375,17 +1579,16 @@
         refreshNoteViewsFor(ref.origin, ref.entryId);
       };
     }
-    const nt = prompt('Editar nota:', current);
+    const nt = await showPrompt(current, {title:'Editar nota'});
     if(nt === null) return;
-    const clean = nt.trim();
-    if(!clean) return;
-    await applyEdit(clean);
+    await applyEdit(nt);
     renderAll();
     showToast('Nota atualizada.');
   }
 
   async function deleteNoteRef(ref){
-    if(!confirm('Excluir esta nota?')) return;
+    const ok = await showConfirm('Excluir esta nota?', {title:'Excluir nota', okLabel:'Excluir'});
+    if(!ok) return;
     if(ref.origin === 'standalone'){
       notes = notes.filter(x=>x.id!==ref.id);
       await saveKey('notes', notes);
@@ -1465,7 +1668,8 @@
 
   $('#deleteEntryBtn').addEventListener('click', async ()=>{
     if(!activeModal) return;
-    if(!confirm('Excluir este lançamento? Essa ação não pode ser desfeita.')) return;
+    const ok = await showConfirm('Excluir este lançamento? Essa ação não pode ser desfeita.', {title:'Excluir lançamento', okLabel:'Excluir'});
+    if(!ok) return;
     const key = activeModal.kind === 'caixa' ? 'caixaObra' : 'empreiteiro';
     if(activeModal.kind === 'caixa') caixaObra = caixaObra.filter(x=>x.id !== activeModal.id);
     else empreiteiro = empreiteiro.filter(x=>x.id !== activeModal.id);
@@ -1648,7 +1852,8 @@
 
   $('#deleteTaskBtn').addEventListener('click', async ()=>{
     if(!activeTaskId) return;
-    if(!confirm('Excluir esta tarefa?')) return;
+    const ok = await showConfirm('Excluir esta tarefa?', {title:'Excluir tarefa', okLabel:'Excluir'});
+    if(!ok) return;
     tasks = tasks.filter(x=>x.id !== activeTaskId);
     await saveKey('tasks', tasks);
     $('#taskModal').classList.remove('open');
@@ -1753,9 +1958,9 @@
       btn.addEventListener('click', async ()=>{
         const p = projects.find(x=>x.id===btn.dataset.rename);
         if(!p) return;
-        const nn = prompt('Novo nome do projeto:', p.name);
-        if(nn && nn.trim()){
-          p.name = nn.trim();
+        const nn = await showPrompt(p.name, {title:'Renomear projeto'});
+        if(nn){
+          p.name = nn;
           await saveKey('projects', projects);
           renderSettingsProjects();
           renderProjectPills();
@@ -1766,9 +1971,9 @@
     });
   }
   $('#addProjectBtn').addEventListener('click', async ()=>{
-    const nn = prompt('Nome do novo projeto:');
-    if(nn && nn.trim()){
-      const np = {id: uid('p'), name: nn.trim()};
+    const nn = await showPrompt('', {title:'Novo projeto', placeholder:'Ex: Obra Sítio Novo'});
+    if(nn){
+      const np = {id: uid('p'), name: nn};
       projects.push(np);
       await saveKey('projects', projects);
       activeProjectId = np.id;
