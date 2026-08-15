@@ -1,0 +1,1841 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Construtora Moreira</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  :root{
+    --ink:#211d19;
+    --ink-soft:#5b544c;
+    --paper:#f5f1e8;
+    --paper-2:#eee8da;
+    --card:#fffdf8;
+    --line:#e2d9c5;
+    --orange:#e0651f;
+    --orange-dark:#b84e15;
+    --blue:#2c5c73;
+    --green:#3f7d55;
+    --red:#b3402f;
+    --amber:#c68a1a;
+    --radius:14px;
+    --shadow: 0 2px 10px rgba(33,29,25,0.08), 0 1px 2px rgba(33,29,25,0.06);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color: transparent;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:
+      linear-gradient(var(--paper), var(--paper)),
+      repeating-linear-gradient(0deg, rgba(44,92,115,0.035) 0px, rgba(44,92,115,0.035) 1px, transparent 1px, transparent 40px),
+      repeating-linear-gradient(90deg, rgba(44,92,115,0.035) 0px, rgba(44,92,115,0.035) 1px, transparent 1px, transparent 40px);
+    color:var(--ink);
+    font-family:'Inter', sans-serif;
+    min-height:100vh;
+    padding-bottom: calc(80px + var(--safe-bottom));
+  }
+  h1,h2,h3,.display{font-family:'Oswald', sans-serif; text-transform:uppercase; letter-spacing:0.02em;}
+
+  /* Top bar */
+  .topbar{
+    background: var(--ink);
+    color:#fff;
+    padding: 16px 16px 12px;
+    position:sticky; top:0; z-index:20;
+    box-shadow: var(--shadow);
+  }
+  .topbar .toprow{display:flex; align-items:center; justify-content:space-between; gap:10px;}
+  .topbar .brand{display:flex; align-items:center; gap:12px; min-width:0;}
+  .topbar .mark{
+    width:36px;height:36px;border-radius:9px;
+    background: var(--orange);
+    display:flex;align-items:center;justify-content:center;
+    flex:0 0 auto;
+  }
+  .topbar .mark svg{width:20px;height:20px;stroke:#fff;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round;}
+  .topbar .titles{line-height:1.15; min-width:0;}
+  .topbar h1{font-size:17.5px;margin:0; font-weight:700; letter-spacing:0.03em; white-space:nowrap;}
+  .topbar .sub{font-size:11px; color:#c9c2b4; font-family:'Inter',sans-serif; text-transform:none; letter-spacing:0.02em; margin-top:1px;}
+  .gear-btn{
+    background:rgba(255,255,255,0.1); border:none; width:34px; height:34px; border-radius:50%;
+    display:flex; align-items:center; justify-content:center; cursor:pointer; flex:0 0 auto;
+  }
+  .gear-btn svg{width:18px;height:18px; stroke:#fff; fill:none; stroke-width:2;}
+
+  .project-switch{
+    display:flex; align-items:center; gap:12px; margin-top:13px; width:100%;
+    background:linear-gradient(135deg, rgba(255,255,255,0.1), rgba(255,255,255,0.05));
+    border:1.5px solid rgba(255,255,255,0.16);
+    border-radius:15px; padding:10px 14px 10px 10px; cursor:pointer; text-align:left;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);
+  }
+  .project-switch:active{background:rgba(255,255,255,0.14); transform:scale(0.99);}
+  .project-switch .psw-text{flex:1; min-width:0;}
+  .project-switch .psw-label{font-size:9.5px; color:#b8b0a0; text-transform:uppercase; letter-spacing:0.09em; font-weight:700;}
+  .project-switch .psw-name{display:block; font-family:'Oswald',sans-serif; font-size:16.5px; font-weight:600; color:#fff; letter-spacing:0.02em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:1px;}
+  .project-switch .chevron{width:18px;height:18px; stroke:#9c9385; fill:none; stroke-width:2.4; flex:0 0 auto;}
+
+  .proj-monogram{
+    display:flex; align-items:center; justify-content:center; flex:0 0 auto;
+    font-family:'Oswald',sans-serif; font-weight:700; color:#fff; letter-spacing:0.01em;
+    border-radius:50%; background:var(--orange);
+  }
+  .project-switch .proj-monogram{width:38px; height:38px; font-size:15px; box-shadow:0 0 0 3px rgba(255,255,255,0.12), 0 2px 5px rgba(0,0,0,0.25);}
+
+  .project-select-row{
+    display:flex; align-items:center; gap:13px; padding:13px 15px; border-radius:13px;
+    border:1.5px solid var(--line); background:#fff; margin-bottom:10px; cursor:pointer;
+    transition: background .12s ease, border-color .12s ease;
+  }
+  .project-select-row:active{transform:scale(0.99);}
+  .project-select-row .proj-monogram{width:38px; height:38px; font-size:14.5px; box-shadow:0 1px 3px rgba(0,0,0,0.15);}
+  .project-select-row .pname{flex:1; font-size:15.5px; font-weight:600; color:var(--ink);}
+  .project-select-row .current-tag{font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; padding:4px 9px; border-radius:20px; color:#fff; flex:0 0 auto; visibility:hidden; background:var(--orange);}
+  .project-select-row.active .pname{font-weight:700; color:var(--orange-dark);}
+  .project-select-row.active .current-tag{visibility:visible;}
+
+  main{max-width:640px; margin:0 auto; padding:16px 16px 8px;}
+  .view{display:none; animation: fade .25s ease;}
+  .view.active{display:block;}
+  @keyframes fade{from{opacity:0; transform:translateY(6px);} to{opacity:1; transform:translateY(0);}}
+
+  .section-title{display:flex; align-items:baseline; justify-content:space-between; font-size:13px; color:var(--ink-soft); font-weight:600; letter-spacing:0.08em; text-transform:uppercase; margin: 22px 2px 10px;}
+  .section-title:first-child{margin-top:6px;}
+  .section-title .link{font-size:11.5px; color:var(--orange-dark); letter-spacing:0.02em; text-transform:none; font-weight:600; cursor:pointer;}
+
+  /* Dashboard */
+  .stamp{
+    position:relative;
+    background: var(--card);
+    border:1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 24px 20px 20px;
+    text-align:center;
+    overflow:hidden;
+  }
+  .stamp::before{
+    content:"";
+    position:absolute; inset:0;
+    background: linear-gradient(135deg, rgba(224,101,31,0.08), transparent 60%);
+  }
+  .stamp .label{font-size:12px; color:var(--ink-soft); font-weight:600; letter-spacing:0.12em; text-transform:uppercase; position:relative; display:flex; align-items:center; justify-content:center; gap:7px;}
+  .proj-dot-inline{width:9px;height:9px;border-radius:50%; flex:0 0 auto; box-shadow:0 0 0 2px rgba(0,0,0,0.05); background:var(--orange);}
+  .stamp .amount{
+    font-family:'Oswald',sans-serif; font-weight:700; font-size:36px; color:var(--ink);
+    margin:6px 0 0; position:relative; letter-spacing:0.01em;
+  }
+  .badge{
+    display:inline-block; position:absolute; top:14px; right:16px;
+    border:2px solid var(--orange); color:var(--orange-dark);
+    font-family:'Oswald',sans-serif; font-weight:600; font-size:10px;
+    letter-spacing:0.1em; text-transform:uppercase;
+    padding:4px 9px; border-radius:8px; transform:rotate(4deg);
+    background:rgba(224,101,31,0.06);
+  }
+
+  .stat-grid{display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:10px;}
+  .stat-card{
+    background:var(--card); border:1px solid var(--line); border-radius:var(--radius);
+    padding:13px 14px; box-shadow: var(--shadow);
+  }
+  .stat-card .num{font-family:'Oswald',sans-serif; font-size:19px; font-weight:600; color:var(--blue);}
+  .stat-card .lbl{font-size:11px; color:var(--ink-soft); margin-top:2px; font-weight:500;}
+  .stat-card.warn .num{color:var(--red);}
+
+  .recent-list{display:flex; flex-direction:column; gap:8px;}
+  .empty-state{
+    text-align:center; padding:30px 16px; color:var(--ink-soft);
+    border:1.5px dashed var(--line); border-radius:var(--radius); background:rgba(255,255,255,0.4);
+  }
+  .empty-state svg{width:30px;height:30px;stroke:var(--ink-soft);fill:none;stroke-width:1.6; margin-bottom:8px;}
+  .empty-state p{margin:2px 0; font-size:13.5px;}
+  .empty-state .hint{font-size:12px; color:#8a8175;}
+
+  /* Entry card */
+  .entry-card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:12px 14px; display:flex; align-items:center; gap:12px;
+    box-shadow: var(--shadow); cursor:pointer; transition: transform .1s ease;
+  }
+  .entry-card:active{transform:scale(0.98);}
+  .entry-card .datechip{
+    flex:0 0 auto; width:44px; text-align:center; background:var(--paper-2);
+    border-radius:9px; padding:6px 2px; border:1px solid var(--line);
+  }
+  .entry-card .datechip .d{font-family:'Oswald',sans-serif; font-size:15px; font-weight:700; line-height:1;}
+  .entry-card .datechip .m{font-size:9px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.05em; margin-top:2px;}
+  .entry-card .info{flex:1; min-width:0;}
+  .entry-card .nome{font-weight:600; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; gap:6px;}
+  .entry-card .tag{font-size:9.5px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--blue); background:rgba(44,92,115,0.09); padding:2px 6px; border-radius:5px; flex:0 0 auto;}
+  .entry-card .meta{font-size:11.5px; color:var(--ink-soft); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; gap:5px;}
+  .entry-card .notedot{display:inline-flex; align-items:center; gap:2px; color:var(--amber); font-weight:700;}
+  .entry-card .notedot svg{width:11px;height:11px; stroke:var(--amber); fill:none; stroke-width:2.4;}
+  .entry-card .valor{flex:0 0 auto; font-family:'Oswald',sans-serif; font-weight:600; font-size:14.5px; color:var(--ink); text-align:right;}
+  .entry-card .valor .who{display:block; font-family:'Inter',sans-serif; font-size:9.5px; font-weight:600; color:var(--ink-soft); text-transform:none; margin-top:1px;}
+
+  /* Buttons */
+  .btn{
+    display:inline-flex; align-items:center; justify-content:center; gap:8px;
+    border:none; border-radius:12px; font-family:'Inter',sans-serif; font-weight:600; font-size:14.5px;
+    padding:13px 18px; cursor:pointer; transition: transform .08s ease, opacity .15s ease;
+    -webkit-user-select:none; user-select:none;
+  }
+  .btn:active{transform:scale(0.97);}
+  .btn-primary{background:var(--orange); color:#fff; box-shadow:0 3px 0 var(--orange-dark);}
+  .btn-primary:active{box-shadow:0 1px 0 var(--orange-dark); transform:translateY(2px) scale(0.99);}
+  .btn-block{width:100%;}
+  .btn-ghost{background:transparent; color:var(--ink-soft); border:1.5px solid var(--line);}
+  .btn-danger{background:#fbeae6; color:var(--red); border:1.5px solid #edc9bf;}
+  .btn-secondary{background:var(--blue); color:#fff;}
+  .btn-sm{padding:9px 13px; font-size:13px; border-radius:10px;}
+
+  /* Segmented control */
+  .segmented{display:flex; background:var(--paper-2); border:1px solid var(--line); border-radius:12px; padding:3px; margin-bottom:14px;}
+  .segmented button{flex:1; background:none; border:none; padding:10px 8px; font-size:13px; font-weight:600; color:var(--ink-soft); border-radius:9px; cursor:pointer; font-family:'Inter',sans-serif;}
+  .segmented button.active{background:#fff; color:var(--ink); box-shadow:0 1px 3px rgba(0,0,0,0.12);}
+
+  /* Forms */
+  .field{margin-bottom:14px;}
+  .field label{display:block; font-size:12.5px; font-weight:600; color:var(--ink-soft); margin-bottom:6px; letter-spacing:0.02em;}
+  .req{color:var(--orange-dark);}
+  .field input[type=text], .field input[type=number], .field input[type=date], .field select, .field textarea{
+    width:100%; padding:13px 13px; border-radius:11px; border:1.5px solid var(--line);
+    background:#fff; font-size:15px; font-family:'Inter',sans-serif; color:var(--ink);
+  }
+  .field textarea{resize:vertical; min-height:64px;}
+  .field input:focus, .field select:focus, .field textarea:focus{outline:2px solid var(--orange); outline-offset:1px; border-color:var(--orange);}
+  .row2{display:grid; grid-template-columns:1fr 1fr; gap:10px;}
+  .form-card{background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:18px; box-shadow:var(--shadow);}
+  .form-actions{display:flex; gap:10px; margin-top:6px;}
+  .form-actions .btn{flex:1;}
+  .form-context{font-size:12px; color:var(--ink-soft); background:var(--paper-2); border-radius:9px; padding:8px 11px; margin-bottom:14px; display:flex; align-items:center; gap:6px;}
+  .form-context b{color:var(--ink);}
+  .mini-hint{font-size:10.5px; color:var(--amber); font-weight:600; margin-top:6px;}
+  .date-hint{font-size:11.5px; font-weight:600; margin-top:7px; color:var(--ink-soft); display:flex; align-items:center; gap:5px;}
+  .date-hint.is-today{color:var(--green);}
+  .hint-highlight{background:#fff6e4 !important; border-color:var(--amber) !important;}
+
+  .toggle-group{display:flex; gap:8px;}
+  .toggle-group button{
+    flex:1; padding:11px 10px; border-radius:11px; border:1.5px solid var(--line); background:#fff;
+    font-size:13.5px; font-weight:600; color:var(--ink-soft); cursor:pointer; font-family:'Inter',sans-serif;
+  }
+  .toggle-group button.active{background:var(--blue); color:#fff; border-color:var(--blue);}
+
+  /* Search bar */
+  .searchbar{
+    display:flex; align-items:center; gap:8px; background:#fff; border:1.5px solid var(--line);
+    border-radius:12px; padding:11px 13px; margin-bottom:12px;
+  }
+  .searchbar svg{width:17px;height:17px; stroke:var(--ink-soft); fill:none; stroke-width:2; flex:0 0 auto;}
+  .searchbar input{border:none; outline:none; width:100%; font-size:14.5px; background:transparent; font-family:'Inter',sans-serif;}
+  .total-strip{
+    display:flex; justify-content:space-between; align-items:center;
+    background:var(--paper-2); border:1px solid var(--line); border-radius:11px;
+    padding:10px 13px; margin-bottom:12px; font-size:13px;
+  }
+  .total-strip b{font-family:'Oswald',sans-serif; font-size:15px;}
+
+  .filter-toggle-row{display:flex; gap:8px; margin-bottom:12px;}
+  .btn-ghost.active-filter{border-color:var(--orange); color:var(--orange-dark); background:rgba(224,101,31,0.06);}
+  .filter-panel{background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:14px 14px 4px; margin-bottom:14px; box-shadow:var(--shadow);}
+
+  /* Notes */
+  .date-group-header{font-size:11.5px; font-weight:700; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.07em; margin:18px 2px 8px;}
+  .date-group-header:first-child{margin-top:4px;}
+  .note-card{
+    background:#fffbe9; border:1px solid #ecdfa8; border-left:4px solid var(--orange);
+    border-radius:10px; padding:12px 14px; margin-bottom:9px; box-shadow:var(--shadow);
+  }
+  .note-card .txt{font-size:14px; white-space:pre-wrap; line-height:1.45;}
+  .note-card .meta-row{display:flex; justify-content:space-between; align-items:center; margin-top:9px; gap:8px;}
+  .note-card .ts{font-size:11px; color:var(--ink-soft);}
+  .note-card .origin{font-size:10.5px; font-weight:700; color:var(--blue); background:rgba(44,92,115,0.09); padding:2px 7px; border-radius:6px; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:150px;}
+  .note-card .del{background:none; border:none; color:var(--red); font-size:11.5px; font-weight:600; cursor:pointer; padding:4px 2px; flex:0 0 auto;}
+  .note-actions{display:flex; gap:14px; margin-top:8px; padding-top:8px; border-top:1px dashed #ecdfa8;}
+  .note-actions button{background:none; border:none; font-size:11.5px; font-weight:700; cursor:pointer; padding:2px 0;}
+  .note-actions .n-edit{color:var(--blue);}
+  .note-actions .n-del{color:var(--red);}
+
+  .notes-thread{margin-top:4px;}
+  .notes-thread .n-item{background:var(--paper-2); border-radius:9px; padding:9px 11px; margin-bottom:7px; font-size:13px; line-height:1.4;}
+  .notes-thread .n-item .n-item-actions{display:flex; justify-content:space-between; align-items:center; margin-top:6px;}
+  .notes-thread .n-item .n-ts{font-size:10.5px; color:var(--ink-soft);}
+  .notes-thread .n-item .n-actions{display:flex; gap:12px;}
+  .notes-thread .n-item .n-actions button{background:none; border:none; font-size:11px; font-weight:700; cursor:pointer; padding:2px 0;}
+  .notes-thread .n-item .n-actions .n-edit{color:var(--blue);}
+  .notes-thread .n-item .n-actions .n-del{color:var(--red);}
+  .add-note-row{display:flex; gap:8px; margin-top:8px;}
+  .add-note-row input{flex:1; padding:11px 12px; border-radius:10px; border:1.5px solid var(--line); font-size:13.5px; font-family:'Inter',sans-serif;}
+  .add-note-row button{flex:0 0 auto;}
+
+  /* Tasks */
+  .task-row{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:12px 13px; display:flex; align-items:flex-start; gap:11px; margin-bottom:8px;
+    box-shadow:var(--shadow); cursor:pointer;
+  }
+  .task-check{
+    flex:0 0 auto; width:23px; height:23px; border-radius:7px; border:2px solid var(--line);
+    display:flex; align-items:center; justify-content:center; margin-top:1px; background:#fff;
+  }
+  .task-check svg{width:14px;height:14px; stroke:#fff; fill:none; stroke-width:3; display:none;}
+  .task-row.done .task-check{background:var(--green); border-color:var(--green);}
+  .task-row.done .task-check svg{display:block;}
+  .task-row.done .t-txt{text-decoration:line-through; color:var(--ink-soft);}
+  .task-body{flex:1; min-width:0;}
+  .t-txt{font-size:14px; font-weight:600; line-height:1.35;}
+  .t-meta{display:flex; align-items:center; gap:7px; margin-top:5px; flex-wrap:wrap;}
+  .prio-dot{width:8px;height:8px;border-radius:50%; flex:0 0 auto;}
+  .prio-alta{background:var(--red);}
+  .prio-media{background:var(--amber);}
+  .prio-baixa{background:var(--green);}
+  .t-due{font-size:11px; color:var(--ink-soft); font-weight:600;}
+  .t-due.overdue{color:var(--red);}
+  .t-proj{font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--blue); background:rgba(44,92,115,0.09); padding:2px 6px; border-radius:5px;}
+  .task-mini{padding:10px 11px;}
+  .task-mini .t-txt{font-size:13px;}
+
+  /* Bottom nav */
+  nav.tabbar{
+    position:fixed; bottom:0; left:0; right:0; z-index:30;
+    background:#fff; border-top:1px solid var(--line);
+    display:flex; padding: 6px 4px calc(6px + var(--safe-bottom));
+    box-shadow: 0 -2px 10px rgba(0,0,0,0.06);
+  }
+  nav.tabbar button{
+    flex:1; background:none; border:none; display:flex; flex-direction:column; align-items:center; gap:3px;
+    padding:7px 1px 5px; color:#9c9385; cursor:pointer; border-radius:10px;
+  }
+  nav.tabbar button svg{width:20px;height:20px; stroke:currentColor; fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round;}
+  nav.tabbar button span{font-size:9.7px; font-weight:600; letter-spacing:0.01em;}
+  nav.tabbar button.active{color:var(--orange-dark);}
+  nav.tabbar button.fab .fabcircle{
+    width:38px;height:38px;border-radius:50%; background:var(--orange); display:flex; align-items:center; justify-content:center;
+    margin-top:-16px; box-shadow:0 3px 8px rgba(224,101,31,0.45);
+  }
+  nav.tabbar button.fab .fabcircle svg{stroke:#fff;}
+  nav.tabbar button.fab span{color:#9c9385;}
+  nav.tabbar button.fab.active .fabcircle{background:var(--orange-dark);}
+
+  /* Modal */
+  .modal-overlay{
+    position:fixed; inset:0; background:rgba(33,29,25,0.5); z-index:50;
+    display:none; align-items:flex-end; justify-content:center;
+  }
+  .modal-overlay.open{display:flex;}
+  .modal-sheet{
+    background:var(--paper); width:100%; max-width:640px; max-height:92vh; overflow-y:auto;
+    border-radius:18px 18px 0 0; padding:18px 18px calc(22px + var(--safe-bottom));
+    animation: slideup .22s ease;
+  }
+  @keyframes slideup{from{transform:translateY(30px); opacity:0.6;} to{transform:translateY(0); opacity:1;}}
+  .modal-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:14px;}
+  .modal-head h2{font-size:17px; margin:0;}
+  .modal-close{background:var(--paper-2); border:none; width:32px;height:32px;border-radius:50%; display:flex; align-items:center; justify-content:center; cursor:pointer;}
+  .modal-close svg{width:16px;height:16px; stroke:var(--ink); stroke-width:2.4;}
+  .detail-row{display:flex; justify-content:space-between; gap:12px; padding:8px 0; border-bottom:1px solid var(--line); font-size:13.5px;}
+  .detail-row .k{color:var(--ink-soft); font-weight:600;}
+  .detail-row .v{text-align:right;}
+
+  .settings-block{margin-bottom:20px;}
+  .settings-block h3{font-size:12.5px; color:var(--ink-soft); margin:0 0 10px; letter-spacing:0.06em;}
+  .proj-row{display:flex; align-items:center; justify-content:space-between; background:#fff; border:1px solid var(--line); border-radius:10px; padding:11px 13px; margin-bottom:8px;}
+  .proj-row .pname{font-size:14px; font-weight:600; display:flex; align-items:center; gap:8px;}
+  .proj-row button{background:none; border:none; color:var(--blue); font-size:12px; font-weight:700; cursor:pointer;}
+
+  .toast{
+    position:fixed; left:50%; bottom:calc(90px + var(--safe-bottom)); transform:translateX(-50%) translateY(10px);
+    background:var(--ink); color:#fff; padding:11px 18px; border-radius:30px; font-size:13.5px; font-weight:500;
+    box-shadow:0 4px 14px rgba(0,0,0,0.25); z-index:60; opacity:0; pointer-events:none; transition:all .25s ease;
+    display:flex; align-items:center; gap:8px; max-width:88vw;
+  }
+  .toast.show{opacity:1; transform:translateX(-50%) translateY(0);}
+  .toast svg{width:15px;height:15px; stroke:#7fd99a; fill:none; stroke-width:2.5; flex:0 0 auto;}
+
+  .storage-note{font-size:11px; color:#9c9385; text-align:center; margin-top:14px; line-height:1.5;}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="toprow">
+    <div class="brand">
+      <div class="mark">
+        <svg viewBox="0 0 24 24"><path d="M3 21h18"/><path d="M5 21V9l7-5 7 5v12"/><path d="M9 21v-6h6v6"/></svg>
+      </div>
+      <div class="titles">
+        <h1>Construtora Moreira</h1>
+        <div class="sub">Toque abaixo para trocar de projeto</div>
+      </div>
+    </div>
+    <button class="gear-btn" id="settingsBtn">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.34 1.87l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.7 1.7 0 00-1.87-.34 1.7 1.7 0 00-1 1.55V21a2 2 0 01-4 0v-.09a1.7 1.7 0 00-1-1.55 1.7 1.7 0 00-1.87.34l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.7 1.7 0 00.34-1.87 1.7 1.7 0 00-1.55-1H3a2 2 0 010-4h.09a1.7 1.7 0 001.55-1 1.7 1.7 0 00-.34-1.87l-.06-.06a2 2 0 112.83-2.83l.06.06a1.7 1.7 0 001.87.34H9a1.7 1.7 0 001-1.55V3a2 2 0 014 0v.09a1.7 1.7 0 001 1.55 1.7 1.7 0 001.87-.34l.06-.06a2 2 0 112.83 2.83l-.06.06a1.7 1.7 0 00-.34 1.87V9a1.7 1.7 0 001.55 1H21a2 2 0 010 4h-.09a1.7 1.7 0 00-1.55 1z"/></svg>
+    </button>
+  </div>
+  <button class="project-switch" id="projectSwitchBtn">
+    <span class="proj-monogram" id="projSwitchMonogram"></span>
+    <span class="psw-text">
+      <span class="psw-label">Projeto atual</span>
+      <span class="psw-name" id="projSwitchName">—</span>
+    </span>
+    <svg class="chevron" viewBox="0 0 24 24"><path d="M7 8l5 5 5-5"/></svg>
+  </button>
+</div>
+
+<!-- Project switch sheet -->
+<div class="modal-overlay" id="projectSwitchModal">
+  <div class="modal-sheet">
+    <div class="modal-head">
+      <h2>Selecionar projeto</h2>
+      <button class="modal-close" data-close="projectSwitchModal"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+    <div id="projectSwitchList"></div>
+  </div>
+</div>
+
+<main>
+
+  <!-- PAINEL / HOME -->
+  <div class="view active" id="view-dashboard">
+    <div class="section-title">Resumo do projeto</div>
+    <div class="stamp">
+      <div class="badge">Total geral</div>
+      <div class="label"><span class="proj-dot-inline" id="dashProjDot"></span><span id="dashProjLabel">—</span></div>
+      <div class="amount" id="dashTotal">R$ 0</div>
+    </div>
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="num" id="dashCaixa">R$ 0</div>
+        <div class="lbl">Caixa da obra</div>
+      </div>
+      <div class="stat-card">
+        <div class="num" id="dashEmp">R$ 0</div>
+        <div class="lbl">Empreiteiro</div>
+      </div>
+      <div class="stat-card">
+        <div class="num" id="dashWeek">R$ 0</div>
+        <div class="lbl">Gasto geral · últimos 7 dias</div>
+      </div>
+      <div class="stat-card warn">
+        <div class="num" id="dashTasks">0</div>
+        <div class="lbl">Tarefas em aberto</div>
+      </div>
+    </div>
+
+    <div class="section-title">Tarefas <span class="link" data-goto="tasks">ver todas</span></div>
+    <div class="recent-list" id="dashTasks-list"></div>
+
+    <div class="section-title">Últimos lançamentos</div>
+    <div class="recent-list" id="dashRecent"></div>
+  </div>
+
+  <!-- LANÇAMENTOS -->
+  <div class="view" id="view-entries">
+    <div class="section-title">Lançamentos</div>
+    <div class="segmented">
+      <button data-kind="caixa" class="active">Caixa da obra</button>
+      <button data-kind="emp">Empreiteiro</button>
+    </div>
+    <div class="searchbar">
+      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+      <input type="text" id="searchInput" placeholder="Buscar por nome ou fornecedor...">
+    </div>
+    <div class="filter-toggle-row">
+      <button class="btn btn-ghost btn-sm" id="filterToggleBtn">Filtros</button>
+      <button class="btn btn-ghost btn-sm" id="clearFilterBtn" style="display:none;">Limpar filtros</button>
+    </div>
+    <div class="filter-panel" id="filterPanel" style="display:none;">
+      <div class="row2">
+        <div class="field">
+          <label>Fornecedor</label>
+          <select id="filterFornecedor"><option value="">Todos</option></select>
+        </div>
+        <div class="field" id="filterTipoField">
+          <label>Tipo</label>
+          <select id="filterTipo"><option value="">Todos</option></select>
+        </div>
+      </div>
+      <div class="row2">
+        <div class="field">
+          <label>Sócio</label>
+          <select id="filterSocio">
+            <option value="">Todos</option>
+            <option value="Dalmir">Dalmir</option>
+            <option value="Pedro">Pedro</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>&nbsp;</label>
+        </div>
+      </div>
+      <div class="row2">
+        <div class="field">
+          <label>De</label>
+          <input type="date" id="filterDataDe">
+        </div>
+        <div class="field">
+          <label>Até</label>
+          <input type="date" id="filterDataAte">
+        </div>
+      </div>
+    </div>
+    <div class="total-strip">
+      <span>Total filtrado</span>
+      <b id="filteredTotal">R$ 0</b>
+    </div>
+    <div class="recent-list" id="entriesList"></div>
+  </div>
+
+  <!-- ADICIONAR -->
+  <div class="view" id="view-add">
+    <div class="section-title" id="addTitle">Adicionar</div>
+    <div class="segmented">
+      <button data-addkind="caixa" class="active">Despesa (Caixa da obra)</button>
+      <button data-addkind="emp">Empreiteiro / mão de obra</button>
+    </div>
+    <div class="form-context">Salvando em: <b id="addProjLabel">—</b></div>
+    <div class="form-card">
+      <form id="entryForm">
+        <div class="field">
+          <label>Nome / descrição <span class="req">*</span></label>
+          <input type="text" id="f_nome" placeholder="Ex: Cimento, Pedreiro João, Aluguel de betoneira" required>
+        </div>
+
+        <div class="field" id="tipoField">
+          <label>Tipo</label>
+          <select id="f_tipo">
+            <option value="">—</option>
+          </select>
+        </div>
+
+        <div class="row2">
+          <div class="field">
+            <label>Quantidade</label>
+            <input type="number" id="f_qtd" placeholder="0" step="0.01" inputmode="decimal">
+            <div class="mini-hint" id="qtdHint">Padrão: 1 — toque para alterar</div>
+          </div>
+          <div class="field">
+            <label>Unidade</label>
+            <select id="f_unidade"></select>
+            <div class="mini-hint" id="unidadeHint">Padrão: und — toque para alterar</div>
+          </div>
+        </div>
+        <div class="row2">
+          <div class="field">
+            <label>Data <span class="req">*</span></label>
+            <input type="date" id="f_data" required>
+            <div class="date-hint" id="dateHint"></div>
+          </div>
+          <div class="field">
+            <label>Valor (R$) <span class="req">*</span></label>
+            <input type="number" id="f_valor" placeholder="0,00" step="0.01" inputmode="decimal" required>
+          </div>
+        </div>
+        <div class="field">
+          <label>Fornecedor / trabalhador</label>
+          <input type="text" id="f_fornecedor" placeholder="Quem prestou o serviço">
+        </div>
+        <div class="field">
+          <label>Pago por sócio</label>
+          <div class="toggle-group" id="socioToggle">
+            <button type="button" data-socio="Pedro">Pedro</button>
+            <button type="button" data-socio="Dalmir">Dalmir</button>
+          </div>
+        </div>
+        <div class="field" id="existingNotesField" style="display:none;">
+          <label>Notas já registradas</label>
+          <div class="notes-thread" id="editNotesList"></div>
+        </div>
+        <div class="field">
+          <label id="notaFieldLabel">Nota (opcional)</label>
+          <textarea id="f_nota" placeholder="Alguma observação sobre esse lançamento?"></textarea>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn btn-ghost" id="cancelEditBtn" style="display:none;">Cancelar</button>
+          <button type="submit" class="btn btn-primary btn-block" id="saveEntryBtn">Salvar lançamento</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- TAREFAS -->
+  <div class="view" id="view-tasks">
+    <div class="section-title">Nova tarefa</div>
+    <div class="form-card" style="margin-bottom:18px;">
+      <div class="field">
+        <label>Tarefa <span class="req">*</span></label>
+        <input type="text" id="t_texto" placeholder="Ex: Ligar pro fornecedor de cimento">
+      </div>
+      <div class="row2">
+        <div class="field">
+          <label>Prazo</label>
+          <input type="date" id="t_prazo">
+        </div>
+        <div class="field">
+          <label>Prioridade</label>
+          <select id="t_prioridade">
+            <option value="media" selected>Média</option>
+            <option value="alta">Alta</option>
+            <option value="baixa">Baixa</option>
+          </select>
+        </div>
+      </div>
+      <div class="field">
+        <label>Projeto</label>
+        <select id="t_projeto"></select>
+      </div>
+      <button class="btn btn-primary btn-block" id="saveTaskBtn">Adicionar tarefa</button>
+    </div>
+
+    <div class="section-title">Atrasadas</div>
+    <div class="recent-list" id="tasksOverdue"></div>
+    <div class="section-title">Hoje</div>
+    <div class="recent-list" id="tasksToday"></div>
+    <div class="section-title">Em aberto</div>
+    <div class="recent-list" id="tasksOpen"></div>
+    <div class="section-title">Concluídas</div>
+    <div class="recent-list" id="tasksDone"></div>
+  </div>
+
+  <!-- NOTAS -->
+  <div class="view" id="view-notes">
+    <div class="section-title">Nova nota</div>
+    <div class="form-card" style="margin-bottom:18px;">
+      <div class="field" style="margin-bottom:10px;">
+        <textarea id="noteInput" placeholder="Escreva um lembrete, recado ou anotação sobre a obra..." style="min-height:80px;"></textarea>
+      </div>
+      <button class="btn btn-primary btn-block" id="saveNoteBtn">Adicionar nota</button>
+    </div>
+    <div id="notesFeed"></div>
+  </div>
+
+</main>
+
+<nav class="tabbar">
+  <button data-view="dashboard" class="tab-btn active">
+    <svg viewBox="0 0 24 24"><path d="M3 13h4v8H3zM10 8h4v13h-4zM17 3h4v18h-4z"/></svg>
+    <span>Painel</span>
+  </button>
+  <button data-view="entries" class="tab-btn">
+    <svg viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r="1.3"/><circle cx="3.5" cy="12" r="1.3"/><circle cx="3.5" cy="18" r="1.3"/></svg>
+    <span>Lançamentos</span>
+  </button>
+  <button data-view="add" class="tab-btn fab active">
+    <span class="fabcircle"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></span>
+    <span>Adicionar</span>
+  </button>
+  <button data-view="tasks" class="tab-btn">
+    <svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+    <span>Tarefas</span>
+  </button>
+  <button data-view="notes" class="tab-btn">
+    <svg viewBox="0 0 24 24"><path d="M4 4h16v13H8l-4 4V4z"/></svg>
+    <span>Notas</span>
+  </button>
+</nav>
+
+<!-- Entry detail modal -->
+<div class="modal-overlay" id="detailModal">
+  <div class="modal-sheet">
+    <div class="modal-head">
+      <h2>Detalhes</h2>
+      <button class="modal-close" data-close="detailModal"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+    <div id="modalBody"></div>
+    <div style="margin-top:14px;">
+      <label style="display:block; font-size:12.5px; font-weight:600; color:var(--ink-soft); margin-bottom:8px;">Notas</label>
+      <div class="notes-thread" id="modalNotes"></div>
+      <div class="add-note-row">
+        <input type="text" id="modalNoteInput" placeholder="Adicionar nota...">
+        <button class="btn btn-primary btn-sm" id="modalAddNoteBtn">Add</button>
+      </div>
+    </div>
+    <div class="form-actions" style="margin-top:16px;">
+      <button class="btn btn-danger" id="deleteEntryBtn">Excluir</button>
+      <button class="btn btn-secondary btn-block" id="editEntryBtn">Editar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Task detail modal -->
+<div class="modal-overlay" id="taskModal">
+  <div class="modal-sheet">
+    <div class="modal-head">
+      <h2 id="taskModalTitle">Tarefa</h2>
+      <button class="modal-close" data-close="taskModal"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+
+    <div id="taskViewMode">
+      <div id="taskModalBody"></div>
+      <div class="form-actions" style="margin-top:16px;">
+        <button class="btn btn-danger" id="deleteTaskBtn">Excluir</button>
+        <button class="btn btn-secondary" id="editTaskBtn">Editar</button>
+      </div>
+      <button class="btn btn-primary btn-block" id="toggleTaskBtn" style="margin-top:10px;">Marcar como concluída</button>
+    </div>
+
+    <div id="taskEditMode" style="display:none;">
+      <div class="field">
+        <label>Tarefa <span class="req">*</span></label>
+        <input type="text" id="te_texto">
+      </div>
+      <div class="row2">
+        <div class="field">
+          <label>Prazo</label>
+          <input type="date" id="te_prazo">
+        </div>
+        <div class="field">
+          <label>Prioridade</label>
+          <select id="te_prioridade">
+            <option value="alta">Alta</option>
+            <option value="media">Média</option>
+            <option value="baixa">Baixa</option>
+          </select>
+        </div>
+      </div>
+      <div class="field">
+        <label>Projeto</label>
+        <select id="te_projeto"></select>
+      </div>
+      <div class="form-actions" style="margin-top:6px;">
+        <button type="button" class="btn btn-ghost" id="taskEditCancelBtn">Cancelar</button>
+        <button type="button" class="btn btn-primary btn-block" id="taskEditSaveBtn">Salvar alterações</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Settings modal -->
+<div class="modal-overlay" id="settingsModal">
+  <div class="modal-sheet">
+    <div class="modal-head">
+      <h2>Ajustes</h2>
+      <button class="modal-close" data-close="settingsModal"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+    <div class="settings-block">
+      <h3>PROJETOS</h3>
+      <div id="settingsProjects"></div>
+      <button class="btn btn-ghost btn-block btn-sm" id="addProjectBtn">+ Adicionar projeto</button>
+    </div>
+    <div class="settings-block">
+      <h3>DADOS</h3>
+      <button class="btn btn-secondary btn-block" id="exportExcelBtn">Exportar tudo para Excel</button>
+      <div class="storage-note">Os dados ficam salvos neste dispositivo/conta. A sincronização automática com o Google Sheets será adicionada na próxima etapa — por enquanto, use o Excel exportado para colar na planilha.</div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"><svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg><span id="toastMsg"></span></div>
+
+<script>
+(function(){
+
+  const $ = (sel) => document.querySelector(sel);
+  const $all = (sel) => document.querySelectorAll(sel);
+
+  let projects = [];
+  let caixaObra = [];
+  let empreiteiro = [];
+  let tasks = [];
+  let notes = [];
+  let tipos = [];
+  let unidades = [];
+  let activeProjectId = null;
+
+  let editingId = null;
+  let editingKind = 'caixa'; // 'caixa' | 'emp'
+  let selectedSocio = 'Pedro';
+  let entriesKind = 'caixa';
+  let addKind = 'caixa';
+  let activeModal = null; // {kind, id}
+  let activeTaskId = null;
+  let filters = {fornecedor:'', tipo:'', socio:'', de:'', ate:''};
+
+  const DEFAULT_TIPOS = ['Material de Construção','Ferramentas & Equipamento','Mão de obra avulsa','Transporte','Taxas & Documentação','Alimentação','Contas & Utilidades','Outros'];
+  const DEFAULT_UNIDADES = ['und','barra','hora','lts','kg','m','m2','m3','pacote','ton','rl','bd','grama'];
+  const MONTHS = ['JAN','FEV','MAR','ABR','MAI','JUN','JUL','AGO','SET','OUT','NOV','DEZ'];
+  const WEEKDAYS = ['domingo','segunda-feira','terça-feira','quarta-feira','quinta-feira','sexta-feira','sábado'];
+
+  function uid(p){ return (p||'x') + '_' + Date.now() + '_' + Math.random().toString(36).slice(2,8); }
+
+  function fmtBRL(v){
+    v = Number(v)||0;
+    return v.toLocaleString('pt-BR', {style:'currency', currency:'BRL', maximumFractionDigits:0});
+  }
+  function fmtBRLFull(v){
+    v = Number(v)||0;
+    return v.toLocaleString('pt-BR', {style:'currency', currency:'BRL'});
+  }
+  function parseDateLocal(str){
+    if(!str) return new Date();
+    const [y,m,d] = str.split('-').map(Number);
+    return new Date(y, m-1, d);
+  }
+  function todayStr(){
+    const n = new Date();
+    return n.getFullYear() + '-' + String(n.getMonth()+1).padStart(2,'0') + '-' + String(n.getDate()).padStart(2,'0');
+  }
+  function escapeHTML(s){
+    if(s === undefined || s === null) return '';
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function projName(id){
+    const p = projects.find(x=>x.id===id);
+    return p ? p.name : '—';
+  }
+  const GENERIC_PROJECT_WORDS = ['obra','projeto','sítio','sitio','construção','construcao','casa','condomínio','condominio','residência','residencia'];
+  function projInitial(name){
+    if(!name) return '?';
+    const words = name.trim().split(/\s+/);
+    let word = words[0];
+    if(words.length > 1 && GENERIC_PROJECT_WORDS.includes(word.toLowerCase())){
+      word = words[1];
+    }
+    return (word.charAt(0) || '?').toUpperCase();
+  }
+
+  // ---------- Storage ----------
+  const warnedLargeKeys = new Set();
+  async function loadKey(key, fallback){
+    try{
+      const r = await window.storage.get(key, false);
+      return r && r.value ? JSON.parse(r.value) : fallback;
+    }catch(e){ return fallback; }
+  }
+  async function saveKey(key, value){
+    try{
+      const json = JSON.stringify(value);
+      // Storage keys have a 5MB ceiling. Warn well before that so there's time to
+      // export/archive rather than finding out via a failed save.
+      if(json.length > 3500000 && !warnedLargeKeys.has(key)){
+        warnedLargeKeys.add(key);
+        showToast('Muitos dados salvos — exporte para Excel como backup em breve.');
+      }
+      await window.storage.set(key, json, false);
+      return true;
+    }catch(e){
+      console.error('storage error', key, e);
+      showToast('Erro ao salvar. Tente novamente.');
+      return false;
+    }
+  }
+
+  async function loadAll(){
+    projects = await loadKey('projects', null);
+    if(!projects || projects.length === 0){
+      projects = [{id:'p_gaviao', name:'Obra Gavião'}, {id:'p_boreal', name:'Obra Boreal'}];
+      await saveKey('projects', projects);
+    }
+    caixaObra = await loadKey('caixaObra', []);
+    empreiteiro = await loadKey('empreiteiro', []);
+    tasks = await loadKey('tasks', []);
+    notes = await loadKey('notes', []);
+    tipos = await loadKey('tipos', null);
+    if(!tipos || tipos.length === 0){ tipos = DEFAULT_TIPOS.slice(); await saveKey('tipos', tipos); }
+    unidades = await loadKey('unidades', null);
+    if(!unidades || unidades.length === 0){ unidades = DEFAULT_UNIDADES.slice(); await saveKey('unidades', unidades); }
+    activeProjectId = await loadKey('activeProjectId', null);
+    if(!activeProjectId || !projects.find(p=>p.id===activeProjectId)){
+      activeProjectId = projects[0].id;
+      await saveKey('activeProjectId', activeProjectId);
+    }
+    renderProjectPills();
+    populateTipoSelect();
+    populateUnidadeSelect();
+    populateTaskProjectSelect();
+    resetForm();
+    renderAll();
+  }
+
+  // ---------- Toast ----------
+  let toastTimer;
+  function showToast(msg){
+    const t = $('#toast');
+    $('#toastMsg').textContent = msg;
+    t.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(()=> t.classList.remove('show'), 2200);
+  }
+
+  // ---------- Project switcher ----------
+  function renderProjectPills(){
+    const mono = $('#projSwitchMonogram');
+    mono.textContent = projInitial(projName(activeProjectId));
+    $('#projSwitchName').textContent = projName(activeProjectId);
+    $('#addProjLabel').textContent = projName(activeProjectId);
+
+    const list = $('#projectSwitchList');
+    list.innerHTML = projects.map(p => {
+      const isActive = p.id === activeProjectId;
+      const style = isActive
+        ? `border-color:var(--orange); background:rgba(224,101,31,0.07);`
+        : '';
+      return `<div class="project-select-row ${isActive?'active':''}" data-pid="${p.id}" style="${style}">
+        <span class="proj-monogram">${escapeHTML(projInitial(p.name))}</span>
+        <span class="pname">${escapeHTML(p.name)}</span>
+        <span class="current-tag">Atual</span>
+      </div>`;
+    }).join('');
+    list.querySelectorAll('.project-select-row').forEach(row=>{
+      row.addEventListener('click', async ()=>{
+        activeProjectId = row.dataset.pid;
+        await saveKey('activeProjectId', activeProjectId);
+        entriesPage = 1;
+        notesPage = 1;
+        renderProjectPills();
+        populateTaskProjectSelect();
+        renderAll();
+        $('#projectSwitchModal').classList.remove('open');
+      });
+    });
+  }
+  $('#projectSwitchBtn').addEventListener('click', ()=>{
+    renderProjectPills();
+    $('#projectSwitchModal').classList.add('open');
+  });
+
+  // ---------- Navigation ----------
+  function scrollTopNow(){
+    window.scrollTo({top:0, behavior:'smooth'});
+    if(document.scrollingElement) document.scrollingElement.scrollTop = 0;
+  }
+  function switchView(name){
+    $all('.view').forEach(v => v.classList.remove('active'));
+    $('#view-' + name).classList.add('active');
+    $all('.tab-btn').forEach(b => b.classList.remove('active'));
+    $all('.tab-btn').forEach(b => { if (b.dataset.view === name) b.classList.add('active'); });
+    if(name !== 'add') resetForm();
+    renderAll();
+    scrollTopNow();
+  }
+  $all('.tab-btn').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      if(btn.dataset.view === 'add'){
+        // Match whichever kind (Caixa da obra / Empreiteiro) is currently selected in Lançamentos,
+        // so the + button doesn't silently reset back to Caixa da obra.
+        addKind = entriesKind;
+        $all('.segmented button[data-addkind]').forEach(b=>b.classList.toggle('active', b.dataset.addkind===addKind));
+        $('#tipoField').style.display = addKind === 'caixa' ? 'block' : 'none';
+        resetForm();
+      }
+      switchView(btn.dataset.view);
+    });
+  });
+  $all('[data-goto]').forEach(el=>{
+    el.addEventListener('click', ()=> switchView(el.dataset.goto));
+  });
+
+  // ---------- Rendering: dashboard ----------
+  function projEntries(list){
+    return list.filter(e => e.projectId === activeProjectId);
+  }
+  function totalOf(list){
+    return list.reduce((s,e)=> s + (Number(e.valor)||0), 0);
+  }
+
+  function renderDashboard(){
+    const caixaP = projEntries(caixaObra);
+    const empP = projEntries(empreiteiro);
+    const totalCaixa = totalOf(caixaP);
+    const totalEmp = totalOf(empP);
+    $('#dashProjLabel').textContent = projName(activeProjectId);
+    $('#dashTotal').textContent = fmtBRLFull(totalCaixa + totalEmp);
+    $('#dashCaixa').textContent = fmtBRL(totalCaixa);
+    $('#dashEmp').textContent = fmtBRL(totalEmp);
+
+    const weekAgo = new Date(); weekAgo.setHours(0,0,0,0); weekAgo.setDate(weekAgo.getDate()-6);
+    const weekTotal = [...caixaP, ...empP].filter(e => parseDateLocal(e.data) >= weekAgo).reduce((s,e)=>s+(Number(e.valor)||0),0);
+    $('#dashWeek').textContent = fmtBRL(weekTotal);
+
+    const openTasks = tasks.filter(t => !t.feito && (t.projectId === activeProjectId || !t.projectId));
+    $('#dashTasks').textContent = openTasks.length;
+
+    const sortedTasks = [...openTasks].sort(taskSort).slice(0,4);
+    const tbox = $('#dashTasks-list');
+    if(sortedTasks.length === 0){
+      tbox.innerHTML = emptyStateHTML('Nenhuma tarefa em aberto.', 'Adicione uma na aba Tarefas.');
+    } else {
+      tbox.innerHTML = sortedTasks.map(t => taskRowHTML(t, true)).join('');
+      attachTaskHandlers(tbox);
+    }
+
+    const recent = [...caixaP.map(e=>({...e, kind:'caixa'})), ...empP.map(e=>({...e, kind:'emp'}))]
+      .sort((a,b)=> b.data.localeCompare(a.data) || b.criadoEm - a.criadoEm).slice(0,4);
+    const box = $('#dashRecent');
+    if(recent.length === 0){
+      box.innerHTML = emptyStateHTML('Nenhum lançamento ainda.', 'Toque em "Adicionar" para começar.');
+    } else {
+      box.innerHTML = recent.map(entryCardHTML).join('');
+      attachCardHandlers(box);
+    }
+  }
+
+  function emptyStateHTML(title, hint){
+    return `<div class="empty-state">
+      <svg viewBox="0 0 24 24"><path d="M12 4v16M4 12h16"/></svg>
+      <p>${title}</p>
+      <p class="hint">${hint}</p>
+    </div>`;
+  }
+
+  function entryCardHTML(e){
+    const d = parseDateLocal(e.data);
+    const metaParts = [];
+    if(e.fornecedor) metaParts.push(e.fornecedor);
+    if(e.qtd) metaParts.push(e.qtd + (e.unidade ? ' ' + e.unidade : ''));
+    const noteCount = (e.notas||[]).length;
+    return `<div class="entry-card" data-id="${e.id}" data-kind="${e.kind}">
+      <div class="datechip"><div class="d">${d.getDate()}</div><div class="m">${MONTHS[d.getMonth()]}</div></div>
+      <div class="info">
+        <div class="nome">${escapeHTML(e.nome)}${e.kind==='caixa' && e.tipo ? `<span class="tag">${escapeHTML(e.tipo)}</span>` : ''}</div>
+        <div class="meta">${escapeHTML(metaParts.join(' · ') || '—')} ${noteCount ? `<span class="notedot"><svg viewBox="0 0 24 24"><path d="M4 4h16v13H8l-4 4V4z"/></svg>${noteCount}</span>` : ''}</div>
+      </div>
+      <div class="valor">${fmtBRL(e.valor)}<span class="who">${e.socio||''}</span></div>
+    </div>`;
+  }
+
+  function attachCardHandlers(container){
+    container.querySelectorAll('.entry-card').forEach(card=>{
+      card.addEventListener('click', ()=> openDetail(card.dataset.kind, card.dataset.id));
+    });
+  }
+
+  // ---------- Lançamentos ----------
+  const ENTRIES_PAGE_SIZE = 60;
+  let entriesPage = 1;
+
+  $all('.segmented button[data-kind]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      entriesKind = btn.dataset.kind;
+      $all('.segmented button[data-kind]').forEach(b=>b.classList.toggle('active', b===btn));
+      entriesPage = 1;
+      renderEntries();
+    });
+  });
+
+  let searchTerm = '';
+  let searchDebounceTimer;
+  $('#searchInput').addEventListener('input', (e)=>{
+    clearTimeout(searchDebounceTimer);
+    const val = e.target.value;
+    searchDebounceTimer = setTimeout(()=>{
+      searchTerm = val.trim().toLowerCase();
+      entriesPage = 1;
+      renderEntries();
+    }, 200);
+  });
+
+  $('#filterToggleBtn').addEventListener('click', ()=>{
+    const panel = $('#filterPanel');
+    panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+  });
+  function updateClearFilterVisibility(){
+    const active = filters.fornecedor || filters.tipo || filters.socio || filters.de || filters.ate;
+    $('#clearFilterBtn').style.display = active ? 'inline-flex' : 'none';
+    $('#filterToggleBtn').classList.toggle('active-filter', !!active);
+  }
+  ['filterFornecedor','filterTipo','filterSocio','filterDataDe','filterDataAte'].forEach(id=>{
+    $('#'+id).addEventListener('change', ()=>{
+      filters.fornecedor = $('#filterFornecedor').value;
+      filters.tipo = $('#filterTipo').value;
+      filters.socio = $('#filterSocio').value;
+      filters.de = $('#filterDataDe').value;
+      filters.ate = $('#filterDataAte').value;
+      updateClearFilterVisibility();
+      entriesPage = 1;
+      renderEntries();
+    });
+  });
+  $('#clearFilterBtn').addEventListener('click', ()=>{
+    filters = {fornecedor:'', tipo:'', socio:'', de:'', ate:''};
+    $('#filterFornecedor').value=''; $('#filterTipo').value=''; $('#filterSocio').value='';
+    $('#filterDataDe').value=''; $('#filterDataAte').value='';
+    updateClearFilterVisibility();
+    entriesPage = 1;
+    renderEntries();
+  });
+
+  function populateEntryFilters(){
+    const src = entriesKind === 'caixa' ? caixaObra : empreiteiro;
+    const list = projEntries(src);
+    const fornecedores = Array.from(new Set(list.map(e=>e.fornecedor).filter(Boolean))).sort((a,b)=>a.localeCompare(b, 'pt-BR'));
+    const selF = $('#filterFornecedor');
+    const curF = selF.value;
+    selF.innerHTML = '<option value="">Todos</option>' + fornecedores.map(f=>`<option value="${escapeHTML(f)}">${escapeHTML(f)}</option>`).join('');
+    if(fornecedores.includes(curF)) selF.value = curF; else { selF.value=''; filters.fornecedor=''; }
+
+    $('#filterTipoField').style.display = entriesKind === 'caixa' ? 'block' : 'none';
+    if(entriesKind === 'caixa'){
+      const selT = $('#filterTipo');
+      const curT = selT.value;
+      selT.innerHTML = '<option value="">Todos</option>' + tipos.map(t=>`<option value="${escapeHTML(t)}">${escapeHTML(t)}</option>`).join('');
+      if(tipos.includes(curT)) selT.value = curT; else { selT.value=''; filters.tipo=''; }
+    } else {
+      filters.tipo = '';
+      $('#filterTipo').value = '';
+    }
+    updateClearFilterVisibility();
+  }
+
+  function renderEntries(){
+    populateEntryFilters();
+    const src = entriesKind === 'caixa' ? caixaObra : empreiteiro;
+    let list = projEntries(src).map(e=>({...e, kind: entriesKind}));
+    list.sort((a,b)=> b.data.localeCompare(a.data) || b.criadoEm - a.criadoEm);
+    if(searchTerm){
+      list = list.filter(e =>
+        (e.nome||'').toLowerCase().includes(searchTerm) ||
+        (e.fornecedor||'').toLowerCase().includes(searchTerm)
+      );
+    }
+    if(filters.fornecedor) list = list.filter(e => e.fornecedor === filters.fornecedor);
+    if(entriesKind === 'caixa' && filters.tipo) list = list.filter(e => e.tipo === filters.tipo);
+    if(filters.socio) list = list.filter(e => e.socio === filters.socio);
+    if(filters.de) list = list.filter(e => e.data >= filters.de);
+    if(filters.ate) list = list.filter(e => e.data <= filters.ate);
+
+    // Total reflects the FULL filtered set, not just what's currently rendered on screen.
+    $('#filteredTotal').textContent = fmtBRLFull(totalOf(list));
+    const box = $('#entriesList');
+    if(list.length === 0){
+      const hasFilters = searchTerm || filters.fornecedor || filters.tipo || filters.socio || filters.de || filters.ate;
+      box.innerHTML = emptyStateHTML(hasFilters ? 'Nenhum resultado encontrado.' : 'Nenhum lançamento ainda.', hasFilters ? 'Tente ajustar a busca ou os filtros.' : 'Toque em "Adicionar" para começar.');
+      return;
+    }
+
+    // Only render a page's worth of cards at a time so the list stays smooth
+    // even with thousands of lançamentos — the rest load on demand.
+    const visibleCount = Math.min(entriesPage * ENTRIES_PAGE_SIZE, list.length);
+    const visible = list.slice(0, visibleCount);
+    let html = visible.map(entryCardHTML).join('');
+    if(visibleCount < list.length){
+      html += `<button class="btn btn-ghost btn-block" id="loadMoreEntriesBtn" style="margin-top:4px;">Carregar mais (${list.length - visibleCount} restantes)</button>`;
+    }
+    box.innerHTML = html;
+    attachCardHandlers(box);
+    const loadMoreBtn = $('#loadMoreEntriesBtn');
+    if(loadMoreBtn){
+      loadMoreBtn.addEventListener('click', ()=>{
+        entriesPage += 1;
+        renderEntries();
+      });
+    }
+  }
+
+  // ---------- Add form ----------
+  $all('.segmented button[data-addkind]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      addKind = btn.dataset.addkind;
+      $all('.segmented button[data-addkind]').forEach(b=>b.classList.toggle('active', b===btn));
+      $('#tipoField').style.display = addKind === 'caixa' ? 'block' : 'none';
+      resetForm();
+    });
+  });
+
+  function populateTipoSelect(){
+    const sel = $('#f_tipo');
+    sel.innerHTML = '<option value="">—</option>' + tipos.map(t=>`<option value="${escapeHTML(t)}">${escapeHTML(t)}</option>`).join('') + '<option value="__novo__">+ Novo tipo...</option>';
+  }
+  $('#f_tipo').addEventListener('change', (e)=>{
+    if(e.target.value === '__novo__'){
+      const nt = prompt('Nome do novo tipo de despesa:');
+      if(nt && nt.trim()){
+        const clean = nt.trim();
+        if(!tipos.includes(clean)){ tipos.push(clean); saveKey('tipos', tipos); }
+        populateTipoSelect();
+        $('#f_tipo').value = clean;
+      } else {
+        e.target.value = '';
+      }
+    }
+  });
+
+  function populateUnidadeSelect(){
+    const sel = $('#f_unidade');
+    sel.innerHTML = unidades.map(u=>`<option value="${escapeHTML(u)}">${escapeHTML(u)}</option>`).join('') + '<option value="__novo__">+ Nova unidade...</option>';
+  }
+  $('#f_unidade').addEventListener('change', (e)=>{
+    if(e.target.value === '__novo__'){
+      const nu = prompt('Nome da nova unidade (ex: caixa, viagem):');
+      if(nu && nu.trim()){
+        const clean = nu.trim();
+        if(!unidades.includes(clean)){ unidades.push(clean); saveKey('unidades', unidades); }
+        populateUnidadeSelect();
+        $('#f_unidade').value = clean;
+      } else {
+        $('#f_unidade').value = 'und';
+      }
+    }
+    $('#f_unidade').classList.remove('hint-highlight');
+    $('#unidadeHint').style.display = 'none';
+  });
+
+  $('#f_qtd').addEventListener('input', ()=>{
+    $('#f_qtd').classList.remove('hint-highlight');
+    $('#qtdHint').style.display = 'none';
+  });
+
+  function updateDateHint(){
+    const hint = $('#dateHint');
+    if(!hint) return;
+    const val = $('#f_data').value;
+    if(val === todayStr()){
+      hint.textContent = 'Hoje — toque para escolher outra data';
+      hint.classList.add('is-today');
+    } else if(val){
+      hint.textContent = parseDateLocal(val).toLocaleDateString('pt-BR', {weekday:'long', day:'2-digit', month:'long'});
+      hint.classList.remove('is-today');
+    } else {
+      hint.textContent = '';
+    }
+  }
+  $('#f_data').addEventListener('change', updateDateHint);
+
+  function setSocio(name){
+    selectedSocio = name;
+    $all('#socioToggle button').forEach(b => b.classList.toggle('active', b.dataset.socio === name));
+  }
+  $all('#socioToggle button').forEach(btn=>{
+    btn.addEventListener('click', ()=> setSocio(btn.dataset.socio));
+  });
+
+  const form = $('#entryForm');
+  function resetForm(){
+    form.reset();
+    $('#f_data').value = todayStr();
+    updateDateHint();
+    $('#f_qtd').value = 1;
+    $('#f_qtd').classList.add('hint-highlight');
+    $('#qtdHint').style.display = 'block';
+    $('#f_unidade').value = 'und';
+    $('#f_unidade').classList.add('hint-highlight');
+    $('#unidadeHint').style.display = 'block';
+    editingId = null;
+    setSocio('Pedro');
+    $('#addTitle').textContent = 'Adicionar';
+    $('#saveEntryBtn').textContent = 'Salvar lançamento';
+    $('#cancelEditBtn').style.display = 'none';
+    $('#existingNotesField').style.display = 'none';
+    $('#notaFieldLabel').textContent = 'Nota (opcional)';
+  }
+
+  form.addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    const nome = $('#f_nome').value.trim();
+    const data = $('#f_data').value;
+    const valor = $('#f_valor').value;
+    if(!nome || !data || valor === ''){
+      showToast('Preencha os campos obrigatórios.');
+      return;
+    }
+    const notaTxt = $('#f_nota').value.trim();
+    const payload = {
+      nome,
+      qtd: $('#f_qtd').value ? Number($('#f_qtd').value) : '',
+      unidade: $('#f_unidade').value.trim(),
+      data,
+      valor: Number(valor),
+      fornecedor: $('#f_fornecedor').value.trim(),
+      socio: selectedSocio,
+    };
+    if(addKind === 'caixa') payload.tipo = $('#f_tipo').value === '__novo__' ? '' : $('#f_tipo').value;
+
+    const list = addKind === 'caixa' ? caixaObra : empreiteiro;
+    const btn = $('#saveEntryBtn');
+    btn.textContent = 'Salvando...';
+
+    if(editingId){
+      const idx = list.findIndex(x=>x.id === editingId);
+      if(idx > -1){
+        list[idx] = {...list[idx], ...payload};
+        if(notaTxt) list[idx].notas = [...(list[idx].notas||[]), {id: uid('n'), texto: notaTxt, criadoEm: Date.now()}];
+      }
+      await saveKey(addKind === 'caixa' ? 'caixaObra' : 'empreiteiro', list);
+      showToast('Lançamento atualizado.');
+    } else {
+      const newEntry = {id: uid('e'), projectId: activeProjectId, criadoEm: Date.now(), notas: notaTxt ? [{id: uid('n'), texto: notaTxt, criadoEm: Date.now()}] : [], ...payload};
+      list.push(newEntry);
+      await saveKey(addKind === 'caixa' ? 'caixaObra' : 'empreiteiro', list);
+      showToast('Lançamento salvo.');
+    }
+    resetForm();
+    renderAll();
+    switchView('entries');
+    entriesKind = addKind;
+    entriesPage = 1;
+    $all('.segmented button[data-kind]').forEach(b=>b.classList.toggle('active', b.dataset.kind===addKind));
+    renderEntries();
+  });
+
+  $('#cancelEditBtn').addEventListener('click', ()=>{
+    resetForm();
+    switchView('entries');
+  });
+
+  // ---------- Entry detail modal ----------
+  function getList(kind){ return kind === 'caixa' ? caixaObra : empreiteiro; }
+
+  function openDetail(kind, id){
+    const list = getList(kind);
+    const e = list.find(x=>x.id === id);
+    if(!e) return;
+    activeModal = {kind, id};
+    const d = parseDateLocal(e.data);
+    const rows = [
+      ['Projeto', projName(e.projectId)],
+      ['Data', d.toLocaleDateString('pt-BR')],
+      ['Valor', fmtBRLFull(e.valor)],
+    ];
+    if(kind === 'caixa') rows.push(['Tipo', e.tipo || '—']);
+    rows.push(['Quantidade', e.qtd ? (e.qtd + (e.unidade ? ' ' + e.unidade : '')) : '—']);
+    rows.push(['Fornecedor', e.fornecedor || '—']);
+    rows.push(['Pago por sócio', e.socio || '—']);
+
+    $('#modalBody').innerHTML = `<h3 style="margin:0 0 12px; font-size:16px; text-transform:none; font-family:'Inter',sans-serif; font-weight:700;">${escapeHTML(e.nome)}</h3>` +
+      rows.map(r => `<div class="detail-row"><span class="k">${r[0]}</span><span class="v">${escapeHTML(r[1])}</span></div>`).join('');
+
+    renderModalNotes(e.notas || []);
+    $('#detailModal').classList.add('open');
+  }
+
+  function notesThreadHTML(notasList){
+    if(!notasList || notasList.length === 0){
+      return '<div style="font-size:12.5px; color:var(--ink-soft); padding:4px 0 8px;">Nenhuma nota ainda.</div>';
+    }
+    const sorted = [...notasList].sort((a,b)=>b.criadoEm-a.criadoEm);
+    return sorted.map(n => {
+      const dt = new Date(n.criadoEm);
+      return `<div class="n-item">
+        <div>${escapeHTML(n.texto)}</div>
+        <div class="n-item-actions">
+          <span class="n-ts">${dt.toLocaleDateString('pt-BR')} às ${dt.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</span>
+          <span class="n-actions">
+            <button class="n-edit" data-note-edit="${n.id}">Editar</button>
+            <button class="n-del" data-note-del="${n.id}">Excluir</button>
+          </span>
+        </div>
+      </div>`;
+    }).join('');
+  }
+  function attachNotesThreadHandlers(box, refBuilder){
+    box.querySelectorAll('[data-note-edit]').forEach(b=>{
+      b.addEventListener('click', ()=> editNoteRef(refBuilder(b.dataset.noteEdit)));
+    });
+    box.querySelectorAll('[data-note-del]').forEach(b=>{
+      b.addEventListener('click', ()=> deleteNoteRef(refBuilder(b.dataset.noteDel)));
+    });
+  }
+  function renderModalNotes(notasList){
+    const box = $('#modalNotes');
+    box.innerHTML = notesThreadHTML(notasList);
+    attachNotesThreadHandlers(box, (noteId)=>({origin: activeModal.kind, entryId: activeModal.id, noteId}));
+  }
+  function renderEditNotes(notasList){
+    const box = $('#editNotesList');
+    box.innerHTML = notesThreadHTML(notasList);
+    attachNotesThreadHandlers(box, (noteId)=>({origin: addKind, entryId: editingId, noteId}));
+  }
+
+  // ---------- Note edit/delete (works for standalone notes and notes attached to entries) ----------
+  function refreshNoteViewsFor(origin, entryId){
+    if(activeModal && activeModal.kind === origin && activeModal.id === entryId){
+      const list = getList(origin);
+      const entry = list.find(x=>x.id===entryId);
+      if(entry) renderModalNotes(entry.notas || []);
+    }
+    if(editingId === entryId && addKind === origin){
+      const list = getList(origin);
+      const entry = list.find(x=>x.id===entryId);
+      if(entry) renderEditNotes(entry.notas || []);
+    }
+  }
+  async function editNoteRef(ref){
+    let current, applyEdit;
+    if(ref.origin === 'standalone'){
+      const n = notes.find(x=>x.id===ref.id);
+      if(!n) return;
+      current = n.texto;
+      applyEdit = async (txt)=>{ n.texto = txt; await saveKey('notes', notes); };
+    } else {
+      const list = ref.origin === 'caixa' ? caixaObra : empreiteiro;
+      const entry = list.find(x=>x.id===ref.entryId);
+      if(!entry) return;
+      const n = (entry.notas||[]).find(x=>x.id===ref.noteId);
+      if(!n) return;
+      current = n.texto;
+      applyEdit = async (txt)=>{
+        n.texto = txt;
+        await saveKey(ref.origin === 'caixa' ? 'caixaObra' : 'empreiteiro', list);
+        refreshNoteViewsFor(ref.origin, ref.entryId);
+      };
+    }
+    const nt = prompt('Editar nota:', current);
+    if(nt === null) return;
+    const clean = nt.trim();
+    if(!clean) return;
+    await applyEdit(clean);
+    renderAll();
+    showToast('Nota atualizada.');
+  }
+
+  async function deleteNoteRef(ref){
+    if(!confirm('Excluir esta nota?')) return;
+    if(ref.origin === 'standalone'){
+      notes = notes.filter(x=>x.id!==ref.id);
+      await saveKey('notes', notes);
+    } else {
+      const list = ref.origin === 'caixa' ? caixaObra : empreiteiro;
+      const entry = list.find(x=>x.id===ref.entryId);
+      if(!entry) return;
+      entry.notas = (entry.notas||[]).filter(x=>x.id!==ref.noteId);
+      await saveKey(ref.origin === 'caixa' ? 'caixaObra' : 'empreiteiro', list);
+      refreshNoteViewsFor(ref.origin, ref.entryId);
+    }
+    renderAll();
+    showToast('Nota excluída.');
+  }
+
+  $('#modalAddNoteBtn').addEventListener('click', async ()=>{
+    if(!activeModal) return;
+    const input = $('#modalNoteInput');
+    const txt = input.value.trim();
+    if(!txt) return;
+    const list = getList(activeModal.kind);
+    const e = list.find(x=>x.id === activeModal.id);
+    if(!e) return;
+    e.notas = [...(e.notas||[]), {id: uid('n'), texto: txt, criadoEm: Date.now()}];
+    await saveKey(activeModal.kind === 'caixa' ? 'caixaObra' : 'empreiteiro', list);
+    input.value = '';
+    renderModalNotes(e.notas);
+    renderAll();
+    showToast('Nota adicionada.');
+  });
+
+  $all('[data-close]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      $('#'+btn.dataset.close).classList.remove('open');
+      if(btn.dataset.close === 'detailModal') activeModal = null;
+      if(btn.dataset.close === 'taskModal'){ activeTaskId = null; showTaskViewMode(); }
+    });
+  });
+  $all('.modal-overlay').forEach(ov=>{
+    ov.addEventListener('click', (e)=>{
+      if(e.target === ov){ ov.classList.remove('open'); activeModal=null; activeTaskId=null; showTaskViewMode(); }
+    });
+  });
+
+  $('#editEntryBtn').addEventListener('click', ()=>{
+    if(!activeModal) return;
+    const list = getList(activeModal.kind);
+    const e = list.find(x=>x.id === activeModal.id);
+    if(!e) return;
+    editingId = e.id;
+    addKind = activeModal.kind;
+    $all('.segmented button[data-addkind]').forEach(b=>b.classList.toggle('active', b.dataset.addkind===addKind));
+    $('#tipoField').style.display = addKind === 'caixa' ? 'block' : 'none';
+    $('#f_nome').value = e.nome || '';
+    if(addKind === 'caixa') $('#f_tipo').value = e.tipo || '';
+    $('#f_qtd').value = e.qtd || '';
+    $('#f_qtd').classList.remove('hint-highlight');
+    $('#qtdHint').style.display = 'none';
+    $('#f_unidade').value = e.unidade || 'und';
+    $('#f_unidade').classList.remove('hint-highlight');
+    $('#unidadeHint').style.display = 'none';
+    $('#f_data').value = e.data || todayStr();
+    updateDateHint();
+    $('#f_valor').value = e.valor || '';
+    $('#f_fornecedor').value = e.fornecedor || '';
+    $('#f_nota').value = '';
+    setSocio(e.socio || 'Pedro');
+    $('#addTitle').textContent = 'Editar lançamento';
+    $('#saveEntryBtn').textContent = 'Salvar alterações';
+    $('#cancelEditBtn').style.display = 'inline-flex';
+    $('#existingNotesField').style.display = 'block';
+    $('#notaFieldLabel').textContent = 'Adicionar nova nota (opcional)';
+    renderEditNotes(e.notas || []);
+    $('#detailModal').classList.remove('open');
+    switchView('add');
+  });
+
+  $('#deleteEntryBtn').addEventListener('click', async ()=>{
+    if(!activeModal) return;
+    if(!confirm('Excluir este lançamento? Essa ação não pode ser desfeita.')) return;
+    const key = activeModal.kind === 'caixa' ? 'caixaObra' : 'empreiteiro';
+    if(activeModal.kind === 'caixa') caixaObra = caixaObra.filter(x=>x.id !== activeModal.id);
+    else empreiteiro = empreiteiro.filter(x=>x.id !== activeModal.id);
+    await saveKey(key, activeModal.kind === 'caixa' ? caixaObra : empreiteiro);
+    $('#detailModal').classList.remove('open');
+    activeModal = null;
+    renderAll();
+    showToast('Lançamento excluído.');
+  });
+
+  // ---------- Tasks ----------
+  function populateTaskProjectSelect(){
+    const sel = $('#t_projeto');
+    sel.innerHTML = '<option value="">Geral (todos os projetos)</option>' + projects.map(p=>`<option value="${p.id}" ${p.id===activeProjectId?'selected':''}>${escapeHTML(p.name)}</option>`).join('');
+  }
+
+  function taskSort(a,b){
+    const prioRank = {alta:0, media:1, baixa:2};
+    const da = a.prazo || '9999-99-99';
+    const db = b.prazo || '9999-99-99';
+    if(da !== db) return da.localeCompare(db);
+    return (prioRank[a.prioridade]??1) - (prioRank[b.prioridade]??1);
+  }
+
+  function isOverdue(t){
+    if(!t.prazo || t.feito) return false;
+    return parseDateLocal(t.prazo) < new Date(new Date().setHours(0,0,0,0));
+  }
+  function isToday(t){
+    if(!t.prazo) return false;
+    const d = parseDateLocal(t.prazo);
+    const n = new Date();
+    return d.getFullYear()===n.getFullYear() && d.getMonth()===n.getMonth() && d.getDate()===n.getDate();
+  }
+
+  function taskRowHTML(t, mini){
+    const dueClass = isOverdue(t) ? 'overdue' : '';
+    let dueLabel = '';
+    if(t.prazo){
+      const d = parseDateLocal(t.prazo);
+      dueLabel = d.toLocaleDateString('pt-BR', {day:'2-digit', month:'2-digit'});
+    }
+    return `<div class="task-row ${t.feito?'done':''} ${mini?'task-mini':''}" data-id="${t.id}">
+      <div class="task-check" data-toggle="${t.id}"><svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg></div>
+      <div class="task-body">
+        <div class="t-txt">${escapeHTML(t.texto)}</div>
+        <div class="t-meta">
+          <span class="prio-dot prio-${t.prioridade}"></span>
+          ${dueLabel ? `<span class="t-due ${dueClass}">${dueLabel}</span>` : ''}
+          <span class="t-proj">${t.projectId ? escapeHTML(projName(t.projectId)) : 'Geral'}</span>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  function attachTaskHandlers(container){
+    container.querySelectorAll('[data-toggle]').forEach(el=>{
+      el.addEventListener('click', (ev)=>{
+        ev.stopPropagation();
+        quickToggleTask(el.dataset.toggle);
+      });
+    });
+    container.querySelectorAll('.task-row').forEach(row=>{
+      row.addEventListener('click', ()=> openTaskDetail(row.dataset.id));
+    });
+  }
+
+  async function quickToggleTask(id){
+    const t = tasks.find(x=>x.id===id);
+    if(!t) return;
+    t.feito = !t.feito;
+    await saveKey('tasks', tasks);
+    renderAll();
+  }
+
+  function renderTasks(){
+    const visible = tasks.filter(t => t.projectId === activeProjectId || !t.projectId);
+    const overdue = visible.filter(t => isOverdue(t)).sort(taskSort);
+    const today = visible.filter(t => !t.feito && !isOverdue(t) && isToday(t)).sort(taskSort);
+    const open = visible.filter(t => !t.feito && !isOverdue(t) && !isToday(t)).sort(taskSort);
+    const done = visible.filter(t => t.feito).sort((a,b)=> b.criadoEm - a.criadoEm);
+
+    const map = [['#tasksOverdue', overdue, 'Nenhuma tarefa atrasada.'], ['#tasksToday', today, 'Nada previsto para hoje.'], ['#tasksOpen', open, 'Nenhuma tarefa em aberto.'], ['#tasksDone', done, 'Nenhuma tarefa concluída ainda.']];
+    map.forEach(([sel, list, emptyMsg])=>{
+      const box = $(sel);
+      if(list.length === 0){ box.innerHTML = `<div class="empty-state" style="padding:16px;"><p class="hint">${emptyMsg}</p></div>`; return; }
+      box.innerHTML = list.map(t=>taskRowHTML(t,false)).join('');
+      attachTaskHandlers(box);
+    });
+  }
+
+  $('#saveTaskBtn').addEventListener('click', async ()=>{
+    const texto = $('#t_texto').value.trim();
+    if(!texto){ showToast('Escreva a tarefa primeiro.'); return; }
+    tasks.push({
+      id: uid('t'), feito:false, criadoEm: Date.now(),
+      texto,
+      prazo: $('#t_prazo').value || '',
+      prioridade: $('#t_prioridade').value,
+      projectId: $('#t_projeto').value || null,
+    });
+    await saveKey('tasks', tasks);
+    $('#t_texto').value = '';
+    $('#t_prazo').value = '';
+    $('#t_prioridade').value = 'media';
+    $('#t_projeto').value = activeProjectId || '';
+    renderAll();
+    showToast('Tarefa adicionada.');
+  });
+
+  function showTaskViewMode(){
+    $('#taskViewMode').style.display = 'block';
+    $('#taskEditMode').style.display = 'none';
+    $('#taskModalTitle').textContent = 'Tarefa';
+  }
+
+  function openTaskDetail(id){
+    const t = tasks.find(x=>x.id===id);
+    if(!t) return;
+    activeTaskId = id;
+    showTaskViewMode();
+    const rows = [
+      ['Prioridade', {alta:'Alta',media:'Média',baixa:'Baixa'}[t.prioridade]],
+      ['Prazo', t.prazo ? parseDateLocal(t.prazo).toLocaleDateString('pt-BR') : 'Sem prazo'],
+      ['Projeto', t.projectId ? projName(t.projectId) : 'Geral'],
+      ['Status', t.feito ? 'Concluída' : 'Pendente'],
+    ];
+    $('#taskModalBody').innerHTML = `<h3 style="margin:0 0 12px; font-size:16px; text-transform:none; font-family:'Inter',sans-serif; font-weight:700;">${escapeHTML(t.texto)}</h3>` +
+      rows.map(r => `<div class="detail-row"><span class="k">${r[0]}</span><span class="v">${escapeHTML(r[1])}</span></div>`).join('');
+    $('#toggleTaskBtn').textContent = t.feito ? 'Reabrir tarefa' : 'Marcar como concluída';
+    $('#taskModal').classList.add('open');
+  }
+
+  $('#toggleTaskBtn').addEventListener('click', async ()=>{
+    if(!activeTaskId) return;
+    await quickToggleTask(activeTaskId);
+    $('#taskModal').classList.remove('open');
+    activeTaskId = null;
+  });
+
+  function populateTaskEditProjectSelect(selectedId){
+    const sel = $('#te_projeto');
+    sel.innerHTML = '<option value="">Geral (todos os projetos)</option>' + projects.map(p=>`<option value="${p.id}" ${p.id===selectedId?'selected':''}>${escapeHTML(p.name)}</option>`).join('');
+  }
+
+  $('#editTaskBtn').addEventListener('click', ()=>{
+    if(!activeTaskId) return;
+    const t = tasks.find(x=>x.id===activeTaskId);
+    if(!t) return;
+    $('#te_texto').value = t.texto || '';
+    $('#te_prazo').value = t.prazo || '';
+    $('#te_prioridade').value = t.prioridade || 'media';
+    populateTaskEditProjectSelect(t.projectId || '');
+    $('#taskModalTitle').textContent = 'Editar tarefa';
+    $('#taskViewMode').style.display = 'none';
+    $('#taskEditMode').style.display = 'block';
+  });
+
+  $('#taskEditCancelBtn').addEventListener('click', ()=>{
+    if(activeTaskId) openTaskDetail(activeTaskId);
+    else showTaskViewMode();
+  });
+
+  $('#taskEditSaveBtn').addEventListener('click', async ()=>{
+    if(!activeTaskId) return;
+    const texto = $('#te_texto').value.trim();
+    if(!texto){ showToast('Escreva a tarefa primeiro.'); return; }
+    const t = tasks.find(x=>x.id===activeTaskId);
+    if(!t) return;
+    t.texto = texto;
+    t.prazo = $('#te_prazo').value || '';
+    t.prioridade = $('#te_prioridade').value;
+    t.projectId = $('#te_projeto').value || null;
+    await saveKey('tasks', tasks);
+    $('#taskModal').classList.remove('open');
+    activeTaskId = null;
+    renderAll();
+    showToast('Tarefa atualizada.');
+  });
+
+  $('#deleteTaskBtn').addEventListener('click', async ()=>{
+    if(!activeTaskId) return;
+    if(!confirm('Excluir esta tarefa?')) return;
+    tasks = tasks.filter(x=>x.id !== activeTaskId);
+    await saveKey('tasks', tasks);
+    $('#taskModal').classList.remove('open');
+    activeTaskId = null;
+    renderAll();
+    showToast('Tarefa excluída.');
+  });
+
+  // ---------- Notes feed ----------
+  $('#saveNoteBtn').addEventListener('click', async ()=>{
+    const txt = $('#noteInput').value.trim();
+    if(!txt){ showToast('Escreva algo antes de salvar.'); return; }
+    notes.push({id: uid('sn'), projectId: activeProjectId, texto: txt, criadoEm: Date.now()});
+    await saveKey('notes', notes);
+    $('#noteInput').value = '';
+    notesPage = 1;
+    renderAll();
+    showToast('Nota adicionada.');
+  });
+
+  function dateGroupLabel(ts){
+    const d = new Date(ts);
+    const n = new Date();
+    const dOnly = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    const nOnly = new Date(n.getFullYear(), n.getMonth(), n.getDate()).getTime();
+    const diffDays = Math.round((nOnly - dOnly) / 86400000);
+    if(diffDays === 0) return 'Hoje';
+    if(diffDays === 1) return 'Ontem';
+    if(diffDays > 1 && diffDays < 7) return WEEKDAYS[d.getDay()];
+    return d.toLocaleDateString('pt-BR', {day:'2-digit', month:'long', year: d.getFullYear()!==n.getFullYear() ? 'numeric' : undefined});
+  }
+
+  const NOTES_PAGE_SIZE = 60;
+  let notesPage = 1;
+
+  function renderNotesFeed(){
+    const items = [];
+    projEntries(notes).forEach(n => items.push({texto:n.texto, criadoEm:n.criadoEm, origin:'Nota geral', entryRef:null, ref:{origin:'standalone', id:n.id}}));
+    projEntries(caixaObra).forEach(e => (e.notas||[]).forEach(n => items.push({texto:n.texto, criadoEm:n.criadoEm, origin:'Caixa da obra: ' + e.nome, entryRef:{kind:'caixa', id:e.id}, ref:{origin:'caixa', entryId:e.id, noteId:n.id}})));
+    projEntries(empreiteiro).forEach(e => (e.notas||[]).forEach(n => items.push({texto:n.texto, criadoEm:n.criadoEm, origin:'Empreiteiro: ' + e.nome, entryRef:{kind:'emp', id:e.id}, ref:{origin:'emp', entryId:e.id, noteId:n.id}})));
+    items.sort((a,b)=> b.criadoEm - a.criadoEm);
+
+    const box = $('#notesFeed');
+    if(items.length === 0){
+      box.innerHTML = emptyStateHTML('Nenhuma nota ainda.', 'Escreva acima para adicionar a primeira.');
+      return;
+    }
+
+    // Same pagination approach as Lançamentos: render only what's visible, load more on demand.
+    const visibleCount = Math.min(notesPage * NOTES_PAGE_SIZE, items.length);
+    let html = '';
+    let lastLabel = null;
+    for(let idx=0; idx<visibleCount; idx++){
+      const it = items[idx];
+      const label = dateGroupLabel(it.criadoEm);
+      if(label !== lastLabel){ html += `<div class="date-group-header">${label}</div>`; lastLabel = label; }
+      const dt = new Date(it.criadoEm);
+      const ts = dt.toLocaleTimeString('pt-BR', {hour:'2-digit', minute:'2-digit'});
+      html += `<div class="note-card">
+        <div class="txt">${escapeHTML(it.texto)}</div>
+        <div class="meta-row">
+          <span class="ts">${ts}</span>
+          <span class="origin" ${it.entryRef ? `data-ref-kind="${it.entryRef.kind}" data-ref-id="${it.entryRef.id}"` : ''}>${escapeHTML(it.origin)}</span>
+        </div>
+        <div class="note-actions">
+          <button class="n-edit" data-feed-idx="${idx}">Editar</button>
+          <button class="n-del" data-feed-idx="${idx}">Excluir</button>
+        </div>
+      </div>`;
+    }
+    if(visibleCount < items.length){
+      html += `<button class="btn btn-ghost btn-block" id="loadMoreNotesBtn" style="margin-top:4px;">Carregar mais (${items.length - visibleCount} restantes)</button>`;
+    }
+    box.innerHTML = html;
+    box.querySelectorAll('.origin[data-ref-id]').forEach(el=>{
+      el.addEventListener('click', ()=> openDetail(el.dataset.refKind, el.dataset.refId));
+    });
+    box.querySelectorAll('.n-edit[data-feed-idx]').forEach(el=>{
+      el.addEventListener('click', ()=> editNoteRef(items[Number(el.dataset.feedIdx)].ref));
+    });
+    box.querySelectorAll('.n-del[data-feed-idx]').forEach(el=>{
+      el.addEventListener('click', ()=> deleteNoteRef(items[Number(el.dataset.feedIdx)].ref));
+    });
+    const loadMoreNotesBtn = $('#loadMoreNotesBtn');
+    if(loadMoreNotesBtn){
+      loadMoreNotesBtn.addEventListener('click', ()=>{
+        notesPage += 1;
+        renderNotesFeed();
+      });
+    }
+  }
+
+  // ---------- Settings ----------
+  $('#settingsBtn').addEventListener('click', ()=>{
+    renderSettingsProjects();
+    $('#settingsModal').classList.add('open');
+  });
+  function renderSettingsProjects(){
+    const box = $('#settingsProjects');
+    box.innerHTML = projects.map(p => `<div class="proj-row"><span class="pname"><span class="proj-dot-inline"></span>${escapeHTML(p.name)}</span><button data-rename="${p.id}">Renomear</button></div>`).join('');
+    box.querySelectorAll('[data-rename]').forEach(btn=>{
+      btn.addEventListener('click', async ()=>{
+        const p = projects.find(x=>x.id===btn.dataset.rename);
+        if(!p) return;
+        const nn = prompt('Novo nome do projeto:', p.name);
+        if(nn && nn.trim()){
+          p.name = nn.trim();
+          await saveKey('projects', projects);
+          renderSettingsProjects();
+          renderProjectPills();
+          renderAll();
+          showToast('Projeto atualizado.');
+        }
+      });
+    });
+  }
+  $('#addProjectBtn').addEventListener('click', async ()=>{
+    const nn = prompt('Nome do novo projeto:');
+    if(nn && nn.trim()){
+      const np = {id: uid('p'), name: nn.trim()};
+      projects.push(np);
+      await saveKey('projects', projects);
+      activeProjectId = np.id;
+      await saveKey('activeProjectId', activeProjectId);
+      renderSettingsProjects();
+      renderProjectPills();
+      populateTaskProjectSelect();
+      renderAll();
+      showToast('Projeto adicionado.');
+    }
+  });
+
+  // ---------- Excel export ----------
+  function notesToText(list){
+    if(!list || list.length===0) return '';
+    return list.map(n=>{
+      const d = new Date(n.criadoEm);
+      return '[' + d.toLocaleDateString('pt-BR') + '] ' + n.texto;
+    }).join(' | ');
+  }
+
+  $('#exportExcelBtn').addEventListener('click', ()=>{
+    if(typeof XLSX === 'undefined'){ showToast('Não foi possível carregar o gerador de Excel.'); return; }
+    const wb = XLSX.utils.book_new();
+
+    const projRows = [['ID','Nome']].concat(projects.map(p=>[p.id, p.name]));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(projRows), 'Projetos');
+
+    const caixaHead = ['Projeto','Data','Nome','Tipo','Quantidade','Unidade','Valor','Fornecedor','Pago por Socio','Notas'];
+    const caixaRows = [caixaHead].concat(caixaObra.map(e=>[projName(e.projectId), e.data, e.nome, e.tipo||'', e.qtd||'', e.unidade||'', e.valor||0, e.fornecedor||'', e.socio||'', notesToText(e.notas)]));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(caixaRows), 'Caixa da Obra');
+
+    const empHead = ['Projeto','Data','Nome','Quantidade','Unidade','Valor','Fornecedor','Pago por Socio','Notas'];
+    const empRows = [empHead].concat(empreiteiro.map(e=>[projName(e.projectId), e.data, e.nome, e.qtd||'', e.unidade||'', e.valor||0, e.fornecedor||'', e.socio||'', notesToText(e.notas)]));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(empRows), 'Empreiteiro');
+
+    const taskHead = ['Projeto','Tarefa','Prazo','Prioridade','Status','Criado em'];
+    const taskRows = [taskHead].concat(tasks.map(t=>[t.projectId?projName(t.projectId):'Geral', t.texto, t.prazo||'', t.prioridade, t.feito?'Concluída':'Pendente', new Date(t.criadoEm).toLocaleString('pt-BR')]));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(taskRows), 'Tarefas');
+
+    const noteHead = ['Projeto','Data','Nota','Origem'];
+    const noteRows = [noteHead];
+    notes.forEach(n=> noteRows.push([projName(n.projectId), new Date(n.criadoEm).toLocaleString('pt-BR'), n.texto, 'Geral']));
+    caixaObra.forEach(e => (e.notas||[]).forEach(n => noteRows.push([projName(e.projectId), new Date(n.criadoEm).toLocaleString('pt-BR'), n.texto, 'Caixa da Obra: ' + e.nome])));
+    empreiteiro.forEach(e => (e.notas||[]).forEach(n => noteRows.push([projName(e.projectId), new Date(n.criadoEm).toLocaleString('pt-BR'), n.texto, 'Empreiteiro: ' + e.nome])));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(noteRows), 'Notas');
+
+    const tiposRows = [['Tipo']].concat(tipos.map(t=>[t]));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(tiposRows), 'Tipos de Despesa');
+
+    const unidadesRows = [['Unidade']].concat(unidades.map(u=>[u]));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(unidadesRows), 'Unidades');
+
+    XLSX.writeFile(wb, 'construtora_moreira.xlsx');
+    showToast('Excel exportado.');
+  });
+
+  // ---------- Init render ----------
+  function renderAll(){
+    renderDashboard();
+    renderEntries();
+    renderTasks();
+    renderNotesFeed();
+  }
+
+  loadAll();
+})();
+</script>
+</body>
+</html>
