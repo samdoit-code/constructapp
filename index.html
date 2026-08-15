@@ -305,6 +305,17 @@
   .add-note-row input{flex:1; padding:11px 12px; border-radius:10px; border:1.5px solid var(--line); font-size:13.5px; font-family:'Inter',sans-serif;}
   .add-note-row button{flex:0 0 auto;}
 
+  /* Photos (receipts) */
+  .photo-pick-btn{display:inline-flex; align-items:center; gap:7px; cursor:pointer; width:auto;}
+  .photo-pick-btn svg{width:16px;height:16px; stroke:var(--ink-soft); fill:none; stroke-width:1.8; stroke-linejoin:round;}
+  .photo-thumbs{display:flex; flex-wrap:wrap; gap:9px; margin-top:10px;}
+  .photo-thumbs:empty{margin-top:0;}
+  .photo-thumb{position:relative; width:68px; height:68px; border-radius:11px; overflow:hidden; border:1.5px solid var(--line); cursor:pointer; background:var(--paper-2);}
+  .photo-thumb img{width:100%; height:100%; object-fit:cover; display:block;}
+  .photo-thumb .photo-del{position:absolute; top:3px; right:3px; width:19px; height:19px; border-radius:50%; background:rgba(33,29,25,0.72); border:none; display:flex; align-items:center; justify-content:center; cursor:pointer; padding:0;}
+  .photo-thumb .photo-del svg{width:10px;height:10px; stroke:#fff; stroke-width:3;}
+  .photo-thumb .photo-spinner{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:9.5px; color:var(--ink-soft); background:var(--paper-2);}
+
   /* Tasks */
   .task-row{
     background:var(--card); border:1px solid var(--line); border-radius:12px;
@@ -546,15 +557,13 @@
           <label>&nbsp;</label>
         </div>
       </div>
-      <div class="row2">
-        <div class="field">
-          <label>De</label>
-          <input type="date" id="filterDataDe">
-        </div>
-        <div class="field">
-          <label>Até</label>
-          <input type="date" id="filterDataAte">
-        </div>
+      <div class="field">
+        <label>De</label>
+        <input type="date" id="filterDataDe">
+      </div>
+      <div class="field">
+        <label>Até</label>
+        <input type="date" id="filterDataAte">
       </div>
     </div>
     <div class="total-strip">
@@ -598,16 +607,14 @@
             <div class="mini-hint" id="unidadeHint">Padrão: und — toque para alterar</div>
           </div>
         </div>
-        <div class="row2">
-          <div class="field">
-            <label>Data <span class="req">*</span></label>
-            <input type="date" id="f_data" required>
-            <div class="date-hint" id="dateHint"></div>
-          </div>
-          <div class="field">
-            <label>Valor (R$) <span class="req">*</span></label>
-            <input type="number" id="f_valor" placeholder="0,00" step="0.01" inputmode="decimal" required>
-          </div>
+        <div class="field">
+          <label>Data <span class="req">*</span></label>
+          <input type="date" id="f_data" required>
+          <div class="date-hint" id="dateHint"></div>
+        </div>
+        <div class="field">
+          <label>Valor (R$) <span class="req">*</span></label>
+          <input type="number" id="f_valor" placeholder="0,00" step="0.01" inputmode="decimal" required>
         </div>
         <div class="field">
           <label>Fornecedor / trabalhador</label>
@@ -628,6 +635,15 @@
           <label id="notaFieldLabel">Nota (opcional)</label>
           <textarea id="f_nota" placeholder="Alguma observação sobre esse lançamento?"></textarea>
         </div>
+        <div class="field">
+          <label>Foto do recibo (opcional)</label>
+          <label for="formPhotoInput" class="btn btn-ghost btn-sm photo-pick-btn">
+            <svg viewBox="0 0 24 24"><path d="M4 8a2 2 0 012-2h1.2a1 1 0 00.9-.55L8.7 4.1A1 1 0 019.6 3.5h4.8a1 1 0 01.9.6l.6 1.35a1 1 0 00.9.55H18a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V8z"/><circle cx="12" cy="13" r="3.3"/></svg>
+            Adicionar foto
+          </label>
+          <input type="file" id="formPhotoInput" accept="image/*" capture="environment" style="display:none;">
+          <div class="photo-thumbs" id="formPhotoThumbs"></div>
+        </div>
         <div class="form-actions">
           <button type="button" class="btn btn-ghost" id="cancelEditBtn" style="display:none;">Cancelar</button>
           <button type="submit" class="btn btn-primary btn-block" id="saveEntryBtn">Salvar lançamento</button>
@@ -644,19 +660,17 @@
         <label>Tarefa <span class="req">*</span></label>
         <input type="text" id="t_texto" placeholder="Ex: Ligar pro fornecedor de cimento">
       </div>
-      <div class="row2">
-        <div class="field">
-          <label>Prazo</label>
-          <input type="date" id="t_prazo">
-        </div>
-        <div class="field">
-          <label>Prioridade</label>
-          <select id="t_prioridade">
-            <option value="media" selected>Média</option>
-            <option value="alta">Alta</option>
-            <option value="baixa">Baixa</option>
-          </select>
-        </div>
+      <div class="field">
+        <label>Prazo</label>
+        <input type="date" id="t_prazo">
+      </div>
+      <div class="field">
+        <label>Prioridade</label>
+        <select id="t_prioridade">
+          <option value="media" selected>Média</option>
+          <option value="alta">Alta</option>
+          <option value="baixa">Baixa</option>
+        </select>
       </div>
       <div class="field">
         <label>Projeto</label>
@@ -730,9 +744,30 @@
         <button class="btn btn-primary btn-sm" id="modalAddNoteBtn">Add</button>
       </div>
     </div>
+    <div style="margin-top:16px;">
+      <label style="display:block; font-size:12.5px; font-weight:600; color:var(--ink-soft); margin-bottom:8px;">Fotos do recibo</label>
+      <div class="photo-thumbs" id="modalPhotoThumbs"></div>
+      <label for="modalPhotoInput" class="btn btn-ghost btn-sm photo-pick-btn" style="margin-top:8px;">
+        <svg viewBox="0 0 24 24"><path d="M4 8a2 2 0 012-2h1.2a1 1 0 00.9-.55L8.7 4.1A1 1 0 019.6 3.5h4.8a1 1 0 01.9.6l.6 1.35a1 1 0 00.9.55H18a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V8z"/><circle cx="12" cy="13" r="3.3"/></svg>
+        Adicionar foto
+      </label>
+      <input type="file" id="modalPhotoInput" accept="image/*" capture="environment" style="display:none;">
+    </div>
     <div class="form-actions" style="margin-top:16px;">
       <button class="btn btn-danger" id="deleteEntryBtn">Excluir</button>
       <button class="btn btn-secondary btn-block" id="editEntryBtn">Editar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Photo lightbox viewer -->
+<div class="modal-overlay center-modal" id="photoViewModal">
+  <div style="width:100%; max-width:420px;">
+    <div id="photoViewLoading" style="text-align:center; color:#fff; font-size:13.5px; padding:20px;">Carregando...</div>
+    <img id="photoViewImg" src="" style="display:none; width:100%; max-height:78vh; object-fit:contain; border-radius:12px;">
+    <div class="form-actions" style="margin-top:14px;">
+      <button class="btn btn-danger" id="photoViewDeleteBtn">Excluir foto</button>
+      <button class="btn btn-ghost btn-block" data-close="photoViewModal" style="background:rgba(255,255,255,0.92);">Fechar</button>
     </div>
   </div>
 </div>
@@ -800,7 +835,7 @@
     <div class="settings-block">
       <h3>DADOS</h3>
       <button class="btn btn-secondary btn-block" id="exportExcelBtn">Exportar tudo para Excel</button>
-      <div class="storage-note">Os dados ficam salvos neste dispositivo/conta. A sincronização automática com o Google Sheets será adicionada na próxima etapa — por enquanto, use o Excel exportado para colar na planilha.</div>
+      <div class="storage-note">Os dados (incluindo fotos de recibo) ficam salvos nesta conta/dispositivo. A sincronização automática com Google Sheets e Google Drive será adicionada na próxima etapa — por enquanto, use o Excel exportado para colar na planilha.</div>
     </div>
   </div>
 </div>
@@ -871,6 +906,7 @@
   let activeModal = null; // {kind, id}
   let activeTaskId = null;
   let filters = {fornecedor:'', tipo:'', socio:'', de:'', ate:''};
+  let draftFotos = []; // {id, criadoEm} — photos attached to a NEW (not yet saved) entry
 
   const DEFAULT_TIPOS = ['Material de Construção','Ferramentas & Equipamento','Mão de obra avulsa','Transporte','Taxas & Documentação','Alimentação','Contas & Utilidades','Outros'];
   const DEFAULT_UNIDADES = ['und','barra','hora','lts','kg','m','m2','m3','pacote','ton','rl','bd','grama'];
@@ -899,6 +935,21 @@
   function escapeHTML(s){
     if(s === undefined || s === null) return '';
     return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  // Nome/Fornecedor are stored lowercase so filters and search stay consistent
+  // no matter how they were typed (dad types in all caps) — displayed capitalized instead.
+  function normStore(s){
+    return (s || '').trim().toLowerCase();
+  }
+  function toDisplayCase(s){
+    if(!s) return s;
+    // Capitalize the first character of each space-separated word. Avoids using
+    // regex \b (which is ASCII-only in JS and mangles accented chars like "ó").
+    return s.split(' ').map(w => w ? w.charAt(0).toUpperCase() + w.slice(1) : w).join(' ');
+  }
+  function caseInsensitiveMatch(list, value){
+    const lower = (value||'').trim().toLowerCase();
+    return list.find(x => x.toLowerCase() === lower);
   }
   function projName(id){
     const p = projects.find(x=>x.id===id);
@@ -939,6 +990,45 @@
       showToast('Erro ao salvar. Tente novamente.');
       return false;
     }
+  }
+  async function deleteKey(key){
+    try{ await window.storage.delete(key, false); }catch(e){ /* fine if it never existed */ }
+  }
+
+  // ---------- Photos (receipt attachments) ----------
+  // Photos are compressed client-side and stored under their own key (photo_<id>),
+  // NOT inside the caixaObra/empreiteiro arrays — a single lançamento list already
+  // holds thousands of records; embedding images there would blow past the 5MB
+  // per-key ceiling almost immediately. Each entry just keeps {id, criadoEm} refs.
+  function compressImageFile(file, maxDim, quality){
+    maxDim = maxDim || 1150;
+    quality = quality || 0.68;
+    return new Promise((resolve, reject)=>{
+      const reader = new FileReader();
+      reader.onload = (ev)=>{
+        const img = new Image();
+        img.onload = ()=>{
+          let w = img.width, h = img.height;
+          // Bound the LARGER dimension — a tall screenshot or a computer photo can be huge
+          // in either axis, not just width, so only checking width let some slip through uncompressed.
+          const scale = Math.min(1, maxDim / Math.max(w, h));
+          w = Math.max(1, Math.round(w * scale));
+          h = Math.max(1, Math.round(h * scale));
+          const canvas = document.createElement('canvas');
+          canvas.width = w; canvas.height = h;
+          canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+          resolve(canvas.toDataURL('image/jpeg', quality));
+        };
+        img.onerror = ()=> reject(new Error('img-load-failed'));
+        img.src = ev.target.result;
+      };
+      reader.onerror = ()=> reject(new Error('file-read-failed'));
+      reader.readAsDataURL(file);
+    });
+  }
+  async function deletePhotoBlobs(fotos){
+    if(!fotos || !fotos.length) return;
+    for(const f of fotos){ await deleteKey('photo_' + f.id); }
   }
 
   async function loadAll(){
@@ -1162,14 +1252,15 @@
   function entryCardHTML(e){
     const d = parseDateLocal(e.data);
     const metaParts = [];
-    if(e.fornecedor) metaParts.push(e.fornecedor);
+    if(e.fornecedor) metaParts.push(toDisplayCase(e.fornecedor));
     if(e.qtd) metaParts.push(e.qtd + (e.unidade ? ' ' + e.unidade : ''));
     const noteCount = (e.notas||[]).length;
+    const photoCount = (e.fotos||[]).length;
     return `<div class="entry-card" data-id="${e.id}" data-kind="${e.kind}">
       <div class="datechip"><div class="d">${d.getDate()}</div><div class="m">${MONTHS[d.getMonth()]}</div></div>
       <div class="info">
-        <div class="nome">${escapeHTML(e.nome)}${e.kind==='caixa' && e.tipo ? `<span class="tag">${escapeHTML(e.tipo)}</span>` : ''}</div>
-        <div class="meta">${escapeHTML(metaParts.join(' · ') || '—')} ${noteCount ? `<span class="notedot"><svg viewBox="0 0 24 24"><path d="M4 4h16v13H8l-4 4V4z"/></svg>${noteCount}</span>` : ''}</div>
+        <div class="nome">${escapeHTML(toDisplayCase(e.nome))}${e.kind==='caixa' && e.tipo ? `<span class="tag">${escapeHTML(e.tipo)}</span>` : ''}</div>
+        <div class="meta">${escapeHTML(metaParts.join(' · ') || '—')} ${noteCount ? `<span class="notedot"><svg viewBox="0 0 24 24"><path d="M4 4h16v13H8l-4 4V4z"/></svg>${noteCount}</span>` : ''} ${photoCount ? `<span class="notedot"><svg viewBox="0 0 24 24"><path d="M4 8a2 2 0 012-2h1.2a1 1 0 00.9-.55L8.7 4.1A1 1 0 019.6 3.5h4.8a1 1 0 01.9.6l.6 1.35a1 1 0 00.9.55H18a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V8z"/><circle cx="12" cy="13" r="3.3"/></svg>${photoCount}</span>` : ''}</div>
       </div>
       <div class="valor">${fmtBRL(e.valor)}<span class="who">${e.socio||''}</span></div>
     </div>`;
@@ -1180,9 +1271,9 @@
     const dateStr = String(d.getDate()).padStart(2,'0') + '/' + String(d.getMonth()+1).padStart(2,'0');
     return `<div class="entry-table-row" data-id="${e.id}" data-kind="${e.kind}">
       <span class="etr-date">${dateStr}</span>
-      <span class="etr-name">${escapeHTML(e.nome)}</span>
+      <span class="etr-name">${escapeHTML(toDisplayCase(e.nome))}</span>
       <span class="etr-und">${escapeHTML(e.unidade || '—')}</span>
-      <span class="etr-forn">${escapeHTML(e.fornecedor || '—')}</span>
+      <span class="etr-forn">${escapeHTML(toDisplayCase(e.fornecedor) || '—')}</span>
       <span class="etr-valor">${fmtBRL(e.valor)}</span>
     </div>`;
   }
@@ -1263,7 +1354,7 @@
     const fornecedores = Array.from(new Set(list.map(e=>e.fornecedor).filter(Boolean))).sort((a,b)=>a.localeCompare(b, 'pt-BR'));
     const selF = $('#filterFornecedor');
     const curF = selF.value;
-    selF.innerHTML = '<option value="">Todos</option>' + fornecedores.map(f=>`<option value="${escapeHTML(f)}">${escapeHTML(f)}</option>`).join('');
+    selF.innerHTML = '<option value="">Todos</option>' + fornecedores.map(f=>`<option value="${escapeHTML(f)}">${escapeHTML(toDisplayCase(f))}</option>`).join('');
     if(fornecedores.includes(curF)) selF.value = curF; else { selF.value=''; filters.fornecedor=''; }
 
     $('#filterTipoField').style.display = entriesKind === 'caixa' ? 'block' : 'none';
@@ -1347,9 +1438,11 @@
     if(e.target.value === '__novo__'){
       const nt = await showPrompt('', {title:'Novo tipo de despesa', placeholder:'Ex: Aluguel de equipamento'});
       if(nt){
-        if(!tipos.includes(nt)){ tipos.push(nt); saveKey('tipos', tipos); }
+        const existing = caseInsensitiveMatch(tipos, nt);
+        const finalValue = existing || toDisplayCase(nt.trim());
+        if(!existing){ tipos.push(finalValue); saveKey('tipos', tipos); }
         populateTipoSelect();
-        $('#f_tipo').value = nt;
+        $('#f_tipo').value = finalValue;
       } else {
         e.target.value = '';
       }
@@ -1364,9 +1457,11 @@
     if(e.target.value === '__novo__'){
       const nu = await showPrompt('', {title:'Nova unidade', placeholder:'Ex: caixa, viagem'});
       if(nu){
-        if(!unidades.includes(nu)){ unidades.push(nu); saveKey('unidades', unidades); }
+        const existing = caseInsensitiveMatch(unidades, nu);
+        const finalValue = existing || nu.trim().toLowerCase();
+        if(!existing){ unidades.push(finalValue); saveKey('unidades', unidades); }
         populateUnidadeSelect();
-        $('#f_unidade').value = nu;
+        $('#f_unidade').value = finalValue;
       } else {
         $('#f_unidade').value = 'und';
       }
@@ -1411,6 +1506,13 @@
 
   const form = $('#entryForm');
   function resetForm(){
+    // If there are unsaved draft photos (form abandoned without hitting Salvar),
+    // their blobs are orphaned in storage — clean them up now.
+    if(draftFotos.length){
+      const orphans = draftFotos;
+      draftFotos = [];
+      deletePhotoBlobs(orphans);
+    }
     form.reset();
     $('#f_data').value = todayStr();
     updateDateHint();
@@ -1427,11 +1529,12 @@
     $('#cancelEditBtn').style.display = 'none';
     $('#existingNotesField').style.display = 'none';
     $('#notaFieldLabel').textContent = 'Nota (opcional)';
+    renderFormPhotoThumbs();
   }
 
   form.addEventListener('submit', async (e)=>{
     e.preventDefault();
-    const nome = $('#f_nome').value.trim();
+    const nome = normStore($('#f_nome').value);
     const data = $('#f_data').value;
     const valor = $('#f_valor').value;
     if(!nome || !data || valor === ''){
@@ -1445,7 +1548,7 @@
       unidade: $('#f_unidade').value.trim(),
       data,
       valor: Number(valor),
-      fornecedor: $('#f_fornecedor').value.trim(),
+      fornecedor: normStore($('#f_fornecedor').value),
       socio: selectedSocio,
     };
     if(addKind === 'caixa') payload.tipo = $('#f_tipo').value === '__novo__' ? '' : $('#f_tipo').value;
@@ -1463,9 +1566,10 @@
       await saveKey(addKind === 'caixa' ? 'caixaObra' : 'empreiteiro', list);
       showToast('Lançamento atualizado.');
     } else {
-      const newEntry = {id: uid('e'), projectId: activeProjectId, criadoEm: Date.now(), notas: notaTxt ? [{id: uid('n'), texto: notaTxt, criadoEm: Date.now()}] : [], ...payload};
+      const newEntry = {id: uid('e'), projectId: activeProjectId, criadoEm: Date.now(), notas: notaTxt ? [{id: uid('n'), texto: notaTxt, criadoEm: Date.now()}] : [], fotos: draftFotos.slice(), ...payload};
       list.push(newEntry);
       await saveKey(addKind === 'caixa' ? 'caixaObra' : 'empreiteiro', list);
+      draftFotos = []; // now owned by the saved entry — clear without deleting their blobs
       showToast('Lançamento salvo.');
     }
     resetForm();
@@ -1498,13 +1602,14 @@
     ];
     if(kind === 'caixa') rows.push(['Tipo', e.tipo || '—']);
     rows.push(['Quantidade', e.qtd ? (e.qtd + (e.unidade ? ' ' + e.unidade : '')) : '—']);
-    rows.push(['Fornecedor', e.fornecedor || '—']);
+    rows.push(['Fornecedor', toDisplayCase(e.fornecedor) || '—']);
     rows.push(['Pago por sócio', e.socio || '—']);
 
-    $('#modalBody').innerHTML = `<h3 style="margin:0 0 12px; font-size:16px; text-transform:none; font-family:'Inter',sans-serif; font-weight:700;">${escapeHTML(e.nome)}</h3>` +
+    $('#modalBody').innerHTML = `<h3 style="margin:0 0 12px; font-size:16px; text-transform:none; font-family:'Inter',sans-serif; font-weight:700;">${escapeHTML(toDisplayCase(e.nome))}</h3>` +
       rows.map(r => `<div class="detail-row"><span class="k">${r[0]}</span><span class="v">${escapeHTML(r[1])}</span></div>`).join('');
 
     renderModalNotes(e.notas || []);
+    renderModalPhotoThumbs(e.fotos || []);
     $('#detailModal').classList.add('open');
   }
 
@@ -1545,6 +1650,175 @@
     box.innerHTML = notesThreadHTML(notasList);
     attachNotesThreadHandlers(box, (noteId)=>({origin: addKind, entryId: editingId, noteId}));
   }
+
+  // ---------- Photo thumbnails (shared renderer for form + detail modal) ----------
+  async function renderPhotoThumbs(containerEl, fotos, ctx){
+    if(!containerEl) return;
+    if(!fotos || fotos.length === 0){ containerEl.innerHTML = ''; return; }
+    containerEl.innerHTML = fotos.map(f=>`<div class="photo-thumb" data-photo-id="${escapeHTML(f.id)}"><div class="photo-spinner">...</div></div>`).join('');
+    for(const f of fotos){
+      const dataUrl = f.dataUrl || await loadKey('photo_' + f.id, null);
+      const el = containerEl.querySelector(`[data-photo-id="${CSS.escape(f.id)}"]`);
+      if(!el) continue; // container was re-rendered while this was loading
+      if(!dataUrl){ el.innerHTML = '<div class="photo-spinner">Erro</div>'; continue; }
+      el.innerHTML = `<img src="${dataUrl}" alt="Recibo" loading="lazy">` +
+        (ctx.deletable ? `<button type="button" class="photo-del" data-del="${escapeHTML(f.id)}"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>` : '');
+      el.addEventListener('click', (ev)=>{
+        if(ev.target.closest('.photo-del')) return;
+        ctx.onView(f.id, dataUrl);
+      });
+      const delBtn = el.querySelector('.photo-del');
+      if(delBtn){
+        delBtn.addEventListener('click', (ev)=>{ ev.stopPropagation(); ctx.onDelete(f.id); });
+      }
+    }
+  }
+
+  let photoViewDeleteHandler = null;
+  function openPhotoLightbox(photoId, dataUrl, onDelete){
+    $('#photoViewLoading').style.display = 'none';
+    const img = $('#photoViewImg');
+    img.src = dataUrl;
+    img.style.display = 'block';
+    photoViewDeleteHandler = onDelete;
+    $('#photoViewModal').classList.add('open');
+  }
+  $('#photoViewDeleteBtn').addEventListener('click', async ()=>{
+    if(!photoViewDeleteHandler) return;
+    const handler = photoViewDeleteHandler;
+    const ok = await showConfirm('Excluir esta foto? Essa ação não pode ser desfeita.', {title:'Excluir foto', okLabel:'Excluir'});
+    if(!ok) return;
+    $('#photoViewModal').classList.remove('open');
+    photoViewDeleteHandler = null;
+    await handler();
+  });
+
+  // --- Form (Add/Edit) photo context ---
+  function currentFormPhotos(){
+    if(editingId){
+      const entry = getList(addKind).find(x=>x.id===editingId);
+      return entry ? (entry.fotos||[]) : [];
+    }
+    return draftFotos;
+  }
+  function renderFormPhotoThumbs(){
+    renderPhotoThumbs($('#formPhotoThumbs'), currentFormPhotos(), {
+      deletable: true,
+      onView: (id, dataUrl)=> openPhotoLightbox(id, dataUrl, ()=> deleteFormPhotoNow(id)),
+      onDelete: (id)=> deleteFormPhotoWithConfirm(id),
+    });
+  }
+  async function deleteFormPhotoNow(id){
+    if(editingId){
+      const list = getList(addKind);
+      const entry = list.find(x=>x.id===editingId);
+      if(entry){
+        entry.fotos = (entry.fotos||[]).filter(f=>f.id!==id);
+        await saveKey(addKind==='caixa' ? 'caixaObra' : 'empreiteiro', list);
+      }
+    } else {
+      draftFotos = draftFotos.filter(f=>f.id!==id);
+    }
+    await deleteKey('photo_' + id);
+    renderFormPhotoThumbs();
+    renderAll();
+    showToast('Foto excluída.');
+  }
+  async function deleteFormPhotoWithConfirm(id){
+    const ok = await showConfirm('Excluir esta foto? Essa ação não pode ser desfeita.', {title:'Excluir foto', okLabel:'Excluir'});
+    if(!ok) return;
+    await deleteFormPhotoNow(id);
+  }
+  // Compress + save a photo, automatically retrying with much heavier compression
+  // if the first attempt fails (covers oversized source images — a computer photo
+  // or screenshot can be far bigger than what a phone camera capture produces).
+  async function processAndSavePhoto(file){
+    let dataUrl;
+    try{ dataUrl = await compressImageFile(file); }
+    catch(err){ console.error('photo compress error', err); throw new Error('process-failed'); }
+    const photoId = uid('ph');
+    let ok = await saveKey('photo_' + photoId, dataUrl);
+    if(!ok){
+      try{
+        dataUrl = await compressImageFile(file, 800, 0.5);
+        ok = await saveKey('photo_' + photoId, dataUrl);
+      }catch(err){ console.error('photo compress retry error', err); }
+    }
+    if(!ok) throw new Error('save-failed');
+    return photoId;
+  }
+  $('#formPhotoInput').addEventListener('change', async (e)=>{
+    const file = e.target.files[0];
+    e.target.value = '';
+    if(!file) return;
+    showToast('Processando foto...');
+    let photoId;
+    try{ photoId = await processAndSavePhoto(file); }
+    catch(err){
+      showToast(err.message === 'process-failed' ? 'Não consegui processar essa imagem.' : 'Não consegui salvar a foto. Tente uma imagem menor.');
+      return;
+    }
+    const meta = {id: photoId, criadoEm: Date.now()};
+    if(editingId){
+      const list = getList(addKind);
+      const entry = list.find(x=>x.id===editingId);
+      if(entry){
+        entry.fotos = [...(entry.fotos||[]), meta];
+        await saveKey(addKind==='caixa' ? 'caixaObra' : 'empreiteiro', list);
+      }
+    } else {
+      draftFotos.push(meta);
+    }
+    renderFormPhotoThumbs();
+    renderAll();
+    showToast('Foto adicionada.');
+  });
+
+  // --- Detail modal photo context ---
+  function renderModalPhotoThumbs(fotos){
+    renderPhotoThumbs($('#modalPhotoThumbs'), fotos || [], {
+      deletable: true,
+      onView: (id, dataUrl)=> openPhotoLightbox(id, dataUrl, ()=> deleteModalPhotoNow(id)),
+      onDelete: (id)=> deleteModalPhotoWithConfirm(id),
+    });
+  }
+  async function deleteModalPhotoNow(id){
+    if(!activeModal) return;
+    const list = getList(activeModal.kind);
+    const entry = list.find(x=>x.id===activeModal.id);
+    if(!entry) return;
+    entry.fotos = (entry.fotos||[]).filter(f=>f.id!==id);
+    await saveKey(activeModal.kind==='caixa' ? 'caixaObra' : 'empreiteiro', list);
+    await deleteKey('photo_' + id);
+    renderModalPhotoThumbs(entry.fotos);
+    renderAll();
+    showToast('Foto excluída.');
+  }
+  async function deleteModalPhotoWithConfirm(id){
+    const ok = await showConfirm('Excluir esta foto? Essa ação não pode ser desfeita.', {title:'Excluir foto', okLabel:'Excluir'});
+    if(!ok) return;
+    await deleteModalPhotoNow(id);
+  }
+  $('#modalPhotoInput').addEventListener('change', async (e)=>{
+    const file = e.target.files[0];
+    e.target.value = '';
+    if(!file || !activeModal) return;
+    showToast('Processando foto...');
+    const list = getList(activeModal.kind);
+    const entry = list.find(x=>x.id===activeModal.id);
+    if(!entry) return;
+    let photoId;
+    try{ photoId = await processAndSavePhoto(file); }
+    catch(err){
+      showToast(err.message === 'process-failed' ? 'Não consegui processar essa imagem.' : 'Não consegui salvar a foto. Tente uma imagem menor.');
+      return;
+    }
+    entry.fotos = [...(entry.fotos||[]), {id: photoId, criadoEm: Date.now()}];
+    await saveKey(activeModal.kind==='caixa' ? 'caixaObra' : 'empreiteiro', list);
+    renderModalPhotoThumbs(entry.fotos);
+    renderAll();
+    showToast('Foto adicionada.');
+  });
 
   // ---------- Note edit/delete (works for standalone notes and notes attached to entries) ----------
   function refreshNoteViewsFor(origin, entryId){
@@ -1642,7 +1916,7 @@
     addKind = activeModal.kind;
     $all('.segmented button[data-addkind]').forEach(b=>b.classList.toggle('active', b.dataset.addkind===addKind));
     $('#tipoField').style.display = addKind === 'caixa' ? 'block' : 'none';
-    $('#f_nome').value = e.nome || '';
+    $('#f_nome').value = toDisplayCase(e.nome) || '';
     if(addKind === 'caixa') $('#f_tipo').value = e.tipo || '';
     $('#f_qtd').value = e.qtd || '';
     $('#f_qtd').classList.remove('hint-highlight');
@@ -1653,7 +1927,7 @@
     $('#f_data').value = e.data || todayStr();
     updateDateHint();
     $('#f_valor').value = e.valor || '';
-    $('#f_fornecedor').value = e.fornecedor || '';
+    $('#f_fornecedor').value = toDisplayCase(e.fornecedor) || '';
     $('#f_nota').value = '';
     setSocio(e.socio || 'Pedro');
     $('#addTitle').textContent = 'Editar lançamento';
@@ -1662,6 +1936,7 @@
     $('#existingNotesField').style.display = 'block';
     $('#notaFieldLabel').textContent = 'Adicionar nova nota (opcional)';
     renderEditNotes(e.notas || []);
+    renderFormPhotoThumbs();
     $('#detailModal').classList.remove('open');
     switchView('add');
   });
@@ -1671,9 +1946,11 @@
     const ok = await showConfirm('Excluir este lançamento? Essa ação não pode ser desfeita.', {title:'Excluir lançamento', okLabel:'Excluir'});
     if(!ok) return;
     const key = activeModal.kind === 'caixa' ? 'caixaObra' : 'empreiteiro';
+    const target = getList(activeModal.kind).find(x=>x.id === activeModal.id);
     if(activeModal.kind === 'caixa') caixaObra = caixaObra.filter(x=>x.id !== activeModal.id);
     else empreiteiro = empreiteiro.filter(x=>x.id !== activeModal.id);
     await saveKey(key, activeModal.kind === 'caixa' ? caixaObra : empreiteiro);
+    if(target) deletePhotoBlobs(target.fotos); // clean up any attached photo blobs too
     $('#detailModal').classList.remove('open');
     activeModal = null;
     renderAll();
@@ -2002,12 +2279,12 @@
     const projRows = [['ID','Nome']].concat(projects.map(p=>[p.id, p.name]));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(projRows), 'Projetos');
 
-    const caixaHead = ['Projeto','Data','Nome','Tipo','Quantidade','Unidade','Valor','Fornecedor','Pago por Socio','Notas'];
-    const caixaRows = [caixaHead].concat(caixaObra.map(e=>[projName(e.projectId), e.data, e.nome, e.tipo||'', e.qtd||'', e.unidade||'', e.valor||0, e.fornecedor||'', e.socio||'', notesToText(e.notas)]));
+    const caixaHead = ['Projeto','Data','Nome','Tipo','Quantidade','Unidade','Valor','Fornecedor','Pago por Socio','Notas','Fotos'];
+    const caixaRows = [caixaHead].concat(caixaObra.map(e=>[projName(e.projectId), e.data, toDisplayCase(e.nome), e.tipo||'', e.qtd||'', e.unidade||'', e.valor||0, toDisplayCase(e.fornecedor)||'', e.socio||'', notesToText(e.notas), (e.fotos||[]).length]));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(caixaRows), 'Caixa da Obra');
 
-    const empHead = ['Projeto','Data','Nome','Quantidade','Unidade','Valor','Fornecedor','Pago por Socio','Notas'];
-    const empRows = [empHead].concat(empreiteiro.map(e=>[projName(e.projectId), e.data, e.nome, e.qtd||'', e.unidade||'', e.valor||0, e.fornecedor||'', e.socio||'', notesToText(e.notas)]));
+    const empHead = ['Projeto','Data','Nome','Quantidade','Unidade','Valor','Fornecedor','Pago por Socio','Notas','Fotos'];
+    const empRows = [empHead].concat(empreiteiro.map(e=>[projName(e.projectId), e.data, toDisplayCase(e.nome), e.qtd||'', e.unidade||'', e.valor||0, toDisplayCase(e.fornecedor)||'', e.socio||'', notesToText(e.notas), (e.fotos||[]).length]));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(empRows), 'Empreiteiro');
 
     const taskHead = ['Projeto','Tarefa','Prazo','Prioridade','Status','Criado em'];
