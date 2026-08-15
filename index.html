@@ -224,6 +224,21 @@
   .date-hint.is-today{color:var(--green);}
   .hint-highlight{background:#fff6e4 !important; border-color:var(--amber) !important;}
 
+  /* Date fields: the native iOS date control renders its own text with a width that
+     varies by locale/OS version and ignores our CSS — that's what kept overflowing.
+     Fix: hide the native input's rendering entirely (opacity:0) but keep it exactly
+     positioned and tappable, and show OUR OWN short, guaranteed-width text on top. */
+  .date-field-wrap{position:relative;}
+  .date-field-wrap input[type=date]{
+    position:absolute; inset:0; width:100%; height:100%; opacity:0; margin:0; border:none; z-index:2; cursor:pointer;
+  }
+  .date-fake-display{
+    width:100%; min-width:0; padding:13px 13px; border-radius:11px; border:1.5px solid var(--line);
+    background:#fff; font-size:15px; font-family:'Inter',sans-serif; color:var(--ink);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; pointer-events:none;
+  }
+  .date-fake-display.placeholder{color:#9c9385;}
+
   .toggle-group{display:flex; gap:8px;}
   .toggle-group button{
     flex:1; padding:11px 10px; border-radius:11px; border:1.5px solid var(--line); background:#fff;
@@ -557,13 +572,21 @@
           <label>&nbsp;</label>
         </div>
       </div>
-      <div class="field">
-        <label>De</label>
-        <input type="date" id="filterDataDe">
-      </div>
-      <div class="field">
-        <label>Até</label>
-        <input type="date" id="filterDataAte">
+      <div class="row2">
+        <div class="field">
+          <label>De</label>
+          <div class="date-field-wrap">
+            <div class="date-fake-display placeholder" id="filterDataDe_display">dd/mm/aaaa</div>
+            <input type="date" id="filterDataDe">
+          </div>
+        </div>
+        <div class="field">
+          <label>Até</label>
+          <div class="date-field-wrap">
+            <div class="date-fake-display placeholder" id="filterDataAte_display">dd/mm/aaaa</div>
+            <input type="date" id="filterDataAte">
+          </div>
+        </div>
       </div>
     </div>
     <div class="total-strip">
@@ -609,7 +632,10 @@
         </div>
         <div class="field">
           <label>Data <span class="req">*</span></label>
-          <input type="date" id="f_data" required>
+          <div class="date-field-wrap">
+            <div class="date-fake-display" id="f_data_display"></div>
+            <input type="date" id="f_data" required>
+          </div>
           <div class="date-hint" id="dateHint"></div>
         </div>
         <div class="field">
@@ -662,7 +688,10 @@
       </div>
       <div class="field">
         <label>Prazo</label>
-        <input type="date" id="t_prazo">
+        <div class="date-field-wrap">
+          <div class="date-fake-display placeholder" id="t_prazo_display">Sem prazo</div>
+          <input type="date" id="t_prazo">
+        </div>
       </div>
       <div class="field">
         <label>Prioridade</label>
@@ -797,7 +826,10 @@
       <div class="row2">
         <div class="field">
           <label>Prazo</label>
-          <input type="date" id="te_prazo">
+          <div class="date-field-wrap">
+            <div class="date-fake-display placeholder" id="te_prazo_display">Sem prazo</div>
+            <input type="date" id="te_prazo">
+          </div>
         </div>
         <div class="field">
           <label>Prioridade</label>
@@ -931,6 +963,35 @@
   function todayStr(){
     const n = new Date();
     return n.getFullYear() + '-' + String(n.getMonth()+1).padStart(2,'0') + '-' + String(n.getDate()).padStart(2,'0');
+  }
+  // Fixed DD/MM/AAAA format, computed by us — always exactly 10 characters, never
+  // dependent on the device's locale/OS version like the native input's own text is.
+  function formatDateShort(isoStr){
+    if(!isoStr) return '';
+    const d = parseDateLocal(isoStr);
+    return String(d.getDate()).padStart(2,'0') + '/' + String(d.getMonth()+1).padStart(2,'0') + '/' + d.getFullYear();
+  }
+  // Wires a hidden-but-tappable native date input to our own width-controlled display.
+  // Returns a refresh() function to call after any programmatic .value change,
+  // since setting .value via JS doesn't fire a 'change' event on its own.
+  function wireFakeDate(nativeId, displayId, opts){
+    opts = opts || {};
+    const native = $('#'+nativeId);
+    const display = $('#'+displayId);
+    function refresh(){
+      const val = native.value;
+      if(val){
+        display.textContent = formatDateShort(val);
+        display.classList.remove('placeholder');
+      } else {
+        display.textContent = opts.placeholder || 'dd/mm/aaaa';
+        display.classList.add('placeholder');
+      }
+      if(opts.onRefresh) opts.onRefresh(val);
+    }
+    native.addEventListener('change', refresh);
+    refresh();
+    return refresh;
   }
   function escapeHTML(s){
     if(s === undefined || s === null) return '';
@@ -1343,6 +1404,7 @@
     filters = {fornecedor:'', tipo:'', socio:'', de:'', ate:''};
     $('#filterFornecedor').value=''; $('#filterTipo').value=''; $('#filterSocio').value='';
     $('#filterDataDe').value=''; $('#filterDataAte').value='';
+    refreshFilterDe(); refreshFilterAte();
     updateClearFilterVisibility();
     entriesPage = 1;
     renderEntries();
@@ -1494,7 +1556,11 @@
       hint.textContent = '';
     }
   }
-  $('#f_data').addEventListener('change', updateDateHint);
+  const refreshFData = wireFakeDate('f_data', 'f_data_display', {onRefresh: updateDateHint});
+  const refreshTPrazo = wireFakeDate('t_prazo', 't_prazo_display', {placeholder:'Sem prazo'});
+  const refreshTePrazo = wireFakeDate('te_prazo', 'te_prazo_display', {placeholder:'Sem prazo'});
+  const refreshFilterDe = wireFakeDate('filterDataDe', 'filterDataDe_display', {placeholder:'dd/mm/aaaa'});
+  const refreshFilterAte = wireFakeDate('filterDataAte', 'filterDataAte_display', {placeholder:'dd/mm/aaaa'});
 
   function setSocio(name){
     selectedSocio = name;
@@ -1515,7 +1581,7 @@
     }
     form.reset();
     $('#f_data').value = todayStr();
-    updateDateHint();
+    refreshFData();
     $('#f_qtd').value = 1;
     $('#f_qtd').classList.add('hint-highlight');
     $('#qtdHint').style.display = 'block';
@@ -1925,7 +1991,7 @@
     $('#f_unidade').classList.remove('hint-highlight');
     $('#unidadeHint').style.display = 'none';
     $('#f_data').value = e.data || todayStr();
-    updateDateHint();
+    refreshFData();
     $('#f_valor').value = e.valor || '';
     $('#f_fornecedor').value = toDisplayCase(e.fornecedor) || '';
     $('#f_nota').value = '';
@@ -2051,6 +2117,7 @@
     await saveKey('tasks', tasks);
     $('#t_texto').value = '';
     $('#t_prazo').value = '';
+    refreshTPrazo();
     $('#t_prioridade').value = 'media';
     $('#t_projeto').value = activeProjectId || '';
     renderAll();
@@ -2098,6 +2165,7 @@
     if(!t) return;
     $('#te_texto').value = t.texto || '';
     $('#te_prazo').value = t.prazo || '';
+    refreshTePrazo();
     $('#te_prioridade').value = t.prioridade || 'media';
     populateTaskEditProjectSelect(t.projectId || '');
     $('#taskModalTitle').textContent = 'Editar tarefa';
