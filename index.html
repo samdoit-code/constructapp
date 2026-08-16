@@ -363,7 +363,7 @@
   nav.tabbar{
     position:fixed; left:0; right:0; bottom:0; z-index:30; margin:0; border-radius:0;
     background:#fff; border-top:1px solid var(--line);
-    display:flex; padding:7px 5px calc(7px + var(--safe-bottom));
+    display:flex; padding:6px 4px calc(6px + var(--safe-bottom));
     box-shadow: 0 -2px 10px rgba(0,0,0,0.06);
   }
   /* Safety net: extends the same white background further past the bar's own bottom
@@ -374,23 +374,24 @@
   }
   nav.tabbar button.tab-btn{
     flex:1; min-width:0; background:none; border:none; display:flex; flex-direction:column; align-items:center; gap:3px;
-    padding:3px 0 2px; color:#9c9385; cursor:pointer; border-radius:16px;
+    padding:0; color:#9c9385; cursor:pointer; border-radius:16px;
   }
   /* Every tab shares this exact same "badge" wrapper — active state is purely a
      background-color/icon-color swap on it, never a different structure, so no tab
-     can ever end up sized differently from another. */
+     can ever end up sized differently from another. Single padding layer (not
+     stacked with button padding) keeps the bar compact, like the simpler original. */
   nav.tabbar .icon-wrap{
     display:flex; align-items:center; justify-content:center;
-    padding:7px 13px; border-radius:18px; transition: background-color .15s ease;
+    padding:5px 11px; border-radius:16px; transition: background-color .15s ease;
   }
-  nav.tabbar button.tab-btn svg{width:21px;height:21px; stroke:currentColor; fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; flex-shrink:0;}
+  nav.tabbar button.tab-btn svg{width:20px;height:20px; stroke:currentColor; fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; flex-shrink:0;}
   nav.tabbar button.tab-btn span.label{font-size:9.5px; font-weight:600; letter-spacing:0.005em; white-space:nowrap; color:#9c9385;}
-  nav.tabbar button.tab-btn.active .icon-wrap{background:var(--orange); box-shadow:0 4px 10px rgba(224,101,31,0.4);}
+  nav.tabbar button.tab-btn.active .icon-wrap{background:var(--orange); box-shadow:0 3px 8px rgba(224,101,31,0.4);}
   nav.tabbar button.tab-btn.active .icon-wrap svg{stroke:#fff;}
   nav.tabbar button.tab-btn.active span.label{color:var(--orange-dark); font-weight:700;}
   @media (max-width:340px){
     nav.tabbar{padding:6px 2px;}
-    nav.tabbar .icon-wrap{padding:6px 7px;}
+    nav.tabbar .icon-wrap{padding:4px 6px;}
     nav.tabbar button.tab-btn span.label{font-size:8px;}
   }
 
@@ -1328,12 +1329,14 @@
 
   // ---------- Toast ----------
   let toastTimer;
-  function showToast(msg){
+  function showToast(msg, persistent){
     const t = $('#toast');
     $('#toastMsg').textContent = msg;
     t.classList.add('show');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(()=> t.classList.remove('show'), 2200);
+    if(!persistent){
+      toastTimer = setTimeout(()=> t.classList.remove('show'), 2200);
+    }
   }
 
   // ---------- In-app confirm/prompt dialogs (replace native confirm()/prompt()) ----------
@@ -1968,6 +1971,7 @@
     img.style.display = 'block';
     photoViewDeleteHandler = onDelete;
     $('#photoViewModal').classList.add('open');
+    setViewportZoomable(true);
   }
   $('#photoViewDeleteBtn').addEventListener('click', async ()=>{
     if(!photoViewDeleteHandler) return;
@@ -1975,6 +1979,7 @@
     const ok = await showConfirm('Excluir esta foto? Essa ação não pode ser desfeita.', {title:'Excluir foto', okLabel:'Excluir'});
     if(!ok) return;
     $('#photoViewModal').classList.remove('open');
+    setViewportZoomable(false);
     photoViewDeleteHandler = null;
     await handler();
   });
@@ -2037,7 +2042,7 @@
     const file = e.target.files[0];
     e.target.value = '';
     if(!file) return;
-    showToast('Processando foto...');
+    showToast('Processando foto...', true);
     let photoId;
     try{ photoId = await processAndSavePhoto(file); }
     catch(err){
@@ -2089,7 +2094,7 @@
     const file = e.target.files[0];
     e.target.value = '';
     if(!file || !activeModal) return;
-    showToast('Processando foto...');
+    showToast('Processando foto...', true);
     const list = getList(activeModal.kind);
     const entry = list.find(x=>x.id===activeModal.id);
     if(!entry) return;
@@ -2129,7 +2134,7 @@
     const file = e.target.files[0];
     e.target.value = '';
     if(!file) return;
-    showToast('Processando foto...');
+    showToast('Processando foto...', true);
     let photoId;
     try{ photoId = await processAndSavePhoto(file); }
     catch(err){
@@ -2168,7 +2173,7 @@
     const file = e.target.files[0];
     e.target.value = '';
     if(!file || !activeTaskId) return;
-    showToast('Processando foto...');
+    showToast('Processando foto...', true);
     const t = tasks.find(x=>x.id===activeTaskId);
     if(!t) return;
     let photoId;
@@ -2263,6 +2268,7 @@
   $all('[data-close]').forEach(btn=>{
     btn.addEventListener('click', ()=>{
       if(btn.dataset.close === 'pdfViewModal'){ closePdfPreview(); return; }
+      if(btn.dataset.close === 'photoViewModal'){ setViewportZoomable(false); }
       $('#'+btn.dataset.close).classList.remove('open');
       if(btn.dataset.close === 'detailModal') activeModal = null;
       if(btn.dataset.close === 'taskModal'){ activeTaskId = null; showTaskViewMode(); }
@@ -2272,6 +2278,7 @@
     ov.addEventListener('click', (e)=>{
       if(e.target !== ov) return;
       if(ov.id === 'pdfViewModal'){ closePdfPreview(); return; }
+      if(ov.id === 'photoViewModal'){ setViewportZoomable(false); }
       ov.classList.remove('open'); activeModal=null; activeTaskId=null; showTaskViewMode();
     });
   });
@@ -2542,7 +2549,7 @@
     const file = e.target.files[0];
     e.target.value = '';
     if(!file) return;
-    showToast('Processando foto...');
+    showToast('Processando foto...', true);
     let photoId;
     try{ photoId = await processAndSavePhoto(file); }
     catch(err){
@@ -2589,7 +2596,7 @@
     if(!file || !noteId) return;
     const n = notes.find(x=>x.id===noteId);
     if(!n) return;
-    showToast('Processando foto...');
+    showToast('Processando foto...', true);
     let photoId;
     try{ photoId = await processAndSavePhoto(file); }
     catch(err){
@@ -2939,6 +2946,13 @@
   }
   let pdfViewCurrentId = null;
   let pdfViewCurrentUrl = null;
+  function setViewportZoomable(allow){
+    const vp = document.querySelector('meta[name="viewport"]');
+    if(!vp) return;
+    vp.setAttribute('content', allow
+      ? 'width=device-width, initial-scale=1.0, viewport-fit=cover'
+      : 'width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no, viewport-fit=cover');
+  }
   function openPdfPreview(id, dataUrl, filename){
     const blob = dataUrlToBlob(dataUrl);
     const url = URL.createObjectURL(blob);
@@ -2947,12 +2961,14 @@
     $('#pdfViewTitle').textContent = filename || 'Documento';
     $('#pdfViewFrame').src = url;
     $('#pdfViewModal').classList.add('open');
+    setViewportZoomable(true); // let the person pinch-zoom the PDF itself
   }
   function closePdfPreview(){
     $('#pdfViewModal').classList.remove('open');
     $('#pdfViewFrame').src = 'about:blank'; // stop rendering, free memory
     if(pdfViewCurrentUrl){ URL.revokeObjectURL(pdfViewCurrentUrl); pdfViewCurrentUrl = null; }
     pdfViewCurrentId = null;
+    setViewportZoomable(false); // restore the normal locked zoom for the rest of the app
   }
   $('#pdfViewDownloadBtn').addEventListener('click', ()=>{
     if(!pdfViewCurrentUrl) return;
@@ -3010,7 +3026,7 @@
       showToast('Arquivo muito grande (máx. 20MB). Tente um arquivo menor.');
       return;
     }
-    showToast('Enviando documento...');
+    showToast('Enviando documento...', true);
     let dataUrl;
     try{
       dataUrl = file.type.startsWith('image/')
