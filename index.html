@@ -363,23 +363,24 @@
   nav.tabbar{
     position:fixed; bottom:0; left:0; right:0; z-index:30;
     background:#fff; border-top:1px solid var(--line);
-    display:flex; padding: 7px 2px calc(7px + var(--safe-bottom));
+    display:flex; padding: 6px 0 calc(6px + var(--safe-bottom));
     box-shadow: 0 -2px 10px rgba(0,0,0,0.06);
   }
   nav.tabbar button.tab-btn{
     flex:1; min-width:0; background:none; border:none; display:flex; flex-direction:column; align-items:center; gap:3px;
-    padding:8px 0 6px; color:#9c9385; cursor:pointer; border-radius:10px;
+    padding:7px 0 5px; color:#9c9385; cursor:pointer; border-radius:10px;
   }
-  nav.tabbar button.tab-btn svg{width:23px;height:23px; stroke:currentColor; fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round;}
-  nav.tabbar button.tab-btn span{font-size:9.5px; font-weight:600; letter-spacing:0.005em; white-space:nowrap;}
+  nav.tabbar button.tab-btn svg{width:27px;height:27px; stroke:currentColor; fill:none; stroke-width:1.9; stroke-linecap:round; stroke-linejoin:round;}
+  nav.tabbar button.tab-btn span{font-size:10px; font-weight:600; letter-spacing:0.005em; white-space:nowrap;}
   nav.tabbar button.tab-btn.active{color:var(--orange-dark);}
   /* Adicionar sits evenly in the row like the others, just a touch bigger with an
-     orange highlight behind the icon so it still stands out as the primary action. */
+     orange highlight behind the icon so it still stands out as the primary action.
+     The "+" glyph itself matches the size of every other icon. */
   nav.tabbar button.fab .fabcircle{
-    width:33px;height:33px;border-radius:50%; background:var(--orange); display:flex; align-items:center; justify-content:center;
+    width:39px;height:39px;border-radius:50%; background:var(--orange); display:flex; align-items:center; justify-content:center;
     margin-top:-2px; box-shadow:0 2px 6px rgba(224,101,31,0.4);
   }
-  nav.tabbar button.fab .fabcircle svg{stroke:#fff; width:19px; height:19px;}
+  nav.tabbar button.fab .fabcircle svg{stroke:#fff; width:27px; height:27px; stroke-width:1.9;}
   nav.tabbar button.fab span{color:#9c9385;}
   nav.tabbar button.fab.active .fabcircle{background:var(--orange-dark);}
 
