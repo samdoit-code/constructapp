@@ -36,7 +36,7 @@
       repeating-linear-gradient(90deg, rgba(44,92,115,0.035) 0px, rgba(44,92,115,0.035) 1px, transparent 1px, transparent 40px);
     color:var(--ink);
     font-family:'Inter', sans-serif;
-    padding-bottom: calc(100px + var(--safe-bottom));
+    padding-bottom: calc(80px + var(--safe-bottom));
   }
   h1,h2,h3,.display{font-family:'Oswald', sans-serif; text-transform:uppercase; letter-spacing:0.02em;}
 
@@ -361,10 +361,16 @@
 
   /* Bottom nav */
   nav.tabbar{
-    position:fixed; left:12px; right:12px; bottom:calc(10px + var(--safe-bottom)); z-index:30;
-    background:#fff; border-radius:26px;
-    display:flex; padding:7px 5px;
-    box-shadow: 0 10px 26px rgba(33,29,25,0.16), 0 2px 7px rgba(33,29,25,0.08);
+    position:fixed; left:0; right:0; bottom:0; z-index:30; margin:0; border-radius:0;
+    background:#fff; border-top:1px solid var(--line);
+    display:flex; padding:7px 5px calc(7px + var(--safe-bottom));
+    box-shadow: 0 -2px 10px rgba(0,0,0,0.06);
+  }
+  /* Safety net: extends the same white background further past the bar's own bottom
+     edge, so there's no possible sliver of page background showing through at the
+     very bottom on any device — belt-and-suspenders against safe-area/viewport quirks. */
+  nav.tabbar::after{
+    content:""; position:absolute; left:0; right:0; top:100%; height:50px; background:#fff;
   }
   nav.tabbar button.tab-btn{
     flex:1; min-width:0; background:none; border:none; display:flex; flex-direction:column; align-items:center; gap:3px;
@@ -456,6 +462,7 @@
   .doc-meta{font-size:11px; color:var(--ink-soft); margin-top:2px;}
   .doc-del{background:none; border:none; color:var(--red); padding:6px; flex:0 0 auto; cursor:pointer;}
   .doc-del svg{width:17px; height:17px; stroke:var(--red); fill:none; stroke-width:2;}
+  #pdfViewFrame{width:100%; height:64vh; border:1px solid var(--line); border-radius:10px; background:#e9e5d8; display:block;}
   .drive-banner{
     display:flex; gap:12px; background:var(--paper-2); border:1.5px dashed var(--line); border-radius:14px;
     padding:14px; margin-top:22px; align-items:flex-start;
@@ -876,6 +883,22 @@
     <div class="form-actions" style="margin-top:14px;">
       <button class="btn btn-danger" id="photoViewDeleteBtn">Excluir foto</button>
       <button class="btn btn-ghost btn-block" data-close="photoViewModal" style="background:rgba(255,255,255,0.92);">Fechar</button>
+    </div>
+  </div>
+</div>
+
+<!-- PDF preview modal — renders inline via iframe so it opens right inside the app,
+     no new tab / window.open (which browsers often block from inside an embedded page). -->
+<div class="modal-overlay" id="pdfViewModal">
+  <div class="modal-sheet" style="max-width:640px;">
+    <div class="modal-head">
+      <h2 id="pdfViewTitle" style="font-size:15px; text-transform:none; font-family:'Inter',sans-serif; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:78%;">Documento</h2>
+      <button class="modal-close" data-close="pdfViewModal"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+    <iframe id="pdfViewFrame" src="" title="Pré-visualização do PDF"></iframe>
+    <div class="form-actions" style="margin-top:14px;">
+      <button class="btn btn-danger" id="pdfViewDeleteBtn">Excluir</button>
+      <button class="btn btn-secondary btn-block" id="pdfViewDownloadBtn">Baixar</button>
     </div>
   </div>
 </div>
@@ -2239,6 +2262,7 @@
 
   $all('[data-close]').forEach(btn=>{
     btn.addEventListener('click', ()=>{
+      if(btn.dataset.close === 'pdfViewModal'){ closePdfPreview(); return; }
       $('#'+btn.dataset.close).classList.remove('open');
       if(btn.dataset.close === 'detailModal') activeModal = null;
       if(btn.dataset.close === 'taskModal'){ activeTaskId = null; showTaskViewMode(); }
@@ -2246,7 +2270,9 @@
   });
   $all('.modal-overlay').forEach(ov=>{
     ov.addEventListener('click', (e)=>{
-      if(e.target === ov){ ov.classList.remove('open'); activeModal=null; activeTaskId=null; showTaskViewMode(); }
+      if(e.target !== ov) return;
+      if(ov.id === 'pdfViewModal'){ closePdfPreview(); return; }
+      ov.classList.remove('open'); activeModal=null; activeTaskId=null; showTaskViewMode();
     });
   });
 
@@ -2911,6 +2937,39 @@
       reader.readAsDataURL(file);
     });
   }
+  let pdfViewCurrentId = null;
+  let pdfViewCurrentUrl = null;
+  function openPdfPreview(id, dataUrl, filename){
+    const blob = dataUrlToBlob(dataUrl);
+    const url = URL.createObjectURL(blob);
+    pdfViewCurrentId = id;
+    pdfViewCurrentUrl = url;
+    $('#pdfViewTitle').textContent = filename || 'Documento';
+    $('#pdfViewFrame').src = url;
+    $('#pdfViewModal').classList.add('open');
+  }
+  function closePdfPreview(){
+    $('#pdfViewModal').classList.remove('open');
+    $('#pdfViewFrame').src = 'about:blank'; // stop rendering, free memory
+    if(pdfViewCurrentUrl){ URL.revokeObjectURL(pdfViewCurrentUrl); pdfViewCurrentUrl = null; }
+    pdfViewCurrentId = null;
+  }
+  $('#pdfViewDownloadBtn').addEventListener('click', ()=>{
+    if(!pdfViewCurrentUrl) return;
+    const d = documentos.find(x=>x.id===pdfViewCurrentId);
+    const a = document.createElement('a');
+    a.href = pdfViewCurrentUrl; a.download = (d && d.nome) || 'documento.pdf';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  });
+  $('#pdfViewDeleteBtn').addEventListener('click', async ()=>{
+    if(!pdfViewCurrentId) return;
+    const idToDelete = pdfViewCurrentId;
+    const ok = await showConfirm('Excluir este documento? Essa ação não pode ser desfeita.', {title:'Excluir documento', okLabel:'Excluir'});
+    if(!ok) return;
+    closePdfPreview();
+    await deleteDocumentNow(idToDelete);
+  });
+
   async function openDocument(id){
     const d = documentos.find(x=>x.id===id);
     if(!d) return;
@@ -2920,15 +2979,15 @@
       openPhotoLightbox(id, dataUrl, ()=> deleteDocumentNow(id));
       return;
     }
+    if(d.mimeType === 'application/pdf'){
+      openPdfPreview(id, dataUrl, d.nome);
+      return;
+    }
     const blob = dataUrlToBlob(dataUrl);
     const url = URL.createObjectURL(blob);
-    if(d.mimeType === 'application/pdf'){
-      window.open(url, '_blank');
-    } else {
-      const a = document.createElement('a');
-      a.href = url; a.download = d.nome;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    }
+    const a = document.createElement('a');
+    a.href = url; a.download = d.nome;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
     setTimeout(()=> URL.revokeObjectURL(url), 30000);
   }
   async function deleteDocumentNow(id){
