@@ -306,6 +306,7 @@
   .note-actions{display:flex; gap:14px; margin-top:8px; padding-top:8px; border-top:1px dashed #ecdfa8;}
   .note-actions button{background:none; border:none; font-size:11.5px; font-weight:700; cursor:pointer; padding:2px 0;}
   .note-actions .n-edit{color:var(--blue);}
+  .note-actions .n-photo{color:var(--orange-dark);}
   .note-actions .n-del{color:var(--red);}
 
   .notes-thread{margin-top:4px;}
@@ -362,21 +363,21 @@
   nav.tabbar{
     position:fixed; bottom:0; left:0; right:0; z-index:30;
     background:#fff; border-top:1px solid var(--line);
-    display:flex; padding: 6px 4px calc(6px + var(--safe-bottom));
+    display:flex; padding: 6px 2px calc(6px + var(--safe-bottom));
     box-shadow: 0 -2px 10px rgba(0,0,0,0.06);
   }
   nav.tabbar button{
-    flex:1; background:none; border:none; display:flex; flex-direction:column; align-items:center; gap:3px;
-    padding:7px 1px 5px; color:#9c9385; cursor:pointer; border-radius:10px;
+    flex:1; min-width:0; background:none; border:none; display:flex; flex-direction:column; align-items:center; gap:2px;
+    padding:7px 0 5px; color:#9c9385; cursor:pointer; border-radius:10px;
   }
-  nav.tabbar button svg{width:20px;height:20px; stroke:currentColor; fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round;}
-  nav.tabbar button span{font-size:9.7px; font-weight:600; letter-spacing:0.01em;}
+  nav.tabbar button svg{width:19px;height:19px; stroke:currentColor; fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round;}
+  nav.tabbar button span{font-size:9px; font-weight:600; letter-spacing:0.005em; white-space:nowrap;}
   nav.tabbar button.active{color:var(--orange-dark);}
   nav.tabbar button.fab .fabcircle{
-    width:38px;height:38px;border-radius:50%; background:var(--orange); display:flex; align-items:center; justify-content:center;
-    margin-top:-16px; box-shadow:0 3px 8px rgba(224,101,31,0.45);
+    width:36px;height:36px;border-radius:50%; background:var(--orange); display:flex; align-items:center; justify-content:center;
+    margin-top:-15px; box-shadow:0 3px 8px rgba(224,101,31,0.45);
   }
-  nav.tabbar button.fab .fabcircle svg{stroke:#fff;}
+  nav.tabbar button.fab .fabcircle svg{stroke:#fff; width:18px; height:18px;}
   nav.tabbar button.fab span{color:#9c9385;}
   nav.tabbar button.fab.active .fabcircle{background:var(--orange-dark);}
 
@@ -434,6 +435,27 @@
   .toast svg{width:15px;height:15px; stroke:#7fd99a; fill:none; stroke-width:2.5; flex:0 0 auto;}
 
   .storage-note{font-size:11px; color:#9c9385; text-align:center; margin-top:14px; line-height:1.5;}
+
+  /* Documentos */
+  .docs-photo-section{margin-bottom:18px;}
+  .docs-photo-section .docs-cat-label{font-size:11.5px; font-weight:700; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px;}
+  .doc-row{display:flex; align-items:center; gap:12px; padding:12px 14px; background:var(--card); border:1px solid var(--line); border-radius:12px; margin-bottom:8px; cursor:pointer; box-shadow:var(--shadow);}
+  .doc-row:active{transform:scale(0.99);}
+  .doc-icon{width:40px; height:40px; border-radius:10px; background:var(--paper-2); display:flex; align-items:center; justify-content:center; flex:0 0 auto; overflow:hidden;}
+  .doc-icon img{width:100%; height:100%; object-fit:cover;}
+  .doc-icon svg{width:20px; height:20px; stroke:var(--ink-soft); fill:none; stroke-width:1.7;}
+  .doc-info{flex:1; min-width:0;}
+  .doc-name{font-size:13.5px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .doc-meta{font-size:11px; color:var(--ink-soft); margin-top:2px;}
+  .doc-del{background:none; border:none; color:var(--red); padding:6px; flex:0 0 auto; cursor:pointer;}
+  .doc-del svg{width:17px; height:17px; stroke:var(--red); fill:none; stroke-width:2;}
+  .drive-banner{
+    display:flex; gap:12px; background:var(--paper-2); border:1.5px dashed var(--line); border-radius:14px;
+    padding:14px; margin-top:22px; align-items:flex-start;
+  }
+  .drive-banner svg{width:26px; height:26px; stroke:var(--blue); fill:none; stroke-width:1.6; flex:0 0 auto; margin-top:2px;}
+  .drive-banner b{font-size:12.5px; display:block; margin-bottom:4px;}
+  .drive-banner p{font-size:11.5px; color:var(--ink-soft); line-height:1.5; margin:0;}
 
   #orientationGuard{
     display:none; position:fixed; inset:0; z-index:300; background:var(--ink);
@@ -667,7 +689,7 @@
             <svg viewBox="0 0 24 24"><path d="M4 8a2 2 0 012-2h1.2a1 1 0 00.9-.55L8.7 4.1A1 1 0 019.6 3.5h4.8a1 1 0 01.9.6l.6 1.35a1 1 0 00.9.55H18a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V8z"/><circle cx="12" cy="13" r="3.3"/></svg>
             Adicionar foto
           </label>
-          <input type="file" id="formPhotoInput" accept="image/*" capture="environment" style="display:none;">
+          <input type="file" id="formPhotoInput" accept="image/*" style="display:none;">
           <div class="photo-thumbs" id="formPhotoThumbs"></div>
         </div>
         <div class="form-actions">
@@ -705,6 +727,15 @@
         <label>Projeto</label>
         <select id="t_projeto"></select>
       </div>
+      <div class="field">
+        <label>Foto (opcional)</label>
+        <label for="taskPhotoInput" class="btn btn-ghost btn-sm photo-pick-btn">
+          <svg viewBox="0 0 24 24"><path d="M4 8a2 2 0 012-2h1.2a1 1 0 00.9-.55L8.7 4.1A1 1 0 019.6 3.5h4.8a1 1 0 01.9.6l.6 1.35a1 1 0 00.9.55H18a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V8z"/><circle cx="12" cy="13" r="3.3"/></svg>
+          Adicionar foto
+        </label>
+        <input type="file" id="taskPhotoInput" accept="image/*" style="display:none;">
+        <div class="photo-thumbs" id="taskPhotoThumbs"></div>
+      </div>
       <button class="btn btn-primary btn-block" id="saveTaskBtn">Adicionar tarefa</button>
     </div>
 
@@ -725,9 +756,44 @@
       <div class="field" style="margin-bottom:10px;">
         <textarea id="noteInput" placeholder="Escreva um lembrete, recado ou anotação sobre a obra..." style="min-height:80px;"></textarea>
       </div>
+      <div class="field">
+        <label for="notePhotoInputNew" class="btn btn-ghost btn-sm photo-pick-btn">
+          <svg viewBox="0 0 24 24"><path d="M4 8a2 2 0 012-2h1.2a1 1 0 00.9-.55L8.7 4.1A1 1 0 019.6 3.5h4.8a1 1 0 01.9.6l.6 1.35a1 1 0 00.9.55H18a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V8z"/><circle cx="12" cy="13" r="3.3"/></svg>
+          Adicionar foto
+        </label>
+        <input type="file" id="notePhotoInputNew" accept="image/*" style="display:none;">
+        <div class="photo-thumbs" id="notePhotoThumbsNew"></div>
+      </div>
       <button class="btn btn-primary btn-block" id="saveNoteBtn">Adicionar nota</button>
     </div>
     <div id="notesFeed"></div>
+  </div>
+
+  <!-- Shared hidden file input for adding a photo to an EXISTING standalone note in the feed -->
+  <input type="file" id="notePhotoInputExisting" accept="image/*" style="display:none;">
+
+  <!-- DOCUMENTOS -->
+  <div class="view" id="view-docs">
+    <div class="section-title">Fotos do projeto</div>
+    <div id="projectPhotosContainer"></div>
+
+    <div class="section-title">Documentos</div>
+    <div class="form-card" style="margin-bottom:14px; padding:14px;">
+      <label for="docFileInput" class="btn btn-primary btn-block photo-pick-btn" style="justify-content:center; width:100%;">
+        <svg viewBox="0 0 24 24" style="stroke:#fff;"><path d="M12 3v12m0 0l-4-4m4 4l4-4"/><path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg>
+        Adicionar documento
+      </label>
+      <input type="file" id="docFileInput" accept="image/*,application/pdf,.doc,.docx,.xls,.xlsx,.txt" style="display:none;">
+    </div>
+    <div id="docsList"></div>
+
+    <div class="drive-banner">
+      <svg viewBox="0 0 24 24"><path d="M17.5 19a4.5 4.5 0 000-9 6 6 0 00-11.4 2A4 4 0 007 19h10.5z"/></svg>
+      <div>
+        <b>Em breve: Google Drive</b>
+        <p>Dá para conectar uma pasta do Google Drive deste projeto e os arquivos enviados lá aparecem aqui automaticamente. Essa etapa depende de configurar o Google Apps Script.</p>
+      </div>
+    </div>
   </div>
 
 </main>
@@ -755,6 +821,10 @@
     <svg viewBox="0 0 24 24"><path d="M4 4h16v13H8l-4 4V4z"/></svg>
     <span>Notas</span>
   </button>
+  <button data-view="docs" class="tab-btn">
+    <svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></svg>
+    <span>Docs</span>
+  </button>
 </nav>
 
 <!-- Entry detail modal -->
@@ -780,7 +850,7 @@
         <svg viewBox="0 0 24 24"><path d="M4 8a2 2 0 012-2h1.2a1 1 0 00.9-.55L8.7 4.1A1 1 0 019.6 3.5h4.8a1 1 0 01.9.6l.6 1.35a1 1 0 00.9.55H18a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V8z"/><circle cx="12" cy="13" r="3.3"/></svg>
         Adicionar foto
       </label>
-      <input type="file" id="modalPhotoInput" accept="image/*" capture="environment" style="display:none;">
+      <input type="file" id="modalPhotoInput" accept="image/*" style="display:none;">
     </div>
     <div class="form-actions" style="margin-top:16px;">
       <button class="btn btn-danger" id="deleteEntryBtn">Excluir</button>
@@ -849,6 +919,16 @@
         <button type="button" class="btn btn-primary btn-block" id="taskEditSaveBtn">Salvar alterações</button>
       </div>
     </div>
+
+    <div style="margin-top:16px;">
+      <label style="display:block; font-size:12.5px; font-weight:600; color:var(--ink-soft); margin-bottom:8px;">Fotos</label>
+      <div class="photo-thumbs" id="taskModalPhotoThumbs"></div>
+      <label for="taskModalPhotoInput" class="btn btn-ghost btn-sm photo-pick-btn" style="margin-top:8px;">
+        <svg viewBox="0 0 24 24"><path d="M4 8a2 2 0 012-2h1.2a1 1 0 00.9-.55L8.7 4.1A1 1 0 019.6 3.5h4.8a1 1 0 01.9.6l.6 1.35a1 1 0 00.9.55H18a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V8z"/><circle cx="12" cy="13" r="3.3"/></svg>
+        Adicionar foto
+      </label>
+      <input type="file" id="taskModalPhotoInput" accept="image/*" style="display:none;">
+    </div>
   </div>
 </div>
 
@@ -867,7 +947,7 @@
     <div class="settings-block">
       <h3>DADOS</h3>
       <button class="btn btn-secondary btn-block" id="exportExcelBtn">Exportar tudo para Excel</button>
-      <div class="storage-note">Os dados (incluindo fotos de recibo) ficam salvos nesta conta/dispositivo. A sincronização automática com Google Sheets e Google Drive será adicionada na próxima etapa — por enquanto, use o Excel exportado para colar na planilha.</div>
+      <div class="storage-note">Lançamentos, tarefas e notas ficam salvos na sua conta. Fotos e documentos, por enquanto, ficam salvos apenas neste dispositivo/navegador (não sincronizam entre aparelhos ainda). A sincronização com Google Sheets e Google Drive será adicionada na próxima etapa.</div>
     </div>
   </div>
 </div>
@@ -926,6 +1006,7 @@
   let empreiteiro = [];
   let tasks = [];
   let notes = [];
+  let documentos = [];
   let tipos = [];
   let unidades = [];
   let activeProjectId = null;
@@ -939,6 +1020,9 @@
   let activeTaskId = null;
   let filters = {fornecedor:'', tipo:'', socio:'', de:'', ate:''};
   let draftFotos = []; // {id, criadoEm} — photos attached to a NEW (not yet saved) entry
+  let draftTaskFotos = []; // same, for a NEW (not yet saved) task
+  let draftNoteFotos = []; // same, for a NEW (not yet saved) standalone note
+  let notePhotoTargetId = null; // which existing standalone note the shared note-photo input targets
 
   const DEFAULT_TIPOS = ['Material de Construção','Ferramentas & Equipamento','Mão de obra avulsa','Transporte','Taxas & Documentação','Alimentação','Contas & Utilidades','Outros'];
   const DEFAULT_UNIDADES = ['und','barra','hora','lts','kg','m','m2','m3','pacote','ton','rl','bd','grama'];
@@ -1057,10 +1141,100 @@
   }
 
   // ---------- Photos (receipt attachments) ----------
-  // Photos are compressed client-side and stored under their own key (photo_<id>),
-  // NOT inside the caixaObra/empreiteiro arrays — a single lançamento list already
-  // holds thousands of records; embedding images there would blow past the 5MB
-  // per-key ceiling almost immediately. Each entry just keeps {id, criadoEm} refs.
+  // Photo BYTES are stored in IndexedDB — a browser-native store meant for exactly
+  // this kind of data — rather than window.storage. window.storage was reliably
+  // failing to save even small (~100KB) base64 images while working fine for every
+  // other kind of data in this app, which points to it not being well-suited for
+  // image payloads specifically (regardless of documented size limits). IndexedDB
+  // is purely local to this browser/device for now — it doesn't sync across
+  // devices — that's exactly what the future Google Drive/Apps Script sync is for.
+  // Each entry still only keeps {id, criadoEm} references, never the image itself.
+  const IDB_NAME = 'cmoreira_photos_db';
+  const IDB_STORE = 'photos';
+  const IDB_DOCS_STORE = 'documents';
+  let idbOpenPromise = null;
+  function openPhotoDB(){
+    if(idbOpenPromise) return idbOpenPromise;
+    idbOpenPromise = new Promise((resolve, reject)=>{
+      if(!window.indexedDB){ reject(new Error('no-indexeddb')); return; }
+      const req = indexedDB.open(IDB_NAME, 2);
+      req.onupgradeneeded = ()=>{
+        const db = req.result;
+        if(!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE, {keyPath:'id'});
+        if(!db.objectStoreNames.contains(IDB_DOCS_STORE)) db.createObjectStore(IDB_DOCS_STORE, {keyPath:'id'});
+      };
+      req.onsuccess = ()=> resolve(req.result);
+      req.onerror = ()=> reject(req.error);
+    });
+    return idbOpenPromise;
+  }
+  async function idbSavePhoto(id, dataUrl){
+    try{
+      const db = await openPhotoDB();
+      return await new Promise((resolve, reject)=>{
+        const tx = db.transaction(IDB_STORE, 'readwrite');
+        tx.objectStore(IDB_STORE).put({id, dataUrl});
+        tx.oncomplete = ()=> resolve(true);
+        tx.onerror = ()=> reject(tx.error);
+      });
+    }catch(e){ console.error('IndexedDB save error', e); return false; }
+  }
+  async function idbLoadPhoto(id){
+    try{
+      const db = await openPhotoDB();
+      return await new Promise((resolve, reject)=>{
+        const tx = db.transaction(IDB_STORE, 'readonly');
+        const req = tx.objectStore(IDB_STORE).get(id);
+        req.onsuccess = ()=> resolve(req.result ? req.result.dataUrl : null);
+        req.onerror = ()=> reject(req.error);
+      });
+    }catch(e){ console.error('IndexedDB load error', e); return null; }
+  }
+  async function idbDeletePhoto(id){
+    try{
+      const db = await openPhotoDB();
+      return await new Promise((resolve, reject)=>{
+        const tx = db.transaction(IDB_STORE, 'readwrite');
+        tx.objectStore(IDB_STORE).delete(id);
+        tx.oncomplete = ()=> resolve(true);
+        tx.onerror = ()=> reject(tx.error);
+      });
+    }catch(e){ console.error('IndexedDB delete error', e); return false; }
+  }
+  async function idbSaveDocument(id, dataUrl){
+    try{
+      const db = await openPhotoDB();
+      return await new Promise((resolve, reject)=>{
+        const tx = db.transaction(IDB_DOCS_STORE, 'readwrite');
+        tx.objectStore(IDB_DOCS_STORE).put({id, dataUrl});
+        tx.oncomplete = ()=> resolve(true);
+        tx.onerror = ()=> reject(tx.error);
+      });
+    }catch(e){ console.error('IndexedDB doc save error', e); return false; }
+  }
+  async function idbLoadDocument(id){
+    try{
+      const db = await openPhotoDB();
+      return await new Promise((resolve, reject)=>{
+        const tx = db.transaction(IDB_DOCS_STORE, 'readonly');
+        const req = tx.objectStore(IDB_DOCS_STORE).get(id);
+        req.onsuccess = ()=> resolve(req.result ? req.result.dataUrl : null);
+        req.onerror = ()=> reject(req.error);
+      });
+    }catch(e){ console.error('IndexedDB doc load error', e); return null; }
+  }
+  async function idbDeleteDocument(id){
+    try{
+      const db = await openPhotoDB();
+      return await new Promise((resolve, reject)=>{
+        const tx = db.transaction(IDB_DOCS_STORE, 'readwrite');
+        tx.objectStore(IDB_DOCS_STORE).delete(id);
+        tx.oncomplete = ()=> resolve(true);
+        tx.onerror = ()=> reject(tx.error);
+      });
+    }catch(e){ console.error('IndexedDB doc delete error', e); return false; }
+  }
+
   function compressImageFile(file, maxDim, quality){
     maxDim = maxDim || 1150;
     quality = quality || 0.68;
@@ -1089,7 +1263,7 @@
   }
   async function deletePhotoBlobs(fotos){
     if(!fotos || !fotos.length) return;
-    for(const f of fotos){ await deleteKey('photo_' + f.id); }
+    for(const f of fotos){ await idbDeletePhoto(f.id); }
   }
 
   async function loadAll(){
@@ -1102,6 +1276,7 @@
     empreiteiro = await loadKey('empreiteiro', []);
     tasks = await loadKey('tasks', []);
     notes = await loadKey('notes', []);
+    documentos = await loadKey('documentos', []);
     tipos = await loadKey('tipos', null);
     if(!tipos || tipos.length === 0){ tipos = DEFAULT_TIPOS.slice(); await saveKey('tipos', tipos); }
     unidades = await loadKey('unidades', null);
@@ -1232,6 +1407,19 @@
     if(sc) sc.scrollTo({top:0, behavior:'smooth'});
   }
   function switchView(name){
+    const previousView = document.querySelector('.view.active')?.id?.replace('view-','');
+    if(previousView === 'tasks' && name !== 'tasks' && draftTaskFotos.length){
+      const orphans = draftTaskFotos;
+      draftTaskFotos = [];
+      deletePhotoBlobs(orphans);
+      renderTaskFormPhotoThumbs();
+    }
+    if(previousView === 'notes' && name !== 'notes' && draftNoteFotos.length){
+      const orphans = draftNoteFotos;
+      draftNoteFotos = [];
+      deletePhotoBlobs(orphans);
+      renderNoteFormPhotoThumbs();
+    }
     $all('.view').forEach(v => v.classList.remove('active'));
     $('#view-' + name).classList.add('active');
     $all('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -1723,7 +1911,7 @@
     if(!fotos || fotos.length === 0){ containerEl.innerHTML = ''; return; }
     containerEl.innerHTML = fotos.map(f=>`<div class="photo-thumb" data-photo-id="${escapeHTML(f.id)}"><div class="photo-spinner">...</div></div>`).join('');
     for(const f of fotos){
-      const dataUrl = f.dataUrl || await loadKey('photo_' + f.id, null);
+      const dataUrl = f.dataUrl || await idbLoadPhoto(f.id);
       const el = containerEl.querySelector(`[data-photo-id="${CSS.escape(f.id)}"]`);
       if(!el) continue; // container was re-rendered while this was loading
       if(!dataUrl){ el.innerHTML = '<div class="photo-spinner">Erro</div>'; continue; }
@@ -1785,7 +1973,7 @@
     } else {
       draftFotos = draftFotos.filter(f=>f.id!==id);
     }
-    await deleteKey('photo_' + id);
+    await idbDeletePhoto(id);
     renderFormPhotoThumbs();
     renderAll();
     showToast('Foto excluída.');
@@ -1795,19 +1983,19 @@
     if(!ok) return;
     await deleteFormPhotoNow(id);
   }
-  // Compress + save a photo, automatically retrying with much heavier compression
-  // if the first attempt fails (covers oversized source images — a computer photo
-  // or screenshot can be far bigger than what a phone camera capture produces).
+  // Compress + save a photo to IndexedDB, automatically retrying with much heavier
+  // compression if the first attempt fails (covers oversized source images — a
+  // computer photo or screenshot can be far bigger than a phone camera capture).
   async function processAndSavePhoto(file){
     let dataUrl;
     try{ dataUrl = await compressImageFile(file); }
     catch(err){ console.error('photo compress error', err); throw new Error('process-failed'); }
     const photoId = uid('ph');
-    let ok = await saveKey('photo_' + photoId, dataUrl);
+    let ok = await idbSavePhoto(photoId, dataUrl);
     if(!ok){
       try{
         dataUrl = await compressImageFile(file, 800, 0.5);
-        ok = await saveKey('photo_' + photoId, dataUrl);
+        ok = await idbSavePhoto(photoId, dataUrl);
       }catch(err){ console.error('photo compress retry error', err); }
     }
     if(!ok) throw new Error('save-failed');
@@ -1855,7 +2043,7 @@
     if(!entry) return;
     entry.fotos = (entry.fotos||[]).filter(f=>f.id!==id);
     await saveKey(activeModal.kind==='caixa' ? 'caixaObra' : 'empreiteiro', list);
-    await deleteKey('photo_' + id);
+    await idbDeletePhoto(id);
     renderModalPhotoThumbs(entry.fotos);
     renderAll();
     showToast('Foto excluída.');
@@ -1882,6 +2070,84 @@
     entry.fotos = [...(entry.fotos||[]), {id: photoId, criadoEm: Date.now()}];
     await saveKey(activeModal.kind==='caixa' ? 'caixaObra' : 'empreiteiro', list);
     renderModalPhotoThumbs(entry.fotos);
+    renderAll();
+    showToast('Foto adicionada.');
+  });
+
+  // ---------- Task photos (new-task draft + existing-task modal, immediate) ----------
+  function renderTaskFormPhotoThumbs(){
+    renderPhotoThumbs($('#taskPhotoThumbs'), draftTaskFotos, {
+      deletable: true,
+      onView: (id, dataUrl)=> openPhotoLightbox(id, dataUrl, ()=> deleteTaskDraftPhotoNow(id)),
+      onDelete: (id)=> deleteTaskDraftPhotoWithConfirm(id),
+    });
+  }
+  async function deleteTaskDraftPhotoNow(id){
+    draftTaskFotos = draftTaskFotos.filter(f=>f.id!==id);
+    await idbDeletePhoto(id);
+    renderTaskFormPhotoThumbs();
+    showToast('Foto excluída.');
+  }
+  async function deleteTaskDraftPhotoWithConfirm(id){
+    const ok = await showConfirm('Excluir esta foto? Essa ação não pode ser desfeita.', {title:'Excluir foto', okLabel:'Excluir'});
+    if(!ok) return;
+    await deleteTaskDraftPhotoNow(id);
+  }
+  $('#taskPhotoInput').addEventListener('change', async (e)=>{
+    const file = e.target.files[0];
+    e.target.value = '';
+    if(!file) return;
+    showToast('Processando foto...');
+    let photoId;
+    try{ photoId = await processAndSavePhoto(file); }
+    catch(err){
+      showToast(err.message === 'process-failed' ? 'Não consegui processar essa imagem.' : 'Não consegui salvar a foto. Tente uma imagem menor.');
+      return;
+    }
+    draftTaskFotos.push({id: photoId, criadoEm: Date.now()});
+    renderTaskFormPhotoThumbs();
+    showToast('Foto adicionada.');
+  });
+
+  function renderTaskModalPhotoThumbs(fotos){
+    renderPhotoThumbs($('#taskModalPhotoThumbs'), fotos || [], {
+      deletable: true,
+      onView: (id, dataUrl)=> openPhotoLightbox(id, dataUrl, ()=> deleteTaskModalPhotoNow(id)),
+      onDelete: (id)=> deleteTaskModalPhotoWithConfirm(id),
+    });
+  }
+  async function deleteTaskModalPhotoNow(id){
+    if(!activeTaskId) return;
+    const t = tasks.find(x=>x.id===activeTaskId);
+    if(!t) return;
+    t.fotos = (t.fotos||[]).filter(f=>f.id!==id);
+    await saveKey('tasks', tasks);
+    await idbDeletePhoto(id);
+    renderTaskModalPhotoThumbs(t.fotos);
+    renderAll();
+    showToast('Foto excluída.');
+  }
+  async function deleteTaskModalPhotoWithConfirm(id){
+    const ok = await showConfirm('Excluir esta foto? Essa ação não pode ser desfeita.', {title:'Excluir foto', okLabel:'Excluir'});
+    if(!ok) return;
+    await deleteTaskModalPhotoNow(id);
+  }
+  $('#taskModalPhotoInput').addEventListener('change', async (e)=>{
+    const file = e.target.files[0];
+    e.target.value = '';
+    if(!file || !activeTaskId) return;
+    showToast('Processando foto...');
+    const t = tasks.find(x=>x.id===activeTaskId);
+    if(!t) return;
+    let photoId;
+    try{ photoId = await processAndSavePhoto(file); }
+    catch(err){
+      showToast(err.message === 'process-failed' ? 'Não consegui processar essa imagem.' : 'Não consegui salvar a foto. Tente uma imagem menor.');
+      return;
+    }
+    t.fotos = [...(t.fotos||[]), {id: photoId, criadoEm: Date.now()}];
+    await saveKey('tasks', tasks);
+    renderTaskModalPhotoThumbs(t.fotos);
     renderAll();
     showToast('Foto adicionada.');
   });
@@ -1930,8 +2196,10 @@
     const ok = await showConfirm('Excluir esta nota?', {title:'Excluir nota', okLabel:'Excluir'});
     if(!ok) return;
     if(ref.origin === 'standalone'){
+      const target = notes.find(x=>x.id===ref.id);
       notes = notes.filter(x=>x.id!==ref.id);
       await saveKey('notes', notes);
+      if(target) deletePhotoBlobs(target.fotos);
     } else {
       const list = ref.origin === 'caixa' ? caixaObra : empreiteiro;
       const entry = list.find(x=>x.id===ref.entryId);
@@ -2055,6 +2323,7 @@
       const d = parseDateLocal(t.prazo);
       dueLabel = d.toLocaleDateString('pt-BR', {day:'2-digit', month:'2-digit'});
     }
+    const photoCount = (t.fotos||[]).length;
     return `<div class="task-row ${t.feito?'done':''} ${mini?'task-mini':''}" data-id="${t.id}">
       <div class="task-check" data-toggle="${t.id}"><svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg></div>
       <div class="task-body">
@@ -2063,6 +2332,7 @@
           <span class="prio-dot prio-${t.prioridade}"></span>
           ${dueLabel ? `<span class="t-due ${dueClass}">${dueLabel}</span>` : ''}
           <span class="t-proj">${t.projectId ? escapeHTML(projName(t.projectId)) : 'Geral'}</span>
+          ${photoCount ? `<span class="notedot"><svg viewBox="0 0 24 24"><path d="M4 8a2 2 0 012-2h1.2a1 1 0 00.9-.55L8.7 4.1A1 1 0 019.6 3.5h4.8a1 1 0 01.9.6l.6 1.35a1 1 0 00.9.55H18a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V8z"/><circle cx="12" cy="13" r="3.3"/></svg>${photoCount}</span>` : ''}
         </div>
       </div>
     </div>`;
@@ -2113,13 +2383,16 @@
       prazo: $('#t_prazo').value || '',
       prioridade: $('#t_prioridade').value,
       projectId: $('#t_projeto').value || null,
+      fotos: draftTaskFotos.slice(),
     });
     await saveKey('tasks', tasks);
+    draftTaskFotos = []; // now owned by the saved task — clear without deleting their blobs
     $('#t_texto').value = '';
     $('#t_prazo').value = '';
     refreshTPrazo();
     $('#t_prioridade').value = 'media';
     $('#t_projeto').value = activeProjectId || '';
+    renderTaskFormPhotoThumbs();
     renderAll();
     showToast('Tarefa adicionada.');
   });
@@ -2144,6 +2417,7 @@
     $('#taskModalBody').innerHTML = `<h3 style="margin:0 0 12px; font-size:16px; text-transform:none; font-family:'Inter',sans-serif; font-weight:700;">${escapeHTML(t.texto)}</h3>` +
       rows.map(r => `<div class="detail-row"><span class="k">${r[0]}</span><span class="v">${escapeHTML(r[1])}</span></div>`).join('');
     $('#toggleTaskBtn').textContent = t.feito ? 'Reabrir tarefa' : 'Marcar como concluída';
+    renderTaskModalPhotoThumbs(t.fotos || []);
     $('#taskModal').classList.add('open');
   }
 
@@ -2199,8 +2473,10 @@
     if(!activeTaskId) return;
     const ok = await showConfirm('Excluir esta tarefa?', {title:'Excluir tarefa', okLabel:'Excluir'});
     if(!ok) return;
+    const target = tasks.find(x=>x.id===activeTaskId);
     tasks = tasks.filter(x=>x.id !== activeTaskId);
     await saveKey('tasks', tasks);
+    if(target) deletePhotoBlobs(target.fotos);
     $('#taskModal').classList.remove('open');
     activeTaskId = null;
     renderAll();
@@ -2208,12 +2484,98 @@
   });
 
   // ---------- Notes feed ----------
+  // ---------- Note photos (new-note draft + existing standalone notes in the feed, immediate) ----------
+  function renderNoteFormPhotoThumbs(){
+    renderPhotoThumbs($('#notePhotoThumbsNew'), draftNoteFotos, {
+      deletable: true,
+      onView: (id, dataUrl)=> openPhotoLightbox(id, dataUrl, ()=> deleteNoteDraftPhotoNow(id)),
+      onDelete: (id)=> deleteNoteDraftPhotoWithConfirm(id),
+    });
+  }
+  async function deleteNoteDraftPhotoNow(id){
+    draftNoteFotos = draftNoteFotos.filter(f=>f.id!==id);
+    await idbDeletePhoto(id);
+    renderNoteFormPhotoThumbs();
+    showToast('Foto excluída.');
+  }
+  async function deleteNoteDraftPhotoWithConfirm(id){
+    const ok = await showConfirm('Excluir esta foto? Essa ação não pode ser desfeita.', {title:'Excluir foto', okLabel:'Excluir'});
+    if(!ok) return;
+    await deleteNoteDraftPhotoNow(id);
+  }
+  $('#notePhotoInputNew').addEventListener('change', async (e)=>{
+    const file = e.target.files[0];
+    e.target.value = '';
+    if(!file) return;
+    showToast('Processando foto...');
+    let photoId;
+    try{ photoId = await processAndSavePhoto(file); }
+    catch(err){
+      showToast(err.message === 'process-failed' ? 'Não consegui processar essa imagem.' : 'Não consegui salvar a foto. Tente uma imagem menor.');
+      return;
+    }
+    draftNoteFotos.push({id: photoId, criadoEm: Date.now()});
+    renderNoteFormPhotoThumbs();
+    showToast('Foto adicionada.');
+  });
+
+  // Existing standalone notes: a single shared hidden input is reused across every
+  // note card in the feed, since the list of note-card DOM nodes is rebuilt on
+  // every render — notePhotoTargetId tracks which note the next file belongs to.
+  function renderExistingNotePhotoThumbs(note){
+    const container = document.getElementById('notephotos-' + note.id);
+    if(!container) return;
+    renderPhotoThumbs(container, note.fotos || [], {
+      deletable: true,
+      onView: (id, dataUrl)=> openPhotoLightbox(id, dataUrl, ()=> deleteExistingNotePhotoNow(note.id, id)),
+      onDelete: (id)=> deleteExistingNotePhotoWithConfirm(note.id, id),
+    });
+  }
+  async function deleteExistingNotePhotoNow(noteId, photoId){
+    const n = notes.find(x=>x.id===noteId);
+    if(!n) return;
+    n.fotos = (n.fotos||[]).filter(f=>f.id!==photoId);
+    await saveKey('notes', notes);
+    await idbDeletePhoto(photoId);
+    renderExistingNotePhotoThumbs(n);
+    renderAll();
+    showToast('Foto excluída.');
+  }
+  async function deleteExistingNotePhotoWithConfirm(noteId, photoId){
+    const ok = await showConfirm('Excluir esta foto? Essa ação não pode ser desfeita.', {title:'Excluir foto', okLabel:'Excluir'});
+    if(!ok) return;
+    await deleteExistingNotePhotoNow(noteId, photoId);
+  }
+  $('#notePhotoInputExisting').addEventListener('change', async (e)=>{
+    const file = e.target.files[0];
+    e.target.value = '';
+    const noteId = notePhotoTargetId;
+    notePhotoTargetId = null;
+    if(!file || !noteId) return;
+    const n = notes.find(x=>x.id===noteId);
+    if(!n) return;
+    showToast('Processando foto...');
+    let photoId;
+    try{ photoId = await processAndSavePhoto(file); }
+    catch(err){
+      showToast(err.message === 'process-failed' ? 'Não consegui processar essa imagem.' : 'Não consegui salvar a foto. Tente uma imagem menor.');
+      return;
+    }
+    n.fotos = [...(n.fotos||[]), {id: photoId, criadoEm: Date.now()}];
+    await saveKey('notes', notes);
+    renderExistingNotePhotoThumbs(n);
+    renderAll();
+    showToast('Foto adicionada.');
+  });
+
   $('#saveNoteBtn').addEventListener('click', async ()=>{
     const txt = $('#noteInput').value.trim();
     if(!txt){ showToast('Escreva algo antes de salvar.'); return; }
-    notes.push({id: uid('sn'), projectId: activeProjectId, texto: txt, criadoEm: Date.now()});
+    notes.push({id: uid('sn'), projectId: activeProjectId, texto: txt, criadoEm: Date.now(), fotos: draftNoteFotos.slice()});
     await saveKey('notes', notes);
+    draftNoteFotos = []; // now owned by the saved note — clear without deleting their blobs
     $('#noteInput').value = '';
+    renderNoteFormPhotoThumbs();
     notesPage = 1;
     renderAll();
     showToast('Nota adicionada.');
@@ -2236,7 +2598,7 @@
 
   function renderNotesFeed(){
     const items = [];
-    projEntries(notes).forEach(n => items.push({texto:n.texto, criadoEm:n.criadoEm, origin:'Nota geral', entryRef:null, ref:{origin:'standalone', id:n.id}}));
+    projEntries(notes).forEach(n => items.push({texto:n.texto, criadoEm:n.criadoEm, origin:'Nota geral', entryRef:null, ref:{origin:'standalone', id:n.id}, noteObj:n}));
     projEntries(caixaObra).forEach(e => (e.notas||[]).forEach(n => items.push({texto:n.texto, criadoEm:n.criadoEm, origin:'Caixa da obra: ' + e.nome, entryRef:{kind:'caixa', id:e.id}, ref:{origin:'caixa', entryId:e.id, noteId:n.id}})));
     projEntries(empreiteiro).forEach(e => (e.notas||[]).forEach(n => items.push({texto:n.texto, criadoEm:n.criadoEm, origin:'Empreiteiro: ' + e.nome, entryRef:{kind:'emp', id:e.id}, ref:{origin:'emp', entryId:e.id, noteId:n.id}})));
     items.sort((a,b)=> b.criadoEm - a.criadoEm);
@@ -2253,6 +2615,7 @@
     let lastLabel = null;
     for(let idx=0; idx<visibleCount; idx++){
       const it = items[idx];
+      const isStandalone = it.ref.origin === 'standalone';
       const label = dateGroupLabel(it.criadoEm);
       if(label !== lastLabel){ html += `<div class="date-group-header">${label}</div>`; lastLabel = label; }
       const dt = new Date(it.criadoEm);
@@ -2263,8 +2626,10 @@
           <span class="ts">${ts}</span>
           <span class="origin" ${it.entryRef ? `data-ref-kind="${it.entryRef.kind}" data-ref-id="${it.entryRef.id}"` : ''}>${escapeHTML(it.origin)}</span>
         </div>
+        ${isStandalone ? `<div class="photo-thumbs" id="notephotos-${escapeHTML(it.ref.id)}"></div>` : ''}
         <div class="note-actions">
           <button class="n-edit" data-feed-idx="${idx}">Editar</button>
+          ${isStandalone ? `<button type="button" class="n-photo" data-note-photo-trigger="${escapeHTML(it.ref.id)}">+ Foto</button>` : ''}
           <button class="n-del" data-feed-idx="${idx}">Excluir</button>
         </div>
       </div>`;
@@ -2282,6 +2647,15 @@
     box.querySelectorAll('.n-del[data-feed-idx]').forEach(el=>{
       el.addEventListener('click', ()=> deleteNoteRef(items[Number(el.dataset.feedIdx)].ref));
     });
+    box.querySelectorAll('[data-note-photo-trigger]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        notePhotoTargetId = el.dataset.notePhotoTrigger;
+        $('#notePhotoInputExisting').click();
+      });
+    });
+    for(let idx=0; idx<visibleCount; idx++){
+      if(items[idx].noteObj) renderExistingNotePhotoThumbs(items[idx].noteObj);
+    }
     const loadMoreNotesBtn = $('#loadMoreNotesBtn');
     if(loadMoreNotesBtn){
       loadMoreNotesBtn.addEventListener('click', ()=>{
@@ -2355,16 +2729,20 @@
     const empRows = [empHead].concat(empreiteiro.map(e=>[projName(e.projectId), e.data, toDisplayCase(e.nome), e.qtd||'', e.unidade||'', e.valor||0, toDisplayCase(e.fornecedor)||'', e.socio||'', notesToText(e.notas), (e.fotos||[]).length]));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(empRows), 'Empreiteiro');
 
-    const taskHead = ['Projeto','Tarefa','Prazo','Prioridade','Status','Criado em'];
-    const taskRows = [taskHead].concat(tasks.map(t=>[t.projectId?projName(t.projectId):'Geral', t.texto, t.prazo||'', t.prioridade, t.feito?'Concluída':'Pendente', new Date(t.criadoEm).toLocaleString('pt-BR')]));
+    const taskHead = ['Projeto','Tarefa','Prazo','Prioridade','Status','Criado em','Fotos'];
+    const taskRows = [taskHead].concat(tasks.map(t=>[t.projectId?projName(t.projectId):'Geral', t.texto, t.prazo||'', t.prioridade, t.feito?'Concluída':'Pendente', new Date(t.criadoEm).toLocaleString('pt-BR'), (t.fotos||[]).length]));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(taskRows), 'Tarefas');
 
-    const noteHead = ['Projeto','Data','Nota','Origem'];
+    const noteHead = ['Projeto','Data','Nota','Origem','Fotos'];
     const noteRows = [noteHead];
-    notes.forEach(n=> noteRows.push([projName(n.projectId), new Date(n.criadoEm).toLocaleString('pt-BR'), n.texto, 'Geral']));
-    caixaObra.forEach(e => (e.notas||[]).forEach(n => noteRows.push([projName(e.projectId), new Date(n.criadoEm).toLocaleString('pt-BR'), n.texto, 'Caixa da Obra: ' + e.nome])));
-    empreiteiro.forEach(e => (e.notas||[]).forEach(n => noteRows.push([projName(e.projectId), new Date(n.criadoEm).toLocaleString('pt-BR'), n.texto, 'Empreiteiro: ' + e.nome])));
+    notes.forEach(n=> noteRows.push([projName(n.projectId), new Date(n.criadoEm).toLocaleString('pt-BR'), n.texto, 'Geral', (n.fotos||[]).length]));
+    caixaObra.forEach(e => (e.notas||[]).forEach(n => noteRows.push([projName(e.projectId), new Date(n.criadoEm).toLocaleString('pt-BR'), n.texto, 'Caixa da Obra: ' + e.nome, ''])));
+    empreiteiro.forEach(e => (e.notas||[]).forEach(n => noteRows.push([projName(e.projectId), new Date(n.criadoEm).toLocaleString('pt-BR'), n.texto, 'Empreiteiro: ' + e.nome, ''])));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(noteRows), 'Notas');
+
+    const docHead = ['Projeto','Nome do arquivo','Tipo','Adicionado em'];
+    const docRows = [docHead].concat(documentos.map(d=>[projName(d.projectId), d.nome, fileExtension(d.nome) || d.mimeType, new Date(d.criadoEm).toLocaleString('pt-BR')]));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(docRows), 'Documentos');
 
     const tiposRows = [['Tipo']].concat(tipos.map(t=>[t]));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(tiposRows), 'Tipos de Despesa');
@@ -2377,11 +2755,219 @@
   });
 
   // ---------- Init render ----------
+  // ---------- Documentos (project document hub) ----------
+  function projectFotosGrouped(){
+    const groups = {caixa: [], emp: [], tasks: [], notes: []};
+    projEntries(caixaObra).forEach(e => (e.fotos||[]).forEach(f => groups.caixa.push({...f, refKind:'caixa', refId:e.id})));
+    projEntries(empreiteiro).forEach(e => (e.fotos||[]).forEach(f => groups.emp.push({...f, refKind:'emp', refId:e.id})));
+    tasks.filter(t => t.projectId === activeProjectId || !t.projectId).forEach(t => (t.fotos||[]).forEach(f => groups.tasks.push({...f, refId:t.id})));
+    projEntries(notes).forEach(n => (n.fotos||[]).forEach(f => groups.notes.push({...f, refId:n.id})));
+    return groups;
+  }
+
+  function renderDocsView(){
+    const view = document.getElementById('view-docs');
+    if(!view || !view.classList.contains('active')) return; // skip the async work when this tab isn't visible
+    renderProjectPhotosSection();
+    renderDocsList();
+  }
+
+  function renderProjectPhotosSection(){
+    const groups = projectFotosGrouped();
+    const container = $('#projectPhotosContainer');
+    const cats = [
+      {key:'caixa', label:'Caixa da obra', items: groups.caixa},
+      {key:'emp', label:'Empreiteiro', items: groups.emp},
+      {key:'tasks', label:'Tarefas', items: groups.tasks},
+      {key:'notes', label:'Notas', items: groups.notes},
+    ].filter(c => c.items.length > 0);
+
+    if(cats.length === 0){
+      container.innerHTML = emptyStateHTML('Nenhuma foto neste projeto ainda.', 'Fotos adicionadas em lançamentos, tarefas e notas aparecem aqui automaticamente.');
+      return;
+    }
+    container.innerHTML = cats.map(c => `
+      <div class="docs-photo-section">
+        <div class="docs-cat-label">${escapeHTML(c.label)} (${c.items.length})</div>
+        <div class="photo-thumbs" id="docsPhotos-${c.key}"></div>
+      </div>`).join('');
+    cats.forEach(c => {
+      const el = document.getElementById('docsPhotos-' + c.key);
+      renderPhotoThumbs(el, c.items, {
+        deletable: true,
+        onView: (id, dataUrl)=> openPhotoLightbox(id, dataUrl, ()=> deleteAggregatedPhotoNow(c.key, id)),
+        onDelete: (id)=> deleteAggregatedPhotoWithConfirm(c.key, id),
+      });
+    });
+  }
+
+  async function deleteAggregatedPhotoWithConfirm(catKey, photoId){
+    const ok = await showConfirm('Excluir esta foto? Essa ação não pode ser desfeita.', {title:'Excluir foto', okLabel:'Excluir'});
+    if(!ok) return;
+    await deleteAggregatedPhotoNow(catKey, photoId);
+  }
+  async function deleteAggregatedPhotoNow(catKey, photoId){
+    // Deletes from the actual source record (lançamento/tarefa/nota) — this hub is
+    // a mirror of those photos, not a separate copy, so deleting here deletes there too.
+    if(catKey === 'caixa' || catKey === 'emp'){
+      const list = catKey === 'caixa' ? caixaObra : empreiteiro;
+      for(const e of list){
+        if(e.fotos && e.fotos.some(f=>f.id===photoId)){
+          e.fotos = e.fotos.filter(f=>f.id!==photoId);
+          await saveKey(catKey==='caixa' ? 'caixaObra' : 'empreiteiro', list);
+          break;
+        }
+      }
+    } else if(catKey === 'tasks'){
+      for(const t of tasks){
+        if(t.fotos && t.fotos.some(f=>f.id===photoId)){
+          t.fotos = t.fotos.filter(f=>f.id!==photoId);
+          await saveKey('tasks', tasks);
+          break;
+        }
+      }
+    } else if(catKey === 'notes'){
+      for(const n of notes){
+        if(n.fotos && n.fotos.some(f=>f.id===photoId)){
+          n.fotos = n.fotos.filter(f=>f.id!==photoId);
+          await saveKey('notes', notes);
+          break;
+        }
+      }
+    }
+    await idbDeletePhoto(photoId);
+    renderAll();
+    showToast('Foto excluída.');
+  }
+
+  function fileExtension(filename){
+    const m = (filename||'').match(/\.([a-zA-Z0-9]+)$/);
+    return m ? m[1].toUpperCase() : '';
+  }
+  function docRowHTML(d){
+    const isImage = (d.mimeType||'').startsWith('image/');
+    const ext = fileExtension(d.nome);
+    const dateStr = new Date(d.criadoEm).toLocaleDateString('pt-BR');
+    return `<div class="doc-row" data-doc-id="${escapeHTML(d.id)}">
+      <div class="doc-icon" id="docicon-${escapeHTML(d.id)}">
+        ${isImage ? '' : '<svg viewBox="0 0 24 24"><path d="M6 2h9l5 5v15H6z"/><path d="M15 2v5h5"/></svg>'}
+      </div>
+      <div class="doc-info">
+        <div class="doc-name">${escapeHTML(d.nome)}</div>
+        <div class="doc-meta">${ext ? ext + ' · ' : ''}${dateStr}</div>
+      </div>
+      <button type="button" class="doc-del" data-del-doc="${escapeHTML(d.id)}"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>`;
+  }
+  function renderDocsList(){
+    const box = $('#docsList');
+    const list = documentos.filter(d => d.projectId === activeProjectId).sort((a,b)=> b.criadoEm - a.criadoEm);
+    if(list.length === 0){
+      box.innerHTML = emptyStateHTML('Nenhum documento ainda.', 'Toque em "Adicionar documento" para enviar o primeiro.');
+      return;
+    }
+    box.innerHTML = list.map(docRowHTML).join('');
+    box.querySelectorAll('.doc-row').forEach(row=>{
+      row.addEventListener('click', (e)=>{
+        if(e.target.closest('.doc-del')) return;
+        openDocument(row.dataset.docId);
+      });
+    });
+    box.querySelectorAll('[data-del-doc]').forEach(btn=>{
+      btn.addEventListener('click', (e)=>{ e.stopPropagation(); deleteDocumentWithConfirm(btn.dataset.delDoc); });
+    });
+    list.forEach(async d=>{
+      if(!(d.mimeType||'').startsWith('image/')) return;
+      const dataUrl = await idbLoadDocument(d.id);
+      const iconEl = document.getElementById('docicon-' + d.id);
+      if(iconEl && dataUrl) iconEl.innerHTML = `<img src="${escapeHTML(dataUrl)}" alt="">`;
+    });
+  }
+
+  function dataUrlToBlob(dataUrl){
+    const parts = dataUrl.split(',');
+    const mimeMatch = parts[0].match(/:(.*?);/);
+    const mime = mimeMatch ? mimeMatch[1] : 'application/octet-stream';
+    const bstr = atob(parts[1]);
+    let n = bstr.length;
+    const u8arr = new Uint8Array(n);
+    while(n--){ u8arr[n] = bstr.charCodeAt(n); }
+    return new Blob([u8arr], {type: mime});
+  }
+  function readFileAsDataURL(file){
+    return new Promise((resolve, reject)=>{
+      const reader = new FileReader();
+      reader.onload = ()=> resolve(reader.result);
+      reader.onerror = ()=> reject(new Error('file-read-failed'));
+      reader.readAsDataURL(file);
+    });
+  }
+  async function openDocument(id){
+    const d = documentos.find(x=>x.id===id);
+    if(!d) return;
+    const dataUrl = await idbLoadDocument(id);
+    if(!dataUrl){ showToast('Não consegui carregar esse documento.'); return; }
+    if((d.mimeType||'').startsWith('image/')){
+      openPhotoLightbox(id, dataUrl, ()=> deleteDocumentNow(id));
+      return;
+    }
+    const blob = dataUrlToBlob(dataUrl);
+    const url = URL.createObjectURL(blob);
+    if(d.mimeType === 'application/pdf'){
+      window.open(url, '_blank');
+    } else {
+      const a = document.createElement('a');
+      a.href = url; a.download = d.nome;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    }
+    setTimeout(()=> URL.revokeObjectURL(url), 30000);
+  }
+  async function deleteDocumentNow(id){
+    documentos = documentos.filter(d=>d.id!==id);
+    await saveKey('documentos', documentos);
+    await idbDeleteDocument(id);
+    renderDocsList();
+    showToast('Documento excluído.');
+  }
+  async function deleteDocumentWithConfirm(id){
+    const ok = await showConfirm('Excluir este documento? Essa ação não pode ser desfeita.', {title:'Excluir documento', okLabel:'Excluir'});
+    if(!ok) return;
+    await deleteDocumentNow(id);
+  }
+  $('#docFileInput').addEventListener('change', async (e)=>{
+    const file = e.target.files[0];
+    e.target.value = '';
+    if(!file) return;
+    if(file.size > 20 * 1024 * 1024){
+      showToast('Arquivo muito grande (máx. 20MB). Tente um arquivo menor.');
+      return;
+    }
+    showToast('Enviando documento...');
+    let dataUrl;
+    try{
+      dataUrl = file.type.startsWith('image/')
+        ? await compressImageFile(file, 1600, 0.75) // a bit higher quality — these are reference docs, not just receipts
+        : await readFileAsDataURL(file);
+    }catch(err){
+      console.error(err);
+      showToast('Não consegui processar esse arquivo.');
+      return;
+    }
+    const docId = uid('doc');
+    const ok = await idbSaveDocument(docId, dataUrl);
+    if(!ok){ showToast('Não consegui salvar o documento. Tente novamente.'); return; }
+    documentos.push({id: docId, projectId: activeProjectId, nome: file.name, mimeType: file.type || 'application/octet-stream', criadoEm: Date.now()});
+    await saveKey('documentos', documentos);
+    renderDocsList();
+    showToast('Documento adicionado.');
+  });
+
   function renderAll(){
     renderDashboard();
     renderEntries();
     renderTasks();
     renderNotesFeed();
+    renderDocsView();
   }
 
   loadAll();
