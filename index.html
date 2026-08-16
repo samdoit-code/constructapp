@@ -1026,9 +1026,9 @@
     <div class="settings-block">
       <h3>DADOS</h3>
       <button class="btn btn-secondary btn-block" id="exportExcelBtn">Exportar tudo para Excel</button>
-      <div class="storage-note">Lançamentos, tarefas e notas ficam salvos na sua conta. Fotos e documentos, por enquanto, ficam salvos apenas neste dispositivo/navegador (não sincronizam entre aparelhos ainda). A sincronização com Google Sheets e Google Drive será adicionada na próxima etapa.</div>
+      <div class="storage-note">Lançamentos, tarefas, notas, fotos e documentos ficam salvos na sua conta. Arquivos muito grandes (PDFs acima de 3MB) ainda não são suportados — isso será resolvido com a integração ao Google Drive, na próxima etapa.</div>
     </div>
-    <div class="app-version">Construtora Moreira App — v22</div>
+    <div class="app-version">Construtora Moreira App — v23</div>
   </div>
 </div>
 
@@ -1229,104 +1229,28 @@
     try{ await window.storage.delete(key, false); }catch(e){ /* fine if it never existed */ }
   }
 
-  // ---------- Photos (receipt attachments) ----------
-  // Photo BYTES are stored in IndexedDB — a browser-native store meant for exactly
-  // this kind of data — rather than window.storage. window.storage was reliably
-  // failing to save even small (~100KB) base64 images while working fine for every
-  // other kind of data in this app, which points to it not being well-suited for
-  // image payloads specifically (regardless of documented size limits). IndexedDB
-  // is purely local to this browser/device for now — it doesn't sync across
-  // devices — that's exactly what the future Google Drive/Apps Script sync is for.
-  // Each entry still only keeps {id, criadoEm} references, never the image itself.
-  const IDB_NAME = 'cmoreira_photos_db';
-  const IDB_STORE = 'photos';
-  const IDB_DOCS_STORE = 'documents';
-  let idbOpenPromise = null;
-  function openPhotoDB(){
-    if(idbOpenPromise) return idbOpenPromise;
-    idbOpenPromise = new Promise((resolve, reject)=>{
-      if(!window.indexedDB){ reject(new Error('no-indexeddb')); return; }
-      const req = indexedDB.open(IDB_NAME, 2);
-      req.onupgradeneeded = ()=>{
-        const db = req.result;
-        if(!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE, {keyPath:'id'});
-        if(!db.objectStoreNames.contains(IDB_DOCS_STORE)) db.createObjectStore(IDB_DOCS_STORE, {keyPath:'id'});
-      };
-      req.onsuccess = ()=> resolve(req.result);
-      req.onerror = ()=> reject(req.error);
-    });
-    return idbOpenPromise;
-  }
-  async function idbSavePhoto(id, dataUrl){
-    try{
-      const db = await openPhotoDB();
-      return await new Promise((resolve, reject)=>{
-        const tx = db.transaction(IDB_STORE, 'readwrite');
-        tx.objectStore(IDB_STORE).put({id, dataUrl});
-        tx.oncomplete = ()=> resolve(true);
-        tx.onerror = ()=> reject(tx.error);
-      });
-    }catch(e){ console.error('IndexedDB save error', e); return false; }
-  }
-  async function idbLoadPhoto(id){
-    try{
-      const db = await openPhotoDB();
-      return await new Promise((resolve, reject)=>{
-        const tx = db.transaction(IDB_STORE, 'readonly');
-        const req = tx.objectStore(IDB_STORE).get(id);
-        req.onsuccess = ()=> resolve(req.result ? req.result.dataUrl : null);
-        req.onerror = ()=> reject(req.error);
-      });
-    }catch(e){ console.error('IndexedDB load error', e); return null; }
-  }
-  async function idbDeletePhoto(id){
-    try{
-      const db = await openPhotoDB();
-      return await new Promise((resolve, reject)=>{
-        const tx = db.transaction(IDB_STORE, 'readwrite');
-        tx.objectStore(IDB_STORE).delete(id);
-        tx.oncomplete = ()=> resolve(true);
-        tx.onerror = ()=> reject(tx.error);
-      });
-    }catch(e){ console.error('IndexedDB delete error', e); return false; }
-  }
-  async function idbSaveDocument(id, dataUrl){
-    try{
-      const db = await openPhotoDB();
-      return await new Promise((resolve, reject)=>{
-        const tx = db.transaction(IDB_DOCS_STORE, 'readwrite');
-        tx.objectStore(IDB_DOCS_STORE).put({id, dataUrl});
-        tx.oncomplete = ()=> resolve(true);
-        tx.onerror = ()=> reject(tx.error);
-      });
-    }catch(e){ console.error('IndexedDB doc save error', e); return false; }
-  }
-  async function idbLoadDocument(id){
-    try{
-      const db = await openPhotoDB();
-      return await new Promise((resolve, reject)=>{
-        const tx = db.transaction(IDB_DOCS_STORE, 'readonly');
-        const req = tx.objectStore(IDB_DOCS_STORE).get(id);
-        req.onsuccess = ()=> resolve(req.result ? req.result.dataUrl : null);
-        req.onerror = ()=> reject(req.error);
-      });
-    }catch(e){ console.error('IndexedDB doc load error', e); return null; }
-  }
-  async function idbDeleteDocument(id){
-    try{
-      const db = await openPhotoDB();
-      return await new Promise((resolve, reject)=>{
-        const tx = db.transaction(IDB_DOCS_STORE, 'readwrite');
-        tx.objectStore(IDB_DOCS_STORE).delete(id);
-        tx.oncomplete = ()=> resolve(true);
-        tx.onerror = ()=> reject(tx.error);
-      });
-    }catch(e){ console.error('IndexedDB doc delete error', e); return false; }
-  }
+  // ---------- Photos & documents (receipt attachments, PDFs, etc.) ----------
+  // These go through window.storage — the same mechanism as every other kind of
+  // data in this app (lançamentos, tasks, notes), rather than IndexedDB. IndexedDB
+  // is a raw browser storage API, and inside a third-party iframe (which is what
+  // this app runs in) desktop browsers with strict privacy settings can silently
+  // block it — that's almost certainly why uploads got stuck on desktop while
+  // working fine on iPhone. window.storage is Anthropic's own bridge, not a
+  // browser storage primitive, so it doesn't hit that same restriction — and it's
+  // already proven reliable everywhere else in this app. Each entry still only
+  // keeps {id, criadoEm} references, never the file itself, and files are
+  // compressed hard so they comfortably fit window.storage's 5MB-per-key ceiling.
+  async function savePhotoBlob(id, dataUrl){ return await saveKey('photo_' + id, dataUrl); }
+  async function loadPhotoBlob(id){ return await loadKey('photo_' + id, null); }
+  async function deletePhotoBlob(id){ await deleteKey('photo_' + id); return true; }
+  async function saveDocBlob(id, dataUrl){ return await saveKey('doc_' + id, dataUrl); }
+  async function loadDocBlob(id){ return await loadKey('doc_' + id, null); }
+  async function deleteDocBlob(id){ await deleteKey('doc_' + id); return true; }
+
 
   function compressImageFile(file, maxDim, quality){
-    maxDim = maxDim || 1150;
-    quality = quality || 0.68;
+    maxDim = maxDim || 950;
+    quality = quality || 0.6;
     return new Promise((resolve, reject)=>{
       const reader = new FileReader();
       reader.onload = (ev)=>{
@@ -1352,7 +1276,7 @@
   }
   async function deletePhotoBlobs(fotos){
     if(!fotos || !fotos.length) return;
-    for(const f of fotos){ await idbDeletePhoto(f.id); }
+    for(const f of fotos){ await deletePhotoBlob(f.id); }
   }
 
   async function loadAll(){
@@ -2002,7 +1926,7 @@
     if(!fotos || fotos.length === 0){ containerEl.innerHTML = ''; return; }
     containerEl.innerHTML = fotos.map(f=>`<div class="photo-thumb" data-photo-id="${escapeHTML(f.id)}"><div class="photo-spinner">...</div></div>`).join('');
     for(const f of fotos){
-      const dataUrl = f.dataUrl || await idbLoadPhoto(f.id);
+      const dataUrl = f.dataUrl || await loadPhotoBlob(f.id);
       const el = containerEl.querySelector(`[data-photo-id="${CSS.escape(f.id)}"]`);
       if(!el) continue; // container was re-rendered while this was loading
       if(!dataUrl){ el.innerHTML = '<div class="photo-spinner">Erro</div>'; continue; }
@@ -2075,7 +1999,7 @@
     const item = photoGroupNav.items[newIndex];
     $('#photoViewLoading').style.display = 'block';
     $('#photoZoomViewport').style.display = 'none';
-    const dataUrl = await idbLoadPhoto(item.id);
+    const dataUrl = await loadPhotoBlob(item.id);
     if(!dataUrl){ showToast('Não consegui carregar essa foto.'); return; }
     showPhotoInLightbox(dataUrl, ()=> deleteAggregatedPhotoNow(photoGroupNav.catKey, item.id));
     updatePhotoNavUI();
@@ -2119,7 +2043,7 @@
     } else {
       draftFotos = draftFotos.filter(f=>f.id!==id);
     }
-    await idbDeletePhoto(id);
+    await deletePhotoBlob(id);
     renderFormPhotoThumbs();
     renderAll();
     showToast('Foto excluída.');
@@ -2137,11 +2061,11 @@
     try{ dataUrl = await withTimeout(compressImageFile(file), 20000, 'photo-processing-timeout'); }
     catch(err){ console.error('photo compress error', err); throw new Error('process-failed'); }
     const photoId = uid('ph');
-    let ok = await idbSavePhoto(photoId, dataUrl);
+    let ok = await savePhotoBlob(photoId, dataUrl);
     if(!ok){
       try{
         dataUrl = await withTimeout(compressImageFile(file, 800, 0.5), 20000, 'photo-processing-timeout');
-        ok = await idbSavePhoto(photoId, dataUrl);
+        ok = await savePhotoBlob(photoId, dataUrl);
       }catch(err){ console.error('photo compress retry error', err); }
     }
     if(!ok) throw new Error('save-failed');
@@ -2189,7 +2113,7 @@
     if(!entry) return;
     entry.fotos = (entry.fotos||[]).filter(f=>f.id!==id);
     await saveKey(activeModal.kind==='caixa' ? 'caixaObra' : 'empreiteiro', list);
-    await idbDeletePhoto(id);
+    await deletePhotoBlob(id);
     renderModalPhotoThumbs(entry.fotos);
     renderAll();
     showToast('Foto excluída.');
@@ -2230,7 +2154,7 @@
   }
   async function deleteTaskDraftPhotoNow(id){
     draftTaskFotos = draftTaskFotos.filter(f=>f.id!==id);
-    await idbDeletePhoto(id);
+    await deletePhotoBlob(id);
     renderTaskFormPhotoThumbs();
     showToast('Foto excluída.');
   }
@@ -2268,7 +2192,7 @@
     if(!t) return;
     t.fotos = (t.fotos||[]).filter(f=>f.id!==id);
     await saveKey('tasks', tasks);
-    await idbDeletePhoto(id);
+    await deletePhotoBlob(id);
     renderTaskModalPhotoThumbs(t.fotos);
     renderAll();
     showToast('Foto excluída.');
@@ -2645,7 +2569,7 @@
   }
   async function deleteNoteDraftPhotoNow(id){
     draftNoteFotos = draftNoteFotos.filter(f=>f.id!==id);
-    await idbDeletePhoto(id);
+    await deletePhotoBlob(id);
     renderNoteFormPhotoThumbs();
     showToast('Foto excluída.');
   }
@@ -2687,7 +2611,7 @@
     if(!n) return;
     n.fotos = (n.fotos||[]).filter(f=>f.id!==photoId);
     await saveKey('notes', notes);
-    await idbDeletePhoto(photoId);
+    await deletePhotoBlob(photoId);
     renderExistingNotePhotoThumbs(n);
     renderAll();
     showToast('Foto excluída.');
@@ -2989,7 +2913,7 @@
         }
       }
     }
-    await idbDeletePhoto(photoId);
+    await deletePhotoBlob(photoId);
     renderAll();
     showToast('Foto excluída.');
   }
@@ -3032,7 +2956,7 @@
     });
     list.forEach(async d=>{
       if(!(d.mimeType||'').startsWith('image/')) return;
-      const dataUrl = await idbLoadDocument(d.id);
+      const dataUrl = await loadDocBlob(d.id);
       const iconEl = document.getElementById('docicon-' + d.id);
       if(iconEl && dataUrl) iconEl.innerHTML = `<img src="${escapeHTML(dataUrl)}" alt="">`;
     });
@@ -3093,7 +3017,7 @@
   async function openDocument(id){
     const d = documentos.find(x=>x.id===id);
     if(!d) return;
-    const dataUrl = await idbLoadDocument(id);
+    const dataUrl = await loadDocBlob(id);
     if(!dataUrl){ showToast('Não consegui carregar esse documento.'); return; }
     if((d.mimeType||'').startsWith('image/')){
       openPhotoLightbox(id, dataUrl, ()=> deleteDocumentNow(id));
@@ -3113,7 +3037,7 @@
   async function deleteDocumentNow(id){
     documentos = documentos.filter(d=>d.id!==id);
     await saveKey('documentos', documentos);
-    await idbDeleteDocument(id);
+    await deleteDocBlob(id);
     renderDocsList();
     showToast('Documento excluído.');
   }
@@ -3126,8 +3050,12 @@
     const file = e.target.files[0];
     e.target.value = '';
     if(!file) return;
-    if(file.size > 20 * 1024 * 1024){
-      showToast('Arquivo muito grande (máx. 20MB). Tente um arquivo menor.');
+    const isImageFile = file.type.startsWith('image/');
+    const maxRawSize = isImageFile ? 12 * 1024 * 1024 : 3 * 1024 * 1024;
+    if(file.size > maxRawSize){
+      showToast(isImageFile
+        ? 'Imagem muito grande (máx. 12MB). Tente uma imagem menor.'
+        : 'Arquivo muito grande (máx. 3MB por enquanto). PDFs maiores serão possíveis quando a integração com o Google Drive estiver pronta.');
       return;
     }
     showToast('Enviando documento...', true);
@@ -3135,7 +3063,7 @@
       let dataUrl;
       try{
         dataUrl = await withTimeout(
-          file.type.startsWith('image/') ? compressImageFile(file, 1600, 0.75) : readFileAsDataURL(file),
+          isImageFile ? compressImageFile(file, 1300, 0.65) : readFileAsDataURL(file),
           20000, 'file-processing-timeout'
         );
       }catch(err){
@@ -3144,7 +3072,7 @@
         return;
       }
       const docId = uid('doc');
-      const ok = await idbSaveDocument(docId, dataUrl);
+      const ok = await saveDocBlob(docId, dataUrl);
       if(!ok){ showToast('Não consegui salvar o documento. Tente novamente.'); return; }
       documentos.push({id: docId, projectId: activeProjectId, nome: file.name, mimeType: file.type || 'application/octet-stream', criadoEm: Date.now()});
       const metaOk = await saveKey('documentos', documentos);
