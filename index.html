@@ -173,8 +173,8 @@
   .entry-card .nome{font-weight:600; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; gap:6px;}
   .entry-card .tag{font-size:9.5px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--blue); background:rgba(44,92,115,0.09); padding:2px 6px; border-radius:5px; flex:0 0 auto;}
   .entry-card .meta{font-size:11.5px; color:var(--ink-soft); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; gap:5px;}
-  .entry-card .notedot{display:inline-flex; align-items:center; gap:2px; color:var(--amber); font-weight:700;}
-  .entry-card .notedot svg{width:11px;height:11px; stroke:var(--amber); fill:none; stroke-width:2.4;}
+  .notedot{display:inline-flex; align-items:center; gap:2px; color:var(--amber); font-weight:700; flex-shrink:0;}
+  .notedot svg{width:11px;height:11px; stroke:var(--amber); fill:none; stroke-width:2.4; flex-shrink:0;}
   .entry-card .valor{flex:0 0 auto; font-family:'Oswald',sans-serif; font-weight:600; font-size:14.5px; color:var(--ink); text-align:right;}
   .entry-card .valor .who{display:block; font-family:'Inter',sans-serif; font-size:9.5px; font-weight:600; color:var(--ink-soft); text-transform:none; margin-top:1px;}
 
@@ -449,6 +449,7 @@
   .toast svg{width:15px;height:15px; stroke:#7fd99a; fill:none; stroke-width:2.5; flex:0 0 auto;}
 
   .storage-note{font-size:11px; color:#9c9385; text-align:center; margin-top:14px; line-height:1.5;}
+  .app-version{font-size:10.5px; color:#c2bbab; text-align:center; margin-top:6px; letter-spacing:0.02em;}
 
   /* Documentos */
   .docs-photo-section{margin-bottom:18px;}
@@ -463,7 +464,29 @@
   .doc-meta{font-size:11px; color:var(--ink-soft); margin-top:2px;}
   .doc-del{background:none; border:none; color:var(--red); padding:6px; flex:0 0 auto; cursor:pointer;}
   .doc-del svg{width:17px; height:17px; stroke:var(--red); fill:none; stroke-width:2;}
-  #pdfViewFrame{width:100%; height:64vh; border:1px solid var(--line); border-radius:10px; background:#e9e5d8; display:block;}
+  /* Zoom viewport: a plain scrollable box. Zooming scales the content INSIDE it via
+     CSS transform — never the page itself — so pinch/zoom stays fully contained to
+     the document/photo being viewed, and native scrolling lets you pan around it. */
+  .zoom-viewport{width:100%; max-height:64vh; overflow:auto; border:1px solid var(--line); border-radius:10px; background:#e9e5d8; -webkit-overflow-scrolling:touch;}
+  .zoom-viewport #photoViewImg{width:100%; display:block; transform-origin:top center; transition:transform .12s ease;}
+  #pdfViewFrame{width:100%; height:62vh; border:none; display:block; transform-origin:top left; transition:transform .12s ease;}
+  .zoom-controls{display:flex; align-items:center; justify-content:center; gap:10px; margin-top:10px;}
+  .photo-nav-controls{display:flex; align-items:center; justify-content:center; gap:16px; margin-top:10px;}
+  .photo-nav-btn{
+    width:38px; height:38px; border-radius:50%; border:none; background:rgba(255,255,255,0.92);
+    display:flex; align-items:center; justify-content:center; cursor:pointer;
+  }
+  .photo-nav-btn svg{width:19px; height:19px; stroke:var(--ink); fill:none; stroke-width:2.4; stroke-linecap:round; stroke-linejoin:round;}
+  .photo-nav-btn:disabled{opacity:0.35; cursor:default;}
+  .photo-nav-counter{color:#fff; font-size:12.5px; font-weight:600; min-width:44px; text-align:center;}
+  .zoom-controls button{
+    width:38px; height:38px; border-radius:50%; border:1.5px solid var(--line); background:#fff;
+    font-family:'Oswald',sans-serif; font-size:18px; font-weight:600; color:var(--ink); cursor:pointer;
+    display:flex; align-items:center; justify-content:center; line-height:1;
+  }
+  .zoom-controls #photoZoomResetBtn, .zoom-controls #pdfZoomResetBtn{
+    width:auto; border-radius:19px; padding:0 14px; font-family:'Inter',sans-serif; font-size:12.5px; font-weight:700;
+  }
   .drive-banner{
     display:flex; gap:12px; background:var(--paper-2); border:1.5px dashed var(--line); border-radius:14px;
     padding:14px; margin-top:22px; align-items:flex-start;
@@ -791,9 +814,6 @@
 
   <!-- DOCUMENTOS -->
   <div class="view" id="view-docs">
-    <div class="section-title">Fotos do projeto</div>
-    <div id="projectPhotosContainer"></div>
-
     <div class="section-title">Documentos</div>
     <div class="form-card" style="margin-bottom:14px; padding:14px;">
       <label for="docFileInput" class="btn btn-primary btn-block photo-pick-btn" style="justify-content:center; width:100%;">
@@ -803,6 +823,9 @@
       <input type="file" id="docFileInput" accept="image/*,application/pdf,.doc,.docx,.xls,.xlsx,.txt" style="display:none;">
     </div>
     <div id="docsList"></div>
+
+    <div class="section-title">Fotos do projeto</div>
+    <div id="projectPhotosContainer"></div>
 
     <div class="drive-banner">
       <svg viewBox="0 0 24 24"><path d="M17.5 19a4.5 4.5 0 000-9 6 6 0 00-11.4 2A4 4 0 007 19h10.5z"/></svg>
@@ -880,8 +903,24 @@
 <div class="modal-overlay center-modal" id="photoViewModal">
   <div style="width:100%; max-width:420px;">
     <div id="photoViewLoading" style="text-align:center; color:#fff; font-size:13.5px; padding:20px;">Carregando...</div>
-    <img id="photoViewImg" src="" style="display:none; width:100%; max-height:78vh; object-fit:contain; border-radius:12px;">
-    <div class="form-actions" style="margin-top:14px;">
+    <div class="zoom-viewport" id="photoZoomViewport" style="display:none;">
+      <img id="photoViewImg" src="">
+    </div>
+    <div class="photo-nav-controls" id="photoNavControls" style="display:none;">
+      <button type="button" class="photo-nav-btn" id="photoNavPrevBtn" aria-label="Foto anterior">
+        <svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>
+      </button>
+      <span class="photo-nav-counter" id="photoNavCounter"></span>
+      <button type="button" class="photo-nav-btn" id="photoNavNextBtn" aria-label="Próxima foto">
+        <svg viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></svg>
+      </button>
+    </div>
+    <div class="zoom-controls">
+      <button type="button" id="photoZoomOutBtn" aria-label="Diminuir zoom">−</button>
+      <button type="button" id="photoZoomResetBtn">100%</button>
+      <button type="button" id="photoZoomInBtn" aria-label="Aumentar zoom">+</button>
+    </div>
+    <div class="form-actions" style="margin-top:10px;">
       <button class="btn btn-danger" id="photoViewDeleteBtn">Excluir foto</button>
       <button class="btn btn-ghost btn-block" data-close="photoViewModal" style="background:rgba(255,255,255,0.92);">Fechar</button>
     </div>
@@ -896,8 +935,15 @@
       <h2 id="pdfViewTitle" style="font-size:15px; text-transform:none; font-family:'Inter',sans-serif; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:78%;">Documento</h2>
       <button class="modal-close" data-close="pdfViewModal"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
     </div>
-    <iframe id="pdfViewFrame" src="" title="Pré-visualização do PDF"></iframe>
-    <div class="form-actions" style="margin-top:14px;">
+    <div class="zoom-viewport" id="pdfZoomViewport">
+      <iframe id="pdfViewFrame" src="" title="Pré-visualização do PDF"></iframe>
+    </div>
+    <div class="zoom-controls">
+      <button type="button" id="pdfZoomOutBtn" aria-label="Diminuir zoom">−</button>
+      <button type="button" id="pdfZoomResetBtn">100%</button>
+      <button type="button" id="pdfZoomInBtn" aria-label="Aumentar zoom">+</button>
+    </div>
+    <div class="form-actions" style="margin-top:10px;">
       <button class="btn btn-danger" id="pdfViewDeleteBtn">Excluir</button>
       <button class="btn btn-secondary btn-block" id="pdfViewDownloadBtn">Baixar</button>
     </div>
@@ -982,6 +1028,7 @@
       <button class="btn btn-secondary btn-block" id="exportExcelBtn">Exportar tudo para Excel</button>
       <div class="storage-note">Lançamentos, tarefas e notas ficam salvos na sua conta. Fotos e documentos, por enquanto, ficam salvos apenas neste dispositivo/navegador (não sincronizam entre aparelhos ainda). A sincronização com Google Sheets e Google Drive será adicionada na próxima etapa.</div>
     </div>
+    <div class="app-version">Construtora Moreira App — v22</div>
   </div>
 </div>
 
@@ -1063,6 +1110,15 @@
   const WEEKDAYS = ['domingo','segunda-feira','terça-feira','quarta-feira','quinta-feira','sexta-feira','sábado'];
 
   function uid(p){ return (p||'x') + '_' + Date.now() + '_' + Math.random().toString(36).slice(2,8); }
+  // Guards against a Promise that never settles (e.g. a FileReader whose onload/onerror
+  // never fires — a real, if rare, browser quirk, more likely with unusual desktop files).
+  // Without this, an upload could hang forever with no feedback at all.
+  function withTimeout(promise, ms, timeoutMsg){
+    return Promise.race([
+      promise,
+      new Promise((_, reject)=> setTimeout(()=> reject(new Error(timeoutMsg || 'timeout')), ms)),
+    ]);
+  }
 
   function fmtBRL(v){
     v = Number(v)||0;
@@ -1963,24 +2019,77 @@
     }
   }
 
+  // ---------- Zoom controller (scoped to one element via CSS transform — never
+  // touches the page's own viewport, so it can't ever zoom the whole app) ----------
+  function makeZoomable(el, opts){
+    opts = opts || {};
+    const min = opts.min || 1, max = opts.max || 3, step = opts.step || 0.5;
+    const state = {scale: 1};
+    function apply(){ el.style.transform = 'scale(' + state.scale + ')'; }
+    function zoomIn(){ state.scale = Math.min(max, +(state.scale + step).toFixed(2)); apply(); }
+    function zoomOut(){ state.scale = Math.max(min, +(state.scale - step).toFixed(2)); apply(); }
+    function reset(){ state.scale = 1; apply(); }
+    return {state, zoomIn, zoomOut, reset};
+  }
+  const photoZoom = makeZoomable($('#photoViewImg'), {min:1, max:4, step:0.5});
+  $('#photoZoomInBtn').addEventListener('click', ()=> photoZoom.zoomIn());
+  $('#photoZoomOutBtn').addEventListener('click', ()=> photoZoom.zoomOut());
+  $('#photoZoomResetBtn').addEventListener('click', ()=> photoZoom.reset());
+  const pdfZoom = makeZoomable($('#pdfViewFrame'), {min:1, max:2.5, step:0.5});
+  $('#pdfZoomInBtn').addEventListener('click', ()=> pdfZoom.zoomIn());
+  $('#pdfZoomOutBtn').addEventListener('click', ()=> pdfZoom.zoomOut());
+  $('#pdfZoomResetBtn').addEventListener('click', ()=> pdfZoom.reset());
+
   let photoViewDeleteHandler = null;
-  function openPhotoLightbox(photoId, dataUrl, onDelete){
+  let photoGroupNav = null; // {items, index, catKey} — only set when opened from a navigable group
+  function openPhotoLightbox(photoId, dataUrl, onDelete, groupCtx){
+    photoGroupNav = groupCtx || null;
+    showPhotoInLightbox(dataUrl, onDelete);
+    updatePhotoNavUI();
+    $('#photoViewModal').classList.add('open');
+  }
+  function showPhotoInLightbox(dataUrl, onDelete){
     $('#photoViewLoading').style.display = 'none';
     const img = $('#photoViewImg');
     img.src = dataUrl;
-    img.style.display = 'block';
+    $('#photoZoomViewport').style.display = 'block';
+    photoZoom.reset();
     photoViewDeleteHandler = onDelete;
-    $('#photoViewModal').classList.add('open');
-    setViewportZoomable(true);
   }
+  function updatePhotoNavUI(){
+    const controls = $('#photoNavControls');
+    if(!photoGroupNav || photoGroupNav.items.length <= 1){
+      controls.style.display = 'none';
+      return;
+    }
+    controls.style.display = 'flex';
+    $('#photoNavCounter').textContent = (photoGroupNav.index + 1) + ' / ' + photoGroupNav.items.length;
+    $('#photoNavPrevBtn').disabled = photoGroupNav.index <= 0;
+    $('#photoNavNextBtn').disabled = photoGroupNav.index >= photoGroupNav.items.length - 1;
+  }
+  async function navigatePhoto(direction){
+    if(!photoGroupNav) return;
+    const newIndex = photoGroupNav.index + direction;
+    if(newIndex < 0 || newIndex >= photoGroupNav.items.length) return;
+    photoGroupNav.index = newIndex;
+    const item = photoGroupNav.items[newIndex];
+    $('#photoViewLoading').style.display = 'block';
+    $('#photoZoomViewport').style.display = 'none';
+    const dataUrl = await idbLoadPhoto(item.id);
+    if(!dataUrl){ showToast('Não consegui carregar essa foto.'); return; }
+    showPhotoInLightbox(dataUrl, ()=> deleteAggregatedPhotoNow(photoGroupNav.catKey, item.id));
+    updatePhotoNavUI();
+  }
+  $('#photoNavPrevBtn').addEventListener('click', ()=> navigatePhoto(-1));
+  $('#photoNavNextBtn').addEventListener('click', ()=> navigatePhoto(1));
   $('#photoViewDeleteBtn').addEventListener('click', async ()=>{
     if(!photoViewDeleteHandler) return;
     const handler = photoViewDeleteHandler;
     const ok = await showConfirm('Excluir esta foto? Essa ação não pode ser desfeita.', {title:'Excluir foto', okLabel:'Excluir'});
     if(!ok) return;
     $('#photoViewModal').classList.remove('open');
-    setViewportZoomable(false);
     photoViewDeleteHandler = null;
+    photoGroupNav = null;
     await handler();
   });
 
@@ -2025,13 +2134,13 @@
   // computer photo or screenshot can be far bigger than a phone camera capture).
   async function processAndSavePhoto(file){
     let dataUrl;
-    try{ dataUrl = await compressImageFile(file); }
+    try{ dataUrl = await withTimeout(compressImageFile(file), 20000, 'photo-processing-timeout'); }
     catch(err){ console.error('photo compress error', err); throw new Error('process-failed'); }
     const photoId = uid('ph');
     let ok = await idbSavePhoto(photoId, dataUrl);
     if(!ok){
       try{
-        dataUrl = await compressImageFile(file, 800, 0.5);
+        dataUrl = await withTimeout(compressImageFile(file, 800, 0.5), 20000, 'photo-processing-timeout');
         ok = await idbSavePhoto(photoId, dataUrl);
       }catch(err){ console.error('photo compress retry error', err); }
     }
@@ -2268,7 +2377,7 @@
   $all('[data-close]').forEach(btn=>{
     btn.addEventListener('click', ()=>{
       if(btn.dataset.close === 'pdfViewModal'){ closePdfPreview(); return; }
-      if(btn.dataset.close === 'photoViewModal'){ setViewportZoomable(false); }
+      if(btn.dataset.close === 'photoViewModal'){ photoGroupNav = null; }
       $('#'+btn.dataset.close).classList.remove('open');
       if(btn.dataset.close === 'detailModal') activeModal = null;
       if(btn.dataset.close === 'taskModal'){ activeTaskId = null; showTaskViewMode(); }
@@ -2278,7 +2387,7 @@
     ov.addEventListener('click', (e)=>{
       if(e.target !== ov) return;
       if(ov.id === 'pdfViewModal'){ closePdfPreview(); return; }
-      if(ov.id === 'photoViewModal'){ setViewportZoomable(false); }
+      if(ov.id === 'photoViewModal'){ photoGroupNav = null; }
       ov.classList.remove('open'); activeModal=null; activeTaskId=null; showTaskViewMode();
     });
   });
@@ -2837,7 +2946,10 @@
       const el = document.getElementById('docsPhotos-' + c.key);
       renderPhotoThumbs(el, c.items, {
         deletable: true,
-        onView: (id, dataUrl)=> openPhotoLightbox(id, dataUrl, ()=> deleteAggregatedPhotoNow(c.key, id)),
+        onView: (id, dataUrl)=>{
+          const idx = c.items.findIndex(x=>x.id===id);
+          openPhotoLightbox(id, dataUrl, ()=> deleteAggregatedPhotoNow(c.key, id), {items: c.items, index: idx, catKey: c.key});
+        },
         onDelete: (id)=> deleteAggregatedPhotoWithConfirm(c.key, id),
       });
     });
@@ -2946,13 +3058,6 @@
   }
   let pdfViewCurrentId = null;
   let pdfViewCurrentUrl = null;
-  function setViewportZoomable(allow){
-    const vp = document.querySelector('meta[name="viewport"]');
-    if(!vp) return;
-    vp.setAttribute('content', allow
-      ? 'width=device-width, initial-scale=1.0, viewport-fit=cover'
-      : 'width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no, viewport-fit=cover');
-  }
   function openPdfPreview(id, dataUrl, filename){
     const blob = dataUrlToBlob(dataUrl);
     const url = URL.createObjectURL(blob);
@@ -2960,15 +3065,14 @@
     pdfViewCurrentUrl = url;
     $('#pdfViewTitle').textContent = filename || 'Documento';
     $('#pdfViewFrame').src = url;
+    pdfZoom.reset();
     $('#pdfViewModal').classList.add('open');
-    setViewportZoomable(true); // let the person pinch-zoom the PDF itself
   }
   function closePdfPreview(){
     $('#pdfViewModal').classList.remove('open');
     $('#pdfViewFrame').src = 'about:blank'; // stop rendering, free memory
     if(pdfViewCurrentUrl){ URL.revokeObjectURL(pdfViewCurrentUrl); pdfViewCurrentUrl = null; }
     pdfViewCurrentId = null;
-    setViewportZoomable(false); // restore the normal locked zoom for the rest of the app
   }
   $('#pdfViewDownloadBtn').addEventListener('click', ()=>{
     if(!pdfViewCurrentUrl) return;
@@ -3027,23 +3131,32 @@
       return;
     }
     showToast('Enviando documento...', true);
-    let dataUrl;
     try{
-      dataUrl = file.type.startsWith('image/')
-        ? await compressImageFile(file, 1600, 0.75) // a bit higher quality — these are reference docs, not just receipts
-        : await readFileAsDataURL(file);
+      let dataUrl;
+      try{
+        dataUrl = await withTimeout(
+          file.type.startsWith('image/') ? compressImageFile(file, 1600, 0.75) : readFileAsDataURL(file),
+          20000, 'file-processing-timeout'
+        );
+      }catch(err){
+        console.error('doc process error', err);
+        showToast('Não consegui processar esse arquivo. Tente novamente ou use outro arquivo.');
+        return;
+      }
+      const docId = uid('doc');
+      const ok = await idbSaveDocument(docId, dataUrl);
+      if(!ok){ showToast('Não consegui salvar o documento. Tente novamente.'); return; }
+      documentos.push({id: docId, projectId: activeProjectId, nome: file.name, mimeType: file.type || 'application/octet-stream', criadoEm: Date.now()});
+      const metaOk = await saveKey('documentos', documentos);
+      if(!metaOk){ showToast('Foto salva, mas houve um erro ao registrar o documento. Tente novamente.'); return; }
+      renderDocsList();
+      showToast('Documento adicionado.');
     }catch(err){
-      console.error(err);
-      showToast('Não consegui processar esse arquivo.');
-      return;
+      // Final safety net — guarantees the persistent "Enviando..." toast can never
+      // get stuck forever, even if something entirely unanticipated goes wrong.
+      console.error('unexpected doc upload error', err);
+      showToast('Algo deu errado ao enviar o documento. Tente novamente.');
     }
-    const docId = uid('doc');
-    const ok = await idbSaveDocument(docId, dataUrl);
-    if(!ok){ showToast('Não consegui salvar o documento. Tente novamente.'); return; }
-    documentos.push({id: docId, projectId: activeProjectId, nome: file.name, mimeType: file.type || 'application/octet-stream', criadoEm: Date.now()});
-    await saveKey('documentos', documentos);
-    renderDocsList();
-    showToast('Documento adicionado.');
   });
 
   function renderAll(){
