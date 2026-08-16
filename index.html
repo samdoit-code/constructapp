@@ -1028,7 +1028,7 @@
       <button class="btn btn-secondary btn-block" id="exportExcelBtn">Exportar tudo para Excel</button>
       <div class="storage-note">Lançamentos, tarefas, notas, fotos e documentos ficam salvos na sua conta. Arquivos muito grandes (PDFs acima de 3MB) ainda não são suportados — isso será resolvido com a integração ao Google Drive, na próxima etapa.</div>
     </div>
-    <div class="app-version">Construtora Moreira App — v23</div>
+    <div class="app-version">Construtora Moreira App — v24</div>
   </div>
 </div>
 
@@ -1240,12 +1240,45 @@
   // already proven reliable everywhere else in this app. Each entry still only
   // keeps {id, criadoEm} references, never the file itself, and files are
   // compressed hard so they comfortably fit window.storage's 5MB-per-key ceiling.
-  async function savePhotoBlob(id, dataUrl){ return await saveKey('photo_' + id, dataUrl); }
-  async function loadPhotoBlob(id){ return await loadKey('photo_' + id, null); }
-  async function deletePhotoBlob(id){ await deleteKey('photo_' + id); return true; }
-  async function saveDocBlob(id, dataUrl){ return await saveKey('doc_' + id, dataUrl); }
-  async function loadDocBlob(id){ return await loadKey('doc_' + id, null); }
-  async function deleteDocBlob(id){ await deleteKey('doc_' + id); return true; }
+  // In-memory cache: once a photo/document blob is fetched, keep it around for the
+  // rest of the session. Without this, re-rendering the Docs view (which happens on
+  // every single action in the app via renderAll — checking a task, adding a note,
+  // anything) would re-fetch every visible thumbnail from storage again, even
+  // though nothing changed. With hundreds of photos this was the real bottleneck.
+  const photoBlobCache = new Map();
+  const docBlobCache = new Map();
+  async function savePhotoBlob(id, dataUrl){
+    const ok = await saveKey('photo_' + id, dataUrl);
+    if(ok) photoBlobCache.set(id, dataUrl);
+    return ok;
+  }
+  async function loadPhotoBlob(id){
+    if(photoBlobCache.has(id)) return photoBlobCache.get(id);
+    const val = await loadKey('photo_' + id, null);
+    if(val !== null) photoBlobCache.set(id, val);
+    return val;
+  }
+  async function deletePhotoBlob(id){
+    await deleteKey('photo_' + id);
+    photoBlobCache.delete(id);
+    return true;
+  }
+  async function saveDocBlob(id, dataUrl){
+    const ok = await saveKey('doc_' + id, dataUrl);
+    if(ok) docBlobCache.set(id, dataUrl);
+    return ok;
+  }
+  async function loadDocBlob(id){
+    if(docBlobCache.has(id)) return docBlobCache.get(id);
+    const val = await loadKey('doc_' + id, null);
+    if(val !== null) docBlobCache.set(id, val);
+    return val;
+  }
+  async function deleteDocBlob(id){
+    await deleteKey('doc_' + id);
+    docBlobCache.delete(id);
+    return true;
+  }
 
 
   function compressImageFile(file, maxDim, quality){
@@ -1402,6 +1435,9 @@
         await saveKey('activeProjectId', activeProjectId);
         entriesPage = 1;
         notesPage = 1;
+        photosPagePerCat = {caixa:1, emp:1, tasks:1, notes:1};
+        docsPage = 1;
+        tasksPagePerCat = {overdue:1, today:1, open:1, done:1};
         renderProjectPills();
         populateTaskProjectSelect();
         renderAll();
@@ -1552,6 +1588,12 @@
   const ENTRIES_PAGE_SIZE = 60;
   let entriesPage = 1;
   let entriesViewMode = 'card';
+  const PHOTOS_PAGE_SIZE = 24;
+  let photosPagePerCat = {caixa:1, emp:1, tasks:1, notes:1};
+  const DOCS_PAGE_SIZE = 30;
+  let docsPage = 1;
+  const TASKS_PAGE_SIZE = 40;
+  let tasksPagePerCat = {overdue:1, today:1, open:1, done:1};
 
   $('#entriesViewToggle').querySelectorAll('button[data-mode]').forEach(btn=>{
     btn.addEventListener('click', ()=>{
@@ -1636,6 +1678,8 @@
   }
 
   function renderEntries(){
+    const view = document.getElementById('view-entries');
+    if(!view || !view.classList.contains('active')) return; // switchView() re-renders fresh on entry, so this is safe to skip otherwise
     populateEntryFilters();
     const src = entriesKind === 'caixa' ? caixaObra : empreiteiro;
     let list = projEntries(src).map(e=>({...e, kind: entriesKind}));
@@ -1925,11 +1969,14 @@
     if(!containerEl) return;
     if(!fotos || fotos.length === 0){ containerEl.innerHTML = ''; return; }
     containerEl.innerHTML = fotos.map(f=>`<div class="photo-thumb" data-photo-id="${escapeHTML(f.id)}"><div class="photo-spinner">...</div></div>`).join('');
-    for(const f of fotos){
+    // Fetch all visible thumbnails concurrently rather than one-by-one — with a
+    // bounded page size (see PHOTOS_PAGE_SIZE) this keeps rendering fast even
+    // when the underlying group has hundreds of photos in total.
+    await Promise.all(fotos.map(async f=>{
       const dataUrl = f.dataUrl || await loadPhotoBlob(f.id);
       const el = containerEl.querySelector(`[data-photo-id="${CSS.escape(f.id)}"]`);
-      if(!el) continue; // container was re-rendered while this was loading
-      if(!dataUrl){ el.innerHTML = '<div class="photo-spinner">Erro</div>'; continue; }
+      if(!el) return; // container was re-rendered while this was loading
+      if(!dataUrl){ el.innerHTML = '<div class="photo-spinner">Erro</div>'; return; }
       el.innerHTML = `<img src="${dataUrl}" alt="Recibo" loading="lazy">` +
         (ctx.deletable ? `<button type="button" class="photo-del" data-del="${escapeHTML(f.id)}"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>` : '');
       el.addEventListener('click', (ev)=>{
@@ -1940,7 +1987,7 @@
       if(delBtn){
         delBtn.addEventListener('click', (ev)=>{ ev.stopPropagation(); ctx.onDelete(f.id); });
       }
-    }
+    }));
   }
 
   // ---------- Zoom controller (scoped to one element via CSS transform — never
@@ -2440,12 +2487,25 @@
     const open = visible.filter(t => !t.feito && !isOverdue(t) && !isToday(t)).sort(taskSort);
     const done = visible.filter(t => t.feito).sort((a,b)=> b.criadoEm - a.criadoEm);
 
-    const map = [['#tasksOverdue', overdue, 'Nenhuma tarefa atrasada.'], ['#tasksToday', today, 'Nada previsto para hoje.'], ['#tasksOpen', open, 'Nenhuma tarefa em aberto.'], ['#tasksDone', done, 'Nenhuma tarefa concluída ainda.']];
-    map.forEach(([sel, list, emptyMsg])=>{
-      const box = $(sel);
+    const map = [['tasksOverdue', overdue, 'Nenhuma tarefa atrasada.', 'overdue'], ['tasksToday', today, 'Nada previsto para hoje.', 'today'], ['tasksOpen', open, 'Nenhuma tarefa em aberto.', 'open'], ['tasksDone', done, 'Nenhuma tarefa concluída ainda.', 'done']];
+    map.forEach(([selId, list, emptyMsg, catKey])=>{
+      const box = $('#'+selId);
       if(list.length === 0){ box.innerHTML = `<div class="empty-state" style="padding:16px;"><p class="hint">${emptyMsg}</p></div>`; return; }
-      box.innerHTML = list.map(t=>taskRowHTML(t,false)).join('');
+      const page = tasksPagePerCat[catKey] || 1;
+      const visibleCount = Math.min(page * TASKS_PAGE_SIZE, list.length);
+      let html = list.slice(0, visibleCount).map(t=>taskRowHTML(t,false)).join('');
+      if(visibleCount < list.length){
+        html += `<button class="btn btn-ghost btn-block" data-load-more-tasks="${catKey}" style="margin-top:6px;">Carregar mais (${list.length - visibleCount} restantes)</button>`;
+      }
+      box.innerHTML = html;
       attachTaskHandlers(box);
+      const btn = box.querySelector('[data-load-more-tasks]');
+      if(btn){
+        btn.addEventListener('click', ()=>{
+          tasksPagePerCat[catKey] = (tasksPagePerCat[catKey]||1) + 1;
+          renderTasks();
+        });
+      }
     });
   }
 
@@ -2861,20 +2921,37 @@
       container.innerHTML = emptyStateHTML('Nenhuma foto neste projeto ainda.', 'Fotos adicionadas em lançamentos, tarefas e notas aparecem aqui automaticamente.');
       return;
     }
-    container.innerHTML = cats.map(c => `
+    container.innerHTML = cats.map(c => {
+      const page = photosPagePerCat[c.key] || 1;
+      const visibleCount = Math.min(page * PHOTOS_PAGE_SIZE, c.items.length);
+      const hasMore = visibleCount < c.items.length;
+      return `
       <div class="docs-photo-section">
         <div class="docs-cat-label">${escapeHTML(c.label)} (${c.items.length})</div>
         <div class="photo-thumbs" id="docsPhotos-${c.key}"></div>
-      </div>`).join('');
+        ${hasMore ? `<button class="btn btn-ghost btn-sm" data-load-more-photos="${c.key}" style="margin-top:8px;">Carregar mais (${c.items.length - visibleCount} restantes)</button>` : ''}
+      </div>`;
+    }).join('');
     cats.forEach(c => {
+      const page = photosPagePerCat[c.key] || 1;
+      const visibleItems = c.items.slice(0, page * PHOTOS_PAGE_SIZE);
       const el = document.getElementById('docsPhotos-' + c.key);
-      renderPhotoThumbs(el, c.items, {
+      renderPhotoThumbs(el, visibleItems, {
         deletable: true,
         onView: (id, dataUrl)=>{
+          // Navigation spans the FULL group (not just the visible page) — pagination
+          // only bounds what's fetched/rendered up front, never what you can browse to.
           const idx = c.items.findIndex(x=>x.id===id);
           openPhotoLightbox(id, dataUrl, ()=> deleteAggregatedPhotoNow(c.key, id), {items: c.items, index: idx, catKey: c.key});
         },
         onDelete: (id)=> deleteAggregatedPhotoWithConfirm(c.key, id),
+      });
+    });
+    container.querySelectorAll('[data-load-more-photos]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const key = btn.dataset.loadMorePhotos;
+        photosPagePerCat[key] = (photosPagePerCat[key]||1) + 1;
+        renderProjectPhotosSection();
       });
     });
   }
@@ -2939,12 +3016,18 @@
   }
   function renderDocsList(){
     const box = $('#docsList');
-    const list = documentos.filter(d => d.projectId === activeProjectId).sort((a,b)=> b.criadoEm - a.criadoEm);
-    if(list.length === 0){
+    const fullList = documentos.filter(d => d.projectId === activeProjectId).sort((a,b)=> b.criadoEm - a.criadoEm);
+    if(fullList.length === 0){
       box.innerHTML = emptyStateHTML('Nenhum documento ainda.', 'Toque em "Adicionar documento" para enviar o primeiro.');
       return;
     }
-    box.innerHTML = list.map(docRowHTML).join('');
+    const visibleCount = Math.min(docsPage * DOCS_PAGE_SIZE, fullList.length);
+    const list = fullList.slice(0, visibleCount);
+    let html = list.map(docRowHTML).join('');
+    if(visibleCount < fullList.length){
+      html += `<button class="btn btn-ghost btn-block" id="loadMoreDocsBtn" style="margin-top:8px;">Carregar mais (${fullList.length - visibleCount} restantes)</button>`;
+    }
+    box.innerHTML = html;
     box.querySelectorAll('.doc-row').forEach(row=>{
       row.addEventListener('click', (e)=>{
         if(e.target.closest('.doc-del')) return;
@@ -2954,12 +3037,17 @@
     box.querySelectorAll('[data-del-doc]').forEach(btn=>{
       btn.addEventListener('click', (e)=>{ e.stopPropagation(); deleteDocumentWithConfirm(btn.dataset.delDoc); });
     });
+    // Thumbnails load concurrently (each callback fires independently, no sequential await chain).
     list.forEach(async d=>{
       if(!(d.mimeType||'').startsWith('image/')) return;
       const dataUrl = await loadDocBlob(d.id);
       const iconEl = document.getElementById('docicon-' + d.id);
       if(iconEl && dataUrl) iconEl.innerHTML = `<img src="${escapeHTML(dataUrl)}" alt="">`;
     });
+    const loadMoreBtn = $('#loadMoreDocsBtn');
+    if(loadMoreBtn){
+      loadMoreBtn.addEventListener('click', ()=>{ docsPage++; renderDocsList(); });
+    }
   }
 
   function dataUrlToBlob(dataUrl){
@@ -3077,6 +3165,7 @@
       documentos.push({id: docId, projectId: activeProjectId, nome: file.name, mimeType: file.type || 'application/octet-stream', criadoEm: Date.now()});
       const metaOk = await saveKey('documentos', documentos);
       if(!metaOk){ showToast('Foto salva, mas houve um erro ao registrar o documento. Tente novamente.'); return; }
+      docsPage = 1;
       renderDocsList();
       showToast('Documento adicionado.');
     }catch(err){
