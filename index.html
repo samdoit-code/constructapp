@@ -1028,7 +1028,7 @@
       <button class="btn btn-secondary btn-block" id="exportExcelBtn">Exportar tudo para Excel</button>
       <div class="storage-note">Lançamentos, tarefas, notas, fotos e documentos ficam salvos na sua conta. Arquivos muito grandes (PDFs acima de 3MB) ainda não são suportados — isso será resolvido com a integração ao Google Drive, na próxima etapa.</div>
     </div>
-    <div class="app-version">Construtora Moreira App — v24</div>
+    <div class="app-version">Construtora Moreira App — v26</div>
   </div>
 </div>
 
@@ -1200,86 +1200,138 @@
     return (word.charAt(0) || '?').toUpperCase();
   }
 
-  // ---------- Storage ----------
-  const warnedLargeKeys = new Set();
-  async function loadKey(key, fallback){
-    try{
-      const r = await window.storage.get(key, false);
-      return r && r.value ? JSON.parse(r.value) : fallback;
-    }catch(e){ return fallback; }
+  // ---------- Storage: Google Sheets via Apps Script ----------
+  // This app has no server of its own — Apps Script is the backend. GET is used
+  // for reads (a "simple request", no CORS preflight). POST bodies are sent as
+  // text/plain rather than application/json — a real Apps Script quirk: it
+  // doesn't respond usefully to the OPTIONS preflight a JSON content-type would
+  // trigger, so text/plain avoids that entirely; Code.gs parses the body as
+  // JSON manually on its side either way.
+  const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxoQYyrIMNNIKfO3wkAfj6f5HFAPCBfhw07cSsuRsAy4HWDODSjHBtGuTw2TgmfHRvZ_Q/exec';
+  async function sheetsGet(params){
+    const qs = new URLSearchParams(params || {}).toString();
+    const resp = await fetch(APPS_SCRIPT_URL + (qs ? '?' + qs : ''));
+    if(!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    if(data && data.error) throw new Error(data.error);
+    return data;
   }
+  async function sheetsPost(body){
+    const resp = await fetch(APPS_SCRIPT_URL, {
+      method: 'POST',
+      headers: {'Content-Type': 'text/plain;charset=utf-8'},
+      body: JSON.stringify(body),
+    });
+    if(!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    if(data && data.error) throw new Error(data.error);
+    return data;
+  }
+
+  // Maps the app's internal array names to the matching tab in the spreadsheet.
+  const SHEET_TAB = {
+    projects: 'projetos', caixaObra: 'caixaObra', empreiteiro: 'empreiteiro',
+    tasks: 'tarefas', notes: 'notas', documentos: 'documentos', tipos: 'tipos', unidades: 'unidades',
+  };
+
+  // Converts the app's in-memory shape into flat rows matching each tab's columns.
+  // Nested photo arrays (.fotos on entries/tasks/notes) are NOT included here —
+  // they're synced separately as their own flattened "Fotos" tab, see below.
+  // "notes" is also excluded — it's handled specially in saveKey(), since the
+  // Notas tab is a computed union of standalone notes AND notes nested inside
+  // individual lançamentos, not a direct reflection of this one array.
+  function toSheetRows(key, value){
+    if(key === 'projects') return value.map(p => ({id: p.name, ativo: true}));
+    if(key === 'caixaObra') return value.map(e => ({id:e.id, projeto:e.projectId, data:e.data, nome:e.nome, tipo:e.tipo||'', qtd:e.qtd||'', unidade:e.unidade||'', valor:e.valor||0, fornecedor:e.fornecedor||'', socio:e.socio||'', criadoEm:e.criadoEm}));
+    if(key === 'empreiteiro') return value.map(e => ({id:e.id, projeto:e.projectId, data:e.data, nome:e.nome, qtd:e.qtd||'', unidade:e.unidade||'', valor:e.valor||0, fornecedor:e.fornecedor||'', socio:e.socio||'', criadoEm:e.criadoEm}));
+    if(key === 'tasks') return value.map(t => ({id:t.id, projeto:t.projectId||'', texto:t.texto, prazo:t.prazo||'', prioridade:t.prioridade||'media', feito: !!t.feito, criadoEm:t.criadoEm}));
+    if(key === 'documentos') return value.map(d => ({id:d.id, projeto:d.projectId||'', nome:d.nome, mimeType:d.mimeType||'', driveFileId:d.driveFileId||'', driveUrl:d.driveUrl||'', criadoEm:d.criadoEm}));
+    if(key === 'tipos') return value.map(t => ({tipo: t}));
+    if(key === 'unidades') return value.map(u => ({unidade: u}));
+    return [];
+  }
+  // The "Fotos" tab is a flattened mirror of every .fotos[] array nested inside
+  // lançamentos, tarefas and notas — recomputed fresh from current state and
+  // pushed alongside whichever of those four just changed.
+  function computeFotosRows(){
+    const rows = [];
+    caixaObra.forEach(e => (e.fotos||[]).forEach(f => rows.push({id:f.id, refTipo:'caixa', refId:e.id, driveFileId:f.driveFileId||'', driveUrl:f.driveUrl||'', criadoEm:f.criadoEm})));
+    empreiteiro.forEach(e => (e.fotos||[]).forEach(f => rows.push({id:f.id, refTipo:'emp', refId:e.id, driveFileId:f.driveFileId||'', driveUrl:f.driveUrl||'', criadoEm:f.criadoEm})));
+    tasks.forEach(t => (t.fotos||[]).forEach(f => rows.push({id:f.id, refTipo:'tasks', refId:t.id, driveFileId:f.driveFileId||'', driveUrl:f.driveUrl||'', criadoEm:f.criadoEm})));
+    notes.forEach(n => (n.fotos||[]).forEach(f => rows.push({id:f.id, refTipo:'notes', refId:n.id, driveFileId:f.driveFileId||'', driveUrl:f.driveUrl||'', criadoEm:f.criadoEm})));
+    return rows;
+  }
+  // The "Notas" tab is likewise a union: standalone notes (refTipo/refId blank,
+  // "projeto" filled in) PLUS every small note attached to an individual
+  // lançamento (refTipo='caixa'/'emp', refId=the entry's id, "projeto" blank —
+  // it's implied by the parent entry). This is what makes entry-attached notes
+  // actually persist through Sheets instead of only living for the session.
+  function computeNotasRows(){
+    const rows = [];
+    notes.forEach(n => rows.push({id:n.id, projeto:n.projectId||'', texto:n.texto, criadoEm:n.criadoEm, refTipo:'', refId:''}));
+    caixaObra.forEach(e => (e.notas||[]).forEach(n => rows.push({id:n.id, projeto:'', texto:n.texto, criadoEm:n.criadoEm, refTipo:'caixa', refId:e.id})));
+    empreiteiro.forEach(e => (e.notas||[]).forEach(n => rows.push({id:n.id, projeto:'', texto:n.texto, criadoEm:n.criadoEm, refTipo:'emp', refId:e.id})));
+    return rows;
+  }
+
   async function saveKey(key, value){
+    if(key === 'activeProjectId'){
+      // Purely a personal "last viewed" preference — not shared data, so it
+      // stays local rather than round-tripping through the spreadsheet.
+      try{ localStorage.setItem('cmoreira_activeProjectId', JSON.stringify(value)); }catch(e){}
+      return true;
+    }
     try{
-      const json = JSON.stringify(value);
-      // Storage keys have a 5MB ceiling. Warn well before that so there's time to
-      // export/archive rather than finding out via a failed save.
-      if(json.length > 3500000 && !warnedLargeKeys.has(key)){
-        warnedLargeKeys.add(key);
-        showToast('Muitos dados salvos — exporte para Excel como backup em breve.');
+      if(key === 'notes'){
+        await sheetsPost({action:'saveSheet', sheet:'notas', rows: computeNotasRows()});
+        await sheetsPost({action:'saveSheet', sheet:'fotos', rows: computeFotosRows()});
+        return true;
       }
-      await window.storage.set(key, json, false);
+      if(SHEET_TAB[key]){
+        await sheetsPost({action:'saveSheet', sheet: SHEET_TAB[key], rows: toSheetRows(key, value)});
+        if(key==='caixaObra' || key==='empreiteiro' || key==='tasks'){
+          await sheetsPost({action:'saveSheet', sheet:'fotos', rows: computeFotosRows()});
+        }
+        if(key==='caixaObra' || key==='empreiteiro'){
+          await sheetsPost({action:'saveSheet', sheet:'notas', rows: computeNotasRows()});
+        }
+        return true;
+      }
       return true;
     }catch(e){
-      console.error('storage error', key, e);
-      showToast('Erro ao salvar. Tente novamente.');
+      console.error('sheets save error', key, e);
+      showToast('Erro ao salvar no Google Sheets. Verifique sua internet.');
       return false;
     }
   }
-  async function deleteKey(key){
-    try{ await window.storage.delete(key, false); }catch(e){ /* fine if it never existed */ }
-  }
 
-  // ---------- Photos & documents (receipt attachments, PDFs, etc.) ----------
-  // These go through window.storage — the same mechanism as every other kind of
-  // data in this app (lançamentos, tasks, notes), rather than IndexedDB. IndexedDB
-  // is a raw browser storage API, and inside a third-party iframe (which is what
-  // this app runs in) desktop browsers with strict privacy settings can silently
-  // block it — that's almost certainly why uploads got stuck on desktop while
-  // working fine on iPhone. window.storage is Anthropic's own bridge, not a
-  // browser storage primitive, so it doesn't hit that same restriction — and it's
-  // already proven reliable everywhere else in this app. Each entry still only
-  // keeps {id, criadoEm} references, never the file itself, and files are
-  // compressed hard so they comfortably fit window.storage's 5MB-per-key ceiling.
-  // In-memory cache: once a photo/document blob is fetched, keep it around for the
-  // rest of the session. Without this, re-rendering the Docs view (which happens on
-  // every single action in the app via renderAll — checking a task, adding a note,
-  // anything) would re-fetch every visible thumbnail from storage again, even
-  // though nothing changed. With hundreds of photos this was the real bottleneck.
-  const photoBlobCache = new Map();
-  const docBlobCache = new Map();
-  async function savePhotoBlob(id, dataUrl){
-    const ok = await saveKey('photo_' + id, dataUrl);
-    if(ok) photoBlobCache.set(id, dataUrl);
-    return ok;
-  }
-  async function loadPhotoBlob(id){
-    if(photoBlobCache.has(id)) return photoBlobCache.get(id);
-    const val = await loadKey('photo_' + id, null);
-    if(val !== null) photoBlobCache.set(id, val);
-    return val;
-  }
-  async function deletePhotoBlob(id){
-    await deleteKey('photo_' + id);
-    photoBlobCache.delete(id);
-    return true;
-  }
-  async function saveDocBlob(id, dataUrl){
-    const ok = await saveKey('doc_' + id, dataUrl);
-    if(ok) docBlobCache.set(id, dataUrl);
-    return ok;
-  }
-  async function loadDocBlob(id){
-    if(docBlobCache.has(id)) return docBlobCache.get(id);
-    const val = await loadKey('doc_' + id, null);
-    if(val !== null) docBlobCache.set(id, val);
-    return val;
-  }
-  async function deleteDocBlob(id){
-    await deleteKey('doc_' + id);
-    docBlobCache.delete(id);
-    return true;
-  }
+  // ---------- Photos & documents (Google Drive via Apps Script) ----------
+  // Uploaded files live directly in Google Drive now, in the project's own
+  // folder — not as base64 blobs in a key/value store. Viewing one is just
+  // pointing an <img>/<iframe> at a normal external URL — no fetch needed at
+  // all, since the browser loads it the same way it loads any other image.
+  function dataUrlToBase64_(dataUrl){ return dataUrl.split(',')[1] || ''; }
+  function mimeFromDataUrl_(dataUrl){ const m = dataUrl.match(/^data:([^;]+);/); return m ? m[1] : 'image/jpeg'; }
+  function photoEmbedUrl(driveFileId){ return 'https://lh3.googleusercontent.com/d/' + driveFileId; }
+  function pdfEmbedUrl(driveFileId){ return 'https://drive.google.com/file/d/' + driveFileId + '/preview'; }
 
+  async function uploadToDrive(dataUrl, filename, projectName){
+    try{
+      const resp = await sheetsPost({
+        action: 'uploadFile', projeto: projectName || '', filename: filename,
+        mimeType: mimeFromDataUrl_(dataUrl), base64: dataUrlToBase64_(dataUrl),
+      });
+      return {driveFileId: resp.fileId, driveUrl: resp.url};
+    }catch(e){ console.error('drive upload error', e); return null; }
+  }
+  async function deleteFromDrive(driveFileId){
+    if(!driveFileId) return;
+    // Best-effort: even if this fails, the reference is already gone from the
+    // sheet by the time this is called, so nothing breaks in the app itself —
+    // worst case an orphaned file sits harmlessly in Drive.
+    try{ await sheetsPost({action:'deleteFile', fileId: driveFileId}); }
+    catch(e){ console.error('drive delete error (non-fatal)', e); }
+  }
 
   function compressImageFile(file, maxDim, quality){
     maxDim = maxDim || 950;
@@ -1309,29 +1361,70 @@
   }
   async function deletePhotoBlobs(fotos){
     if(!fotos || !fotos.length) return;
-    for(const f of fotos){ await deletePhotoBlob(f.id); }
+    for(const f of fotos){ await deleteFromDrive(f.driveFileId); }
   }
 
   async function loadAll(){
-    projects = await loadKey('projects', null);
-    if(!projects || projects.length === 0){
-      projects = [{id:'p_gaviao', name:'Obra Gavião'}, {id:'p_boreal', name:'Obra Boreal'}];
-      await saveKey('projects', projects);
+    try{
+      const data = await sheetsGet({action:'getAll'});
+
+      projects = (data.projetos||[]).filter(p => p.ativo !== false).map(p => ({id: p.id, name: p.id}));
+      if(projects.length === 0) projects = [{id:'Obra Gavião', name:'Obra Gavião'}, {id:'Obra Boreal', name:'Obra Boreal'}];
+
+      const fotosByRef = {};
+      (data.fotos||[]).forEach(f=>{
+        const key = f.refTipo + '|' + f.refId;
+        (fotosByRef[key] = fotosByRef[key] || []).push({id:f.id, criadoEm:f.criadoEm, driveFileId:f.driveFileId, driveUrl:f.driveUrl});
+      });
+      const notasByRef = {};
+      const standaloneNotasRows = [];
+      (data.notas||[]).forEach(n=>{
+        if(n.refTipo === 'caixa' || n.refTipo === 'emp'){
+          const key = n.refTipo + '|' + n.refId;
+          (notasByRef[key] = notasByRef[key] || []).push({id:n.id, texto:n.texto, criadoEm:n.criadoEm});
+        } else {
+          standaloneNotasRows.push(n);
+        }
+      });
+
+      caixaObra = (data.caixaObra||[]).map(r => ({
+        id:r.id, projectId:r.projeto, nome:r.nome, tipo:r.tipo, qtd:r.qtd, unidade:r.unidade,
+        data:r.data, valor:r.valor, fornecedor:r.fornecedor, socio:r.socio,
+        notas: notasByRef['caixa|'+r.id] || [], fotos: fotosByRef['caixa|'+r.id] || [], criadoEm:r.criadoEm,
+      }));
+      empreiteiro = (data.empreiteiro||[]).map(r => ({
+        id:r.id, projectId:r.projeto, nome:r.nome, qtd:r.qtd, unidade:r.unidade,
+        data:r.data, valor:r.valor, fornecedor:r.fornecedor, socio:r.socio,
+        notas: notasByRef['emp|'+r.id] || [], fotos: fotosByRef['emp|'+r.id] || [], criadoEm:r.criadoEm,
+      }));
+      tasks = (data.tarefas||[]).map(r => ({
+        id:r.id, projectId:r.projeto||null, texto:r.texto, prazo:r.prazo, prioridade:r.prioridade||'media',
+        feito: !!r.feito, fotos: fotosByRef['tasks|'+r.id] || [], criadoEm:r.criadoEm,
+      }));
+      notes = standaloneNotasRows.map(r => ({
+        id:r.id, projectId:r.projeto||null, texto:r.texto,
+        fotos: fotosByRef['notes|'+r.id] || [], criadoEm:r.criadoEm,
+      }));
+      documentos = (data.documentos||[]).map(r => ({
+        id:r.id, projectId:r.projeto, nome:r.nome, mimeType:r.mimeType,
+        driveFileId:r.driveFileId, driveUrl:r.driveUrl, criadoEm:r.criadoEm,
+      }));
+      tipos = (data.tipos||[]).map(t=>t.tipo).filter(Boolean);
+      if(tipos.length === 0) tipos = DEFAULT_TIPOS.slice();
+      unidades = (data.unidades||[]).map(u=>u.unidade).filter(Boolean);
+      if(unidades.length === 0) unidades = DEFAULT_UNIDADES.slice();
+    }catch(err){
+      console.error('Erro ao carregar do Google Sheets', err);
+      showToast('Não consegui conectar ao Google Sheets. Verifique sua internet e tente novamente.');
+      projects = projects.length ? projects : [{id:'Obra Gavião', name:'Obra Gavião'}, {id:'Obra Boreal', name:'Obra Boreal'}];
+      caixaObra = caixaObra || []; empreiteiro = empreiteiro || []; tasks = tasks || []; notes = notes || [];
+      documentos = documentos || []; tipos = tipos.length ? tipos : DEFAULT_TIPOS.slice(); unidades = unidades.length ? unidades : DEFAULT_UNIDADES.slice();
     }
-    caixaObra = await loadKey('caixaObra', []);
-    empreiteiro = await loadKey('empreiteiro', []);
-    tasks = await loadKey('tasks', []);
-    notes = await loadKey('notes', []);
-    documentos = await loadKey('documentos', []);
-    tipos = await loadKey('tipos', null);
-    if(!tipos || tipos.length === 0){ tipos = DEFAULT_TIPOS.slice(); await saveKey('tipos', tipos); }
-    unidades = await loadKey('unidades', null);
-    if(!unidades || unidades.length === 0){ unidades = DEFAULT_UNIDADES.slice(); await saveKey('unidades', unidades); }
-    activeProjectId = await loadKey('activeProjectId', null);
-    if(!activeProjectId || !projects.find(p=>p.id===activeProjectId)){
-      activeProjectId = projects[0].id;
-      await saveKey('activeProjectId', activeProjectId);
-    }
+
+    let savedActiveId = null;
+    try{ savedActiveId = JSON.parse(localStorage.getItem('cmoreira_activeProjectId') || 'null'); }catch(e){}
+    activeProjectId = (savedActiveId && projects.find(p=>p.id===savedActiveId)) ? savedActiveId : projects[0].id;
+
     renderProjectPills();
     populateTipoSelect();
     populateUnidadeSelect();
@@ -1965,29 +2058,28 @@
   }
 
   // ---------- Photo thumbnails (shared renderer for form + detail modal) ----------
-  async function renderPhotoThumbs(containerEl, fotos, ctx){
+  function renderPhotoThumbs(containerEl, fotos, ctx){
     if(!containerEl) return;
     if(!fotos || fotos.length === 0){ containerEl.innerHTML = ''; return; }
-    containerEl.innerHTML = fotos.map(f=>`<div class="photo-thumb" data-photo-id="${escapeHTML(f.id)}"><div class="photo-spinner">...</div></div>`).join('');
-    // Fetch all visible thumbnails concurrently rather than one-by-one — with a
-    // bounded page size (see PHOTOS_PAGE_SIZE) this keeps rendering fast even
-    // when the underlying group has hundreds of photos in total.
-    await Promise.all(fotos.map(async f=>{
-      const dataUrl = f.dataUrl || await loadPhotoBlob(f.id);
+    containerEl.innerHTML = fotos.map(f=>{
+      const url = f.driveFileId ? photoEmbedUrl(f.driveFileId) : '';
+      const img = url ? `<img src="${url}" alt="Recibo" loading="lazy">` : `<div class="photo-spinner">Erro</div>`;
+      const delBtn = ctx.deletable ? `<button type="button" class="photo-del" data-del="${escapeHTML(f.id)}"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>` : '';
+      return `<div class="photo-thumb" data-photo-id="${escapeHTML(f.id)}">${img}${delBtn}</div>`;
+    }).join('');
+    fotos.forEach(f=>{
       const el = containerEl.querySelector(`[data-photo-id="${CSS.escape(f.id)}"]`);
-      if(!el) return; // container was re-rendered while this was loading
-      if(!dataUrl){ el.innerHTML = '<div class="photo-spinner">Erro</div>'; return; }
-      el.innerHTML = `<img src="${dataUrl}" alt="Recibo" loading="lazy">` +
-        (ctx.deletable ? `<button type="button" class="photo-del" data-del="${escapeHTML(f.id)}"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>` : '');
+      if(!el) return;
+      const url = f.driveFileId ? photoEmbedUrl(f.driveFileId) : '';
       el.addEventListener('click', (ev)=>{
         if(ev.target.closest('.photo-del')) return;
-        ctx.onView(f.id, dataUrl);
+        ctx.onView(f.id, url);
       });
       const delBtn = el.querySelector('.photo-del');
       if(delBtn){
         delBtn.addEventListener('click', (ev)=>{ ev.stopPropagation(); ctx.onDelete(f.id); });
       }
-    }));
+    });
   }
 
   // ---------- Zoom controller (scoped to one element via CSS transform — never
@@ -2038,17 +2130,14 @@
     $('#photoNavPrevBtn').disabled = photoGroupNav.index <= 0;
     $('#photoNavNextBtn').disabled = photoGroupNav.index >= photoGroupNav.items.length - 1;
   }
-  async function navigatePhoto(direction){
+  function navigatePhoto(direction){
     if(!photoGroupNav) return;
     const newIndex = photoGroupNav.index + direction;
     if(newIndex < 0 || newIndex >= photoGroupNav.items.length) return;
     photoGroupNav.index = newIndex;
     const item = photoGroupNav.items[newIndex];
-    $('#photoViewLoading').style.display = 'block';
-    $('#photoZoomViewport').style.display = 'none';
-    const dataUrl = await loadPhotoBlob(item.id);
-    if(!dataUrl){ showToast('Não consegui carregar essa foto.'); return; }
-    showPhotoInLightbox(dataUrl, ()=> deleteAggregatedPhotoNow(photoGroupNav.catKey, item.id));
+    if(!item.driveFileId){ showToast('Não consegui carregar essa foto.'); return; }
+    showPhotoInLightbox(photoEmbedUrl(item.driveFileId), ()=> deleteAggregatedPhotoNow(photoGroupNav.catKey, item.id));
     updatePhotoNavUI();
   }
   $('#photoNavPrevBtn').addEventListener('click', ()=> navigatePhoto(-1));
@@ -2080,17 +2169,22 @@
     });
   }
   async function deleteFormPhotoNow(id){
+    let driveFileId = null;
     if(editingId){
       const list = getList(addKind);
       const entry = list.find(x=>x.id===editingId);
       if(entry){
+        const target = (entry.fotos||[]).find(f=>f.id===id);
+        driveFileId = target && target.driveFileId;
         entry.fotos = (entry.fotos||[]).filter(f=>f.id!==id);
         await saveKey(addKind==='caixa' ? 'caixaObra' : 'empreiteiro', list);
       }
     } else {
+      const target = draftFotos.find(f=>f.id===id);
+      driveFileId = target && target.driveFileId;
       draftFotos = draftFotos.filter(f=>f.id!==id);
     }
-    await deletePhotoBlob(id);
+    await deleteFromDrive(driveFileId);
     renderFormPhotoThumbs();
     renderAll();
     showToast('Foto excluída.');
@@ -2100,36 +2194,37 @@
     if(!ok) return;
     await deleteFormPhotoNow(id);
   }
-  // Compress + save a photo to IndexedDB, automatically retrying with much heavier
-  // compression if the first attempt fails (covers oversized source images — a
-  // computer photo or screenshot can be far bigger than a phone camera capture).
-  async function processAndSavePhoto(file){
+  // Compress + upload a photo to the project's Drive folder, automatically
+  // retrying with much heavier compression if the first attempt fails (covers
+  // oversized source images — a computer photo or screenshot can be far
+  // bigger than what a phone camera capture produces).
+  async function processAndSavePhoto(file, projectName){
     let dataUrl;
     try{ dataUrl = await withTimeout(compressImageFile(file), 20000, 'photo-processing-timeout'); }
     catch(err){ console.error('photo compress error', err); throw new Error('process-failed'); }
     const photoId = uid('ph');
-    let ok = await savePhotoBlob(photoId, dataUrl);
-    if(!ok){
+    let uploaded = await uploadToDrive(dataUrl, photoId + '.jpg', projectName || activeProjectId);
+    if(!uploaded){
       try{
         dataUrl = await withTimeout(compressImageFile(file, 800, 0.5), 20000, 'photo-processing-timeout');
-        ok = await savePhotoBlob(photoId, dataUrl);
+        uploaded = await uploadToDrive(dataUrl, photoId + '.jpg', projectName || activeProjectId);
       }catch(err){ console.error('photo compress retry error', err); }
     }
-    if(!ok) throw new Error('save-failed');
-    return photoId;
+    if(!uploaded) throw new Error('save-failed');
+    return {id: photoId, driveFileId: uploaded.driveFileId, driveUrl: uploaded.driveUrl};
   }
   $('#formPhotoInput').addEventListener('change', async (e)=>{
     const file = e.target.files[0];
     e.target.value = '';
     if(!file) return;
     showToast('Processando foto...', true);
-    let photoId;
-    try{ photoId = await processAndSavePhoto(file); }
+    let photoResult;
+    try{ photoResult = await processAndSavePhoto(file, activeProjectId); }
     catch(err){
       showToast(err.message === 'process-failed' ? 'Não consegui processar essa imagem.' : 'Não consegui salvar a foto. Tente uma imagem menor.');
       return;
     }
-    const meta = {id: photoId, criadoEm: Date.now()};
+    const meta = {id: photoResult.id, criadoEm: Date.now(), driveFileId: photoResult.driveFileId, driveUrl: photoResult.driveUrl};
     if(editingId){
       const list = getList(addKind);
       const entry = list.find(x=>x.id===editingId);
@@ -2158,9 +2253,10 @@
     const list = getList(activeModal.kind);
     const entry = list.find(x=>x.id===activeModal.id);
     if(!entry) return;
+    const target = (entry.fotos||[]).find(f=>f.id===id);
     entry.fotos = (entry.fotos||[]).filter(f=>f.id!==id);
     await saveKey(activeModal.kind==='caixa' ? 'caixaObra' : 'empreiteiro', list);
-    await deletePhotoBlob(id);
+    await deleteFromDrive(target && target.driveFileId);
     renderModalPhotoThumbs(entry.fotos);
     renderAll();
     showToast('Foto excluída.');
@@ -2178,13 +2274,13 @@
     const list = getList(activeModal.kind);
     const entry = list.find(x=>x.id===activeModal.id);
     if(!entry) return;
-    let photoId;
-    try{ photoId = await processAndSavePhoto(file); }
+    let photoResult;
+    try{ photoResult = await processAndSavePhoto(file, entry.projectId); }
     catch(err){
       showToast(err.message === 'process-failed' ? 'Não consegui processar essa imagem.' : 'Não consegui salvar a foto. Tente uma imagem menor.');
       return;
     }
-    entry.fotos = [...(entry.fotos||[]), {id: photoId, criadoEm: Date.now()}];
+    entry.fotos = [...(entry.fotos||[]), {id: photoResult.id, criadoEm: Date.now(), driveFileId: photoResult.driveFileId, driveUrl: photoResult.driveUrl}];
     await saveKey(activeModal.kind==='caixa' ? 'caixaObra' : 'empreiteiro', list);
     renderModalPhotoThumbs(entry.fotos);
     renderAll();
@@ -2200,8 +2296,9 @@
     });
   }
   async function deleteTaskDraftPhotoNow(id){
+    const target = draftTaskFotos.find(f=>f.id===id);
     draftTaskFotos = draftTaskFotos.filter(f=>f.id!==id);
-    await deletePhotoBlob(id);
+    await deleteFromDrive(target && target.driveFileId);
     renderTaskFormPhotoThumbs();
     showToast('Foto excluída.');
   }
@@ -2215,13 +2312,13 @@
     e.target.value = '';
     if(!file) return;
     showToast('Processando foto...', true);
-    let photoId;
-    try{ photoId = await processAndSavePhoto(file); }
+    let photoResult;
+    try{ photoResult = await processAndSavePhoto(file, activeProjectId); }
     catch(err){
       showToast(err.message === 'process-failed' ? 'Não consegui processar essa imagem.' : 'Não consegui salvar a foto. Tente uma imagem menor.');
       return;
     }
-    draftTaskFotos.push({id: photoId, criadoEm: Date.now()});
+    draftTaskFotos.push({id: photoResult.id, criadoEm: Date.now(), driveFileId: photoResult.driveFileId, driveUrl: photoResult.driveUrl});
     renderTaskFormPhotoThumbs();
     showToast('Foto adicionada.');
   });
@@ -2237,9 +2334,10 @@
     if(!activeTaskId) return;
     const t = tasks.find(x=>x.id===activeTaskId);
     if(!t) return;
+    const target = (t.fotos||[]).find(f=>f.id===id);
     t.fotos = (t.fotos||[]).filter(f=>f.id!==id);
     await saveKey('tasks', tasks);
-    await deletePhotoBlob(id);
+    await deleteFromDrive(target && target.driveFileId);
     renderTaskModalPhotoThumbs(t.fotos);
     renderAll();
     showToast('Foto excluída.');
@@ -2256,13 +2354,13 @@
     showToast('Processando foto...', true);
     const t = tasks.find(x=>x.id===activeTaskId);
     if(!t) return;
-    let photoId;
-    try{ photoId = await processAndSavePhoto(file); }
+    let photoResult;
+    try{ photoResult = await processAndSavePhoto(file, t.projectId || activeProjectId); }
     catch(err){
       showToast(err.message === 'process-failed' ? 'Não consegui processar essa imagem.' : 'Não consegui salvar a foto. Tente uma imagem menor.');
       return;
     }
-    t.fotos = [...(t.fotos||[]), {id: photoId, criadoEm: Date.now()}];
+    t.fotos = [...(t.fotos||[]), {id: photoResult.id, criadoEm: Date.now(), driveFileId: photoResult.driveFileId, driveUrl: photoResult.driveUrl}];
     await saveKey('tasks', tasks);
     renderTaskModalPhotoThumbs(t.fotos);
     renderAll();
@@ -2628,8 +2726,9 @@
     });
   }
   async function deleteNoteDraftPhotoNow(id){
+    const target = draftNoteFotos.find(f=>f.id===id);
     draftNoteFotos = draftNoteFotos.filter(f=>f.id!==id);
-    await deletePhotoBlob(id);
+    await deleteFromDrive(target && target.driveFileId);
     renderNoteFormPhotoThumbs();
     showToast('Foto excluída.');
   }
@@ -2643,13 +2742,13 @@
     e.target.value = '';
     if(!file) return;
     showToast('Processando foto...', true);
-    let photoId;
-    try{ photoId = await processAndSavePhoto(file); }
+    let photoResult;
+    try{ photoResult = await processAndSavePhoto(file, activeProjectId); }
     catch(err){
       showToast(err.message === 'process-failed' ? 'Não consegui processar essa imagem.' : 'Não consegui salvar a foto. Tente uma imagem menor.');
       return;
     }
-    draftNoteFotos.push({id: photoId, criadoEm: Date.now()});
+    draftNoteFotos.push({id: photoResult.id, criadoEm: Date.now(), driveFileId: photoResult.driveFileId, driveUrl: photoResult.driveUrl});
     renderNoteFormPhotoThumbs();
     showToast('Foto adicionada.');
   });
@@ -2669,9 +2768,10 @@
   async function deleteExistingNotePhotoNow(noteId, photoId){
     const n = notes.find(x=>x.id===noteId);
     if(!n) return;
+    const target = (n.fotos||[]).find(f=>f.id===photoId);
     n.fotos = (n.fotos||[]).filter(f=>f.id!==photoId);
     await saveKey('notes', notes);
-    await deletePhotoBlob(photoId);
+    await deleteFromDrive(target && target.driveFileId);
     renderExistingNotePhotoThumbs(n);
     renderAll();
     showToast('Foto excluída.');
@@ -2690,13 +2790,13 @@
     const n = notes.find(x=>x.id===noteId);
     if(!n) return;
     showToast('Processando foto...', true);
-    let photoId;
-    try{ photoId = await processAndSavePhoto(file); }
+    let photoResult;
+    try{ photoResult = await processAndSavePhoto(file, n.projectId || activeProjectId); }
     catch(err){
       showToast(err.message === 'process-failed' ? 'Não consegui processar essa imagem.' : 'Não consegui salvar a foto. Tente uma imagem menor.');
       return;
     }
-    n.fotos = [...(n.fotos||[]), {id: photoId, criadoEm: Date.now()}];
+    n.fotos = [...(n.fotos||[]), {id: photoResult.id, criadoEm: Date.now(), driveFileId: photoResult.driveFileId, driveUrl: photoResult.driveUrl}];
     await saveKey('notes', notes);
     renderExistingNotePhotoThumbs(n);
     renderAll();
@@ -2813,9 +2913,30 @@
         const p = projects.find(x=>x.id===btn.dataset.rename);
         if(!p) return;
         const nn = await showPrompt(p.name, {title:'Renomear projeto'});
-        if(nn){
-          p.name = nn;
-          await saveKey('projects', projects);
+        if(nn && nn !== p.name){
+          if(projects.some(x => x.id !== p.id && x.name.toLowerCase() === nn.toLowerCase())){
+            showToast('Já existe um projeto com esse nome.');
+            return;
+          }
+          const oldId = p.id;
+          p.id = nn; p.name = nn; // Sheets uses the project name as its id — keep both in lockstep
+          // Cascade the rename everywhere that referenced the old name, so nothing
+          // gets silently orphaned in the spreadsheet.
+          caixaObra.forEach(e=>{ if(e.projectId===oldId) e.projectId = nn; });
+          empreiteiro.forEach(e=>{ if(e.projectId===oldId) e.projectId = nn; });
+          tasks.forEach(t=>{ if(t.projectId===oldId) t.projectId = nn; });
+          notes.forEach(n=>{ if(n.projectId===oldId) n.projectId = nn; });
+          documentos.forEach(d=>{ if(d.projectId===oldId) d.projectId = nn; });
+          if(activeProjectId === oldId) activeProjectId = nn;
+          await Promise.all([
+            saveKey('projects', projects),
+            saveKey('caixaObra', caixaObra),
+            saveKey('empreiteiro', empreiteiro),
+            saveKey('tasks', tasks),
+            saveKey('notes', notes),
+            saveKey('documentos', documentos),
+            saveKey('activeProjectId', activeProjectId),
+          ]);
           renderSettingsProjects();
           renderProjectPills();
           renderAll();
@@ -2827,7 +2948,11 @@
   $('#addProjectBtn').addEventListener('click', async ()=>{
     const nn = await showPrompt('', {title:'Novo projeto', placeholder:'Ex: Obra Sítio Novo'});
     if(nn){
-      const np = {id: uid('p'), name: nn};
+      if(projects.some(x => x.name.toLowerCase() === nn.toLowerCase())){
+        showToast('Já existe um projeto com esse nome.');
+        return;
+      }
+      const np = {id: nn, name: nn}; // Sheets uses the project name as its id
       projects.push(np);
       await saveKey('projects', projects);
       activeProjectId = np.id;
@@ -2964,10 +3089,12 @@
   async function deleteAggregatedPhotoNow(catKey, photoId){
     // Deletes from the actual source record (lançamento/tarefa/nota) — this hub is
     // a mirror of those photos, not a separate copy, so deleting here deletes there too.
+    let driveFileId = null;
     if(catKey === 'caixa' || catKey === 'emp'){
       const list = catKey === 'caixa' ? caixaObra : empreiteiro;
       for(const e of list){
         if(e.fotos && e.fotos.some(f=>f.id===photoId)){
+          driveFileId = (e.fotos.find(f=>f.id===photoId)||{}).driveFileId;
           e.fotos = e.fotos.filter(f=>f.id!==photoId);
           await saveKey(catKey==='caixa' ? 'caixaObra' : 'empreiteiro', list);
           break;
@@ -2976,6 +3103,7 @@
     } else if(catKey === 'tasks'){
       for(const t of tasks){
         if(t.fotos && t.fotos.some(f=>f.id===photoId)){
+          driveFileId = (t.fotos.find(f=>f.id===photoId)||{}).driveFileId;
           t.fotos = t.fotos.filter(f=>f.id!==photoId);
           await saveKey('tasks', tasks);
           break;
@@ -2984,13 +3112,14 @@
     } else if(catKey === 'notes'){
       for(const n of notes){
         if(n.fotos && n.fotos.some(f=>f.id===photoId)){
+          driveFileId = (n.fotos.find(f=>f.id===photoId)||{}).driveFileId;
           n.fotos = n.fotos.filter(f=>f.id!==photoId);
           await saveKey('notes', notes);
           break;
         }
       }
     }
-    await deletePhotoBlob(photoId);
+    await deleteFromDrive(driveFileId);
     renderAll();
     showToast('Foto excluída.');
   }
@@ -3037,12 +3166,11 @@
     box.querySelectorAll('[data-del-doc]').forEach(btn=>{
       btn.addEventListener('click', (e)=>{ e.stopPropagation(); deleteDocumentWithConfirm(btn.dataset.delDoc); });
     });
-    // Thumbnails load concurrently (each callback fires independently, no sequential await chain).
-    list.forEach(async d=>{
-      if(!(d.mimeType||'').startsWith('image/')) return;
-      const dataUrl = await loadDocBlob(d.id);
+    // Image-type documents get a real thumbnail, straight from Drive.
+    list.forEach(d=>{
+      if(!(d.mimeType||'').startsWith('image/') || !d.driveFileId) return;
       const iconEl = document.getElementById('docicon-' + d.id);
-      if(iconEl && dataUrl) iconEl.innerHTML = `<img src="${escapeHTML(dataUrl)}" alt="">`;
+      if(iconEl) iconEl.innerHTML = `<img src="${escapeHTML(photoEmbedUrl(d.driveFileId))}" alt="">`;
     });
     const loadMoreBtn = $('#loadMoreDocsBtn');
     if(loadMoreBtn){
@@ -3050,16 +3178,6 @@
     }
   }
 
-  function dataUrlToBlob(dataUrl){
-    const parts = dataUrl.split(',');
-    const mimeMatch = parts[0].match(/:(.*?);/);
-    const mime = mimeMatch ? mimeMatch[1] : 'application/octet-stream';
-    const bstr = atob(parts[1]);
-    let n = bstr.length;
-    const u8arr = new Uint8Array(n);
-    while(n--){ u8arr[n] = bstr.charCodeAt(n); }
-    return new Blob([u8arr], {type: mime});
-  }
   function readFileAsDataURL(file){
     return new Promise((resolve, reject)=>{
       const reader = new FileReader();
@@ -3069,29 +3187,24 @@
     });
   }
   let pdfViewCurrentId = null;
-  let pdfViewCurrentUrl = null;
-  function openPdfPreview(id, dataUrl, filename){
-    const blob = dataUrlToBlob(dataUrl);
-    const url = URL.createObjectURL(blob);
+  let pdfViewCurrentDriveUrl = null;
+  function openPdfPreview(id, driveFileId, filename, driveUrl){
     pdfViewCurrentId = id;
-    pdfViewCurrentUrl = url;
+    pdfViewCurrentDriveUrl = driveUrl || ('https://drive.google.com/uc?export=download&id=' + driveFileId);
     $('#pdfViewTitle').textContent = filename || 'Documento';
-    $('#pdfViewFrame').src = url;
+    $('#pdfViewFrame').src = pdfEmbedUrl(driveFileId);
     pdfZoom.reset();
     $('#pdfViewModal').classList.add('open');
   }
   function closePdfPreview(){
     $('#pdfViewModal').classList.remove('open');
     $('#pdfViewFrame').src = 'about:blank'; // stop rendering, free memory
-    if(pdfViewCurrentUrl){ URL.revokeObjectURL(pdfViewCurrentUrl); pdfViewCurrentUrl = null; }
+    pdfViewCurrentDriveUrl = null;
     pdfViewCurrentId = null;
   }
   $('#pdfViewDownloadBtn').addEventListener('click', ()=>{
-    if(!pdfViewCurrentUrl) return;
-    const d = documentos.find(x=>x.id===pdfViewCurrentId);
-    const a = document.createElement('a');
-    a.href = pdfViewCurrentUrl; a.download = (d && d.nome) || 'documento.pdf';
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    if(!pdfViewCurrentDriveUrl) return;
+    window.open(pdfViewCurrentDriveUrl, '_blank');
   });
   $('#pdfViewDeleteBtn').addEventListener('click', async ()=>{
     if(!pdfViewCurrentId) return;
@@ -3102,30 +3215,26 @@
     await deleteDocumentNow(idToDelete);
   });
 
-  async function openDocument(id){
+  function openDocument(id){
     const d = documentos.find(x=>x.id===id);
-    if(!d) return;
-    const dataUrl = await loadDocBlob(id);
-    if(!dataUrl){ showToast('Não consegui carregar esse documento.'); return; }
+    if(!d || !d.driveFileId){ showToast('Não consegui carregar esse documento.'); return; }
     if((d.mimeType||'').startsWith('image/')){
-      openPhotoLightbox(id, dataUrl, ()=> deleteDocumentNow(id));
+      openPhotoLightbox(id, photoEmbedUrl(d.driveFileId), ()=> deleteDocumentNow(id));
       return;
     }
     if(d.mimeType === 'application/pdf'){
-      openPdfPreview(id, dataUrl, d.nome);
+      openPdfPreview(id, d.driveFileId, d.nome, d.driveUrl);
       return;
     }
-    const blob = dataUrlToBlob(dataUrl);
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = d.nome;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    setTimeout(()=> URL.revokeObjectURL(url), 30000);
+    // Other file types (Word/Excel/etc): hand off to Drive directly, letting it
+    // preview or download as appropriate for that file type.
+    window.open(d.driveUrl || ('https://drive.google.com/file/d/' + d.driveFileId + '/view'), '_blank');
   }
   async function deleteDocumentNow(id){
+    const target = documentos.find(d=>d.id===id);
     documentos = documentos.filter(d=>d.id!==id);
     await saveKey('documentos', documentos);
-    await deleteDocBlob(id);
+    await deleteFromDrive(target && target.driveFileId);
     renderDocsList();
     showToast('Documento excluído.');
   }
@@ -3139,11 +3248,8 @@
     e.target.value = '';
     if(!file) return;
     const isImageFile = file.type.startsWith('image/');
-    const maxRawSize = isImageFile ? 12 * 1024 * 1024 : 3 * 1024 * 1024;
-    if(file.size > maxRawSize){
-      showToast(isImageFile
-        ? 'Imagem muito grande (máx. 12MB). Tente uma imagem menor.'
-        : 'Arquivo muito grande (máx. 3MB por enquanto). PDFs maiores serão possíveis quando a integração com o Google Drive estiver pronta.');
+    if(file.size > 15 * 1024 * 1024){
+      showToast('Arquivo muito grande (máx. 15MB). Tente um arquivo menor.');
       return;
     }
     showToast('Enviando documento...', true);
@@ -3160,11 +3266,11 @@
         return;
       }
       const docId = uid('doc');
-      const ok = await saveDocBlob(docId, dataUrl);
-      if(!ok){ showToast('Não consegui salvar o documento. Tente novamente.'); return; }
-      documentos.push({id: docId, projectId: activeProjectId, nome: file.name, mimeType: file.type || 'application/octet-stream', criadoEm: Date.now()});
+      const uploaded = await uploadToDrive(dataUrl, file.name, activeProjectId);
+      if(!uploaded){ showToast('Não consegui salvar o documento. Tente novamente.'); return; }
+      documentos.push({id: docId, projectId: activeProjectId, nome: file.name, mimeType: file.type || 'application/octet-stream', criadoEm: Date.now(), driveFileId: uploaded.driveFileId, driveUrl: uploaded.driveUrl});
       const metaOk = await saveKey('documentos', documentos);
-      if(!metaOk){ showToast('Foto salva, mas houve um erro ao registrar o documento. Tente novamente.'); return; }
+      if(!metaOk){ showToast('Arquivo salvo, mas houve um erro ao registrar o documento. Tente novamente.'); return; }
       docsPage = 1;
       renderDocsList();
       showToast('Documento adicionado.');
