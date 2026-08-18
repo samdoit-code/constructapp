@@ -65,6 +65,10 @@
     display:flex; align-items:center; justify-content:center; cursor:pointer; flex:0 0 auto;
   }
   .gear-btn svg{width:18px;height:18px; stroke:#fff; fill:none; stroke-width:2;}
+  .header-actions{display:flex; align-items:center; gap:8px; flex:0 0 auto;}
+  .sync-status{font-size:10px; color:rgba(255,255,255,0.55); white-space:nowrap;}
+  .gear-btn.syncing svg{animation:spin 0.9s linear infinite;}
+  @keyframes spin{ from{transform:rotate(0deg);} to{transform:rotate(360deg);} }
 
   .project-switch{
     display:flex; align-items:center; gap:12px; margin-top:13px; width:100%;
@@ -190,6 +194,11 @@
   .btn-primary:active{box-shadow:0 1px 0 var(--orange-dark); transform:translateY(2px) scale(0.99);}
   .btn-block{width:100%;}
   .btn-ghost{background:transparent; color:var(--ink-soft); border:1.5px solid var(--line);}
+  .sort-select{
+    -webkit-appearance:none; appearance:none; padding-right:26px; font-family:'Inter',sans-serif;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236b6255' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat:no-repeat; background-position:right 6px center; background-size:12px;
+  }
   .btn-danger{background:#fbeae6; color:var(--red); border:1.5px solid #edc9bf;}
   .btn-secondary{background:var(--blue); color:#fff;}
   .btn-sm{padding:9px 13px; font-size:13px; border-radius:10px;}
@@ -279,8 +288,8 @@
   .etr-header .etr-date{flex:0 0 36px;}
   .etr-name{flex:1; min-width:0; font-size:12.5px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:1.2;}
   .etr-header .etr-name{flex:1;}
-  .etr-und{flex:0 0 32px; font-size:10px; color:var(--ink-soft); text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
-  .etr-header .etr-und{flex:0 0 32px; text-align:center;}
+  .etr-und{flex:0 0 44px; font-size:10px; color:var(--ink-soft); text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .etr-header .etr-und{flex:0 0 44px; text-align:center;}
   .etr-forn{flex:0 0 74px; font-size:10.5px; color:var(--ink-soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
   .etr-header .etr-forn{flex:0 0 74px;}
   .etr-valor{flex:0 0 auto; min-width:58px; text-align:right; font-family:'Oswald',sans-serif; font-size:12.5px; font-weight:600; line-height:1.2;}
@@ -524,9 +533,15 @@
         <div class="sub">Toque abaixo para trocar de projeto</div>
       </div>
     </div>
-    <button class="gear-btn" id="settingsBtn">
-      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.34 1.87l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.7 1.7 0 00-1.87-.34 1.7 1.7 0 00-1 1.55V21a2 2 0 01-4 0v-.09a1.7 1.7 0 00-1-1.55 1.7 1.7 0 00-1.87.34l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.7 1.7 0 00.34-1.87 1.7 1.7 0 00-1.55-1H3a2 2 0 010-4h.09a1.7 1.7 0 001.55-1 1.7 1.7 0 00-.34-1.87l-.06-.06a2 2 0 112.83-2.83l.06.06a1.7 1.7 0 001.87.34H9a1.7 1.7 0 001-1.55V3a2 2 0 014 0v.09a1.7 1.7 0 001 1.55 1.7 1.7 0 001.87-.34l.06-.06a2 2 0 112.83 2.83l-.06.06a1.7 1.7 0 00-.34 1.87V9a1.7 1.7 0 001.55 1H21a2 2 0 010 4h-.09a1.7 1.7 0 00-1.55 1z"/></svg>
-    </button>
+    <div class="header-actions">
+      <span class="sync-status" id="syncStatus"></span>
+      <button class="gear-btn" id="syncBtn" title="Sincronizar agora">
+        <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 11-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+      </button>
+      <button class="gear-btn" id="settingsBtn">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.34 1.87l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.7 1.7 0 00-1.87-.34 1.7 1.7 0 00-1 1.55V21a2 2 0 01-4 0v-.09a1.7 1.7 0 00-1-1.55 1.7 1.7 0 00-1.87.34l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.7 1.7 0 00.34-1.87 1.7 1.7 0 00-1.55-1H3a2 2 0 010-4h.09a1.7 1.7 0 001.55-1 1.7 1.7 0 00-.34-1.87l-.06-.06a2 2 0 112.83-2.83l.06.06a1.7 1.7 0 001.87.34H9a1.7 1.7 0 001-1.55V3a2 2 0 014 0v.09a1.7 1.7 0 001 1.55 1.7 1.7 0 001.87-.34l.06-.06a2 2 0 112.83 2.83l-.06.06a1.7 1.7 0 00-.34 1.87V9a1.7 1.7 0 001.55 1H21a2 2 0 010 4h-.09a1.7 1.7 0 00-1.55 1z"/></svg>
+      </button>
+    </div>
   </div>
   <button class="project-switch" id="projectSwitchBtn">
     <span class="proj-monogram" id="projSwitchMonogram"></span>
@@ -598,6 +613,13 @@
     </div>
     <div class="filter-toggle-row">
       <button class="btn btn-ghost btn-sm" id="filterToggleBtn">Filtros</button>
+      <select id="sortSelect" class="btn btn-ghost btn-sm sort-select" aria-label="Ordenar lançamentos">
+        <option value="recent">Mais recentes</option>
+        <option value="oldest">Mais antigos</option>
+        <option value="valor-desc">Maior valor</option>
+        <option value="valor-asc">Menor valor</option>
+        <option value="nome">Nome A-Z</option>
+      </select>
       <button class="btn btn-ghost btn-sm" id="clearFilterBtn" style="display:none;">Limpar filtros</button>
       <div class="view-toggle" id="entriesViewToggle">
         <button type="button" data-mode="card" class="active" title="Visualização em cartões" aria-label="Visualização em cartões">
@@ -826,14 +848,6 @@
 
     <div class="section-title">Fotos do projeto</div>
     <div id="projectPhotosContainer"></div>
-
-    <div class="drive-banner">
-      <svg viewBox="0 0 24 24"><path d="M17.5 19a4.5 4.5 0 000-9 6 6 0 00-11.4 2A4 4 0 007 19h10.5z"/></svg>
-      <div>
-        <b>Em breve: Google Drive</b>
-        <p>Dá para conectar uma pasta do Google Drive deste projeto e os arquivos enviados lá aparecem aqui automaticamente. Essa etapa depende de configurar o Google Apps Script.</p>
-      </div>
-    </div>
   </div>
 
 </main>
@@ -1028,7 +1042,7 @@
       <button class="btn btn-secondary btn-block" id="exportExcelBtn">Exportar tudo para Excel</button>
       <div class="storage-note">Lançamentos, tarefas, notas, fotos e documentos ficam salvos na sua conta. Arquivos muito grandes (PDFs acima de 3MB) ainda não são suportados — isso será resolvido com a integração ao Google Drive, na próxima etapa.</div>
     </div>
-    <div class="app-version">Construtora Moreira App — v26</div>
+    <div class="app-version">Construtora Moreira App — v29</div>
   </div>
 </div>
 
@@ -1151,6 +1165,7 @@
     opts = opts || {};
     const native = $('#'+nativeId);
     const display = $('#'+displayId);
+    const wrap = native.closest('.date-field-wrap');
     function refresh(){
       const val = native.value;
       if(val){
@@ -1163,6 +1178,18 @@
       if(opts.onRefresh) opts.onRefresh(val);
     }
     native.addEventListener('change', refresh);
+    // Desktop browsers only open the native date picker when you click the tiny
+    // calendar icon specifically — which is invisible here (opacity:0, so our
+    // custom-formatted text can show instead), making the field feel dead to a
+    // mouse click anywhere else in it. showPicker() opens it reliably no matter
+    // where in the field was clicked. Not universally supported (notably not
+    // older Safari) — where it's missing, this is just a no-op and the existing
+    // tap-anywhere behavior (already working fine on iPhone) is unaffected.
+    if(wrap && native.showPicker){
+      wrap.addEventListener('click', ()=>{
+        try{ native.showPicker(); }catch(e){}
+      });
+    }
     refresh();
     return refresh;
   }
@@ -1208,22 +1235,31 @@
   // trigger, so text/plain avoids that entirely; Code.gs parses the body as
   // JSON manually on its side either way.
   const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxoQYyrIMNNIKfO3wkAfj6f5HFAPCBfhw07cSsuRsAy4HWDODSjHBtGuTw2TgmfHRvZ_Q/exec';
+  // Must match SHARED_SECRET in Code.gs exactly.
+  const SHARED_SECRET = 'uJfz1csaClJz6rjFa-izI7FBt-FxxWuE';
   async function sheetsGet(params){
-    const qs = new URLSearchParams(params || {}).toString();
+    const qs = new URLSearchParams(Object.assign({secret: SHARED_SECRET}, params || {})).toString();
     const resp = await fetch(APPS_SCRIPT_URL + (qs ? '?' + qs : ''));
     if(!resp.ok) throw new Error('HTTP ' + resp.status);
     const data = await resp.json();
     if(data && data.error) throw new Error(data.error);
     return data;
   }
-  async function sheetsPost(body){
+  async function sheetsPostRaw(body){
     const resp = await fetch(APPS_SCRIPT_URL, {
       method: 'POST',
       headers: {'Content-Type': 'text/plain;charset=utf-8'},
-      body: JSON.stringify(body),
+      body: JSON.stringify(Object.assign({secret: SHARED_SECRET}, body)),
     });
     if(!resp.ok) throw new Error('HTTP ' + resp.status);
-    const data = await resp.json();
+    return await resp.json();
+  }
+  // Retries the network call itself (a dropped connection, a brief timeout) —
+  // but NOT a deterministic rejection from the server (a real conflict, a bad
+  // secret): those come back as a normal successful response with an .error
+  // field, so retrying them would just delay showing the real problem.
+  async function sheetsPost(body){
+    const data = await withRetry(()=> sheetsPostRaw(body), 2, 900);
     if(data && data.error) throw new Error(data.error);
     return data;
   }
@@ -1233,45 +1269,110 @@
     projects: 'projetos', caixaObra: 'caixaObra', empreiteiro: 'empreiteiro',
     tasks: 'tarefas', notes: 'notas', documentos: 'documentos', tipos: 'tipos', unidades: 'unidades',
   };
+  // Small reference lists — rarely edited concurrently, kept on the simple
+  // whole-tab save rather than row-level tracking.
+  const LEGACY_WHOLE_TAB_KEYS = new Set(['projects', 'tipos', 'unidades']);
 
   // Converts the app's in-memory shape into flat rows matching each tab's columns.
   // Nested photo arrays (.fotos on entries/tasks/notes) are NOT included here —
   // they're synced separately as their own flattened "Fotos" tab, see below.
-  // "notes" is also excluded — it's handled specially in saveKey(), since the
-  // Notas tab is a computed union of standalone notes AND notes nested inside
-  // individual lançamentos, not a direct reflection of this one array.
+  // "notes" is also excluded — it's handled specially, since the Notas tab is a
+  // computed union of standalone notes AND notes nested inside individual
+  // lançamentos, not a direct reflection of this one array.
   function toSheetRows(key, value){
     if(key === 'projects') return value.map(p => ({id: p.name, ativo: true}));
-    if(key === 'caixaObra') return value.map(e => ({id:e.id, projeto:e.projectId, data:e.data, nome:e.nome, tipo:e.tipo||'', qtd:e.qtd||'', unidade:e.unidade||'', valor:e.valor||0, fornecedor:e.fornecedor||'', socio:e.socio||'', criadoEm:e.criadoEm}));
-    if(key === 'empreiteiro') return value.map(e => ({id:e.id, projeto:e.projectId, data:e.data, nome:e.nome, qtd:e.qtd||'', unidade:e.unidade||'', valor:e.valor||0, fornecedor:e.fornecedor||'', socio:e.socio||'', criadoEm:e.criadoEm}));
-    if(key === 'tasks') return value.map(t => ({id:t.id, projeto:t.projectId||'', texto:t.texto, prazo:t.prazo||'', prioridade:t.prioridade||'media', feito: !!t.feito, criadoEm:t.criadoEm}));
-    if(key === 'documentos') return value.map(d => ({id:d.id, projeto:d.projectId||'', nome:d.nome, mimeType:d.mimeType||'', driveFileId:d.driveFileId||'', driveUrl:d.driveUrl||'', criadoEm:d.criadoEm}));
+    if(key === 'caixaObra') return value.map(e => ({id:e.id, projeto:e.projectId, data:e.data, nome:e.nome, tipo:e.tipo||'', qtd:e.qtd||'', unidade:e.unidade||'', valor:e.valor||0, fornecedor:e.fornecedor||'', socio:e.socio||'', criadoEm:e.criadoEm, lastModified:e.lastModified}));
+    if(key === 'empreiteiro') return value.map(e => ({id:e.id, projeto:e.projectId, data:e.data, nome:e.nome, qtd:e.qtd||'', unidade:e.unidade||'', valor:e.valor||0, fornecedor:e.fornecedor||'', socio:e.socio||'', criadoEm:e.criadoEm, lastModified:e.lastModified}));
+    if(key === 'tasks') return value.map(t => ({id:t.id, projeto:t.projectId||'', texto:t.texto, prazo:t.prazo||'', prioridade:t.prioridade||'media', feito: !!t.feito, criadoEm:t.criadoEm, lastModified:t.lastModified}));
+    if(key === 'documentos') return value.map(d => ({id:d.id, projeto:d.projectId||'', nome:d.nome, mimeType:d.mimeType||'', driveFileId:d.driveFileId||'', driveUrl:d.driveUrl||'', criadoEm:d.criadoEm, lastModified:d.lastModified}));
     if(key === 'tipos') return value.map(t => ({tipo: t}));
     if(key === 'unidades') return value.map(u => ({unidade: u}));
     return [];
   }
   // The "Fotos" tab is a flattened mirror of every .fotos[] array nested inside
   // lançamentos, tarefas and notas — recomputed fresh from current state and
-  // pushed alongside whichever of those four just changed.
+  // diffed alongside whichever of those four just changed.
   function computeFotosRows(){
     const rows = [];
-    caixaObra.forEach(e => (e.fotos||[]).forEach(f => rows.push({id:f.id, refTipo:'caixa', refId:e.id, driveFileId:f.driveFileId||'', driveUrl:f.driveUrl||'', criadoEm:f.criadoEm})));
-    empreiteiro.forEach(e => (e.fotos||[]).forEach(f => rows.push({id:f.id, refTipo:'emp', refId:e.id, driveFileId:f.driveFileId||'', driveUrl:f.driveUrl||'', criadoEm:f.criadoEm})));
-    tasks.forEach(t => (t.fotos||[]).forEach(f => rows.push({id:f.id, refTipo:'tasks', refId:t.id, driveFileId:f.driveFileId||'', driveUrl:f.driveUrl||'', criadoEm:f.criadoEm})));
-    notes.forEach(n => (n.fotos||[]).forEach(f => rows.push({id:f.id, refTipo:'notes', refId:n.id, driveFileId:f.driveFileId||'', driveUrl:f.driveUrl||'', criadoEm:f.criadoEm})));
+    caixaObra.forEach(e => (e.fotos||[]).forEach(f => rows.push({id:f.id, refTipo:'caixa', refId:e.id, driveFileId:f.driveFileId||'', driveUrl:f.driveUrl||'', criadoEm:f.criadoEm, lastModified:f.lastModified})));
+    empreiteiro.forEach(e => (e.fotos||[]).forEach(f => rows.push({id:f.id, refTipo:'emp', refId:e.id, driveFileId:f.driveFileId||'', driveUrl:f.driveUrl||'', criadoEm:f.criadoEm, lastModified:f.lastModified})));
+    tasks.forEach(t => (t.fotos||[]).forEach(f => rows.push({id:f.id, refTipo:'tasks', refId:t.id, driveFileId:f.driveFileId||'', driveUrl:f.driveUrl||'', criadoEm:f.criadoEm, lastModified:f.lastModified})));
+    notes.forEach(n => (n.fotos||[]).forEach(f => rows.push({id:f.id, refTipo:'notes', refId:n.id, driveFileId:f.driveFileId||'', driveUrl:f.driveUrl||'', criadoEm:f.criadoEm, lastModified:f.lastModified})));
     return rows;
   }
   // The "Notas" tab is likewise a union: standalone notes (refTipo/refId blank,
   // "projeto" filled in) PLUS every small note attached to an individual
   // lançamento (refTipo='caixa'/'emp', refId=the entry's id, "projeto" blank —
-  // it's implied by the parent entry). This is what makes entry-attached notes
-  // actually persist through Sheets instead of only living for the session.
+  // it's implied by the parent entry).
   function computeNotasRows(){
     const rows = [];
-    notes.forEach(n => rows.push({id:n.id, projeto:n.projectId||'', texto:n.texto, criadoEm:n.criadoEm, refTipo:'', refId:''}));
-    caixaObra.forEach(e => (e.notas||[]).forEach(n => rows.push({id:n.id, projeto:'', texto:n.texto, criadoEm:n.criadoEm, refTipo:'caixa', refId:e.id})));
-    empreiteiro.forEach(e => (e.notas||[]).forEach(n => rows.push({id:n.id, projeto:'', texto:n.texto, criadoEm:n.criadoEm, refTipo:'emp', refId:e.id})));
+    notes.forEach(n => rows.push({id:n.id, projeto:n.projectId||'', texto:n.texto, criadoEm:n.criadoEm, refTipo:'', refId:'', lastModified:n.lastModified}));
+    caixaObra.forEach(e => (e.notas||[]).forEach(n => rows.push({id:n.id, projeto:'', texto:n.texto, criadoEm:n.criadoEm, refTipo:'caixa', refId:e.id, lastModified:n.lastModified})));
+    empreiteiro.forEach(e => (e.notas||[]).forEach(n => rows.push({id:n.id, projeto:'', texto:n.texto, criadoEm:n.criadoEm, refTipo:'emp', refId:e.id, lastModified:n.lastModified})));
     return rows;
+  }
+
+  // Tracks what we last successfully synced per tab, so every save can be
+  // diffed down to just the rows that actually changed (row-level writes)
+  // instead of rewriting the whole tab — and multiple tabs' worth of changes
+  // from one action (e.g. an entry + its photos + its notes) get bundled into
+  // a single request instead of firing off separately.
+  let sheetSnapshot = {};
+  function stripLM_(r){ const c = Object.assign({}, r); delete c.lastModified; return c; }
+  function diffRows_(sheetName, newRows){
+    const oldRows = sheetSnapshot[sheetName] || [];
+    const oldById = new Map(oldRows.map(r=>[String(r.id), r]));
+    const newById = new Map(newRows.map(r=>[String(r.id), r]));
+    const upserts = [];
+    newRows.forEach(r=>{
+      const old = oldById.get(String(r.id));
+      if(!old || JSON.stringify(stripLM_(old)) !== JSON.stringify(stripLM_(r))){
+        upserts.push({id: r.id, row: r, expectedLastModified: old ? (old.lastModified || null) : null});
+      }
+    });
+    const deletes = [];
+    oldById.forEach((old, id)=>{ if(!newById.has(id)) deletes.push(id); });
+    return {upserts, deletes};
+  }
+  // Syncs any number of tabs in ONE request (item 5/6: batching). Returns
+  // false (with a toast already shown) on any failure, including conflicts.
+  async function syncSheets(sheetRowsMap){
+    const ops = [];
+    let anyChanges = false;
+    Object.keys(sheetRowsMap).forEach(sheetName=>{
+      const {upserts, deletes} = diffRows_(sheetName, sheetRowsMap[sheetName]);
+      if(upserts.length || deletes.length) anyChanges = true;
+      ops.push({sheet: sheetName, upserts, deletes});
+    });
+    if(!anyChanges){
+      Object.keys(sheetRowsMap).forEach(k=>{ sheetSnapshot[k] = sheetRowsMap[k].map(r=>Object.assign({}, r)); });
+      return true;
+    }
+    try{
+      const resp = await sheetsPost({action:'batchMulti', ops});
+      if(resp.conflict){
+        showToast('Alguns dados foram alterados por outra pessoa. Recarregue a página antes de salvar de novo.');
+        return false;
+      }
+      ops.forEach(op=>{
+        const updatedList = (resp.updated && resp.updated[op.sheet]) || [];
+        const lmById = new Map(updatedList.map(u=>[String(u.id), u.lastModified]));
+        sheetSnapshot[op.sheet] = sheetRowsMap[op.sheet].map(r=>{
+          const lm = lmById.get(String(r.id));
+          return lm ? Object.assign({}, r, {lastModified: lm}) : Object.assign({}, r);
+        });
+      });
+      return true;
+    }catch(e){
+      console.error('sync error', e);
+      showToast(saveErrorMessage(e));
+      return false;
+    }
+  }
+
+  function saveErrorMessage(err){
+    if(isNetworkError(err)) return 'Sem internet — não foi possível salvar. Tente novamente quando reconectar.';
+    return 'Erro ao salvar no Google Sheets. Tente novamente.';
   }
 
   async function saveKey(key, value){
@@ -1281,28 +1382,26 @@
       try{ localStorage.setItem('cmoreira_activeProjectId', JSON.stringify(value)); }catch(e){}
       return true;
     }
-    try{
-      if(key === 'notes'){
-        await sheetsPost({action:'saveSheet', sheet:'notas', rows: computeNotasRows()});
-        await sheetsPost({action:'saveSheet', sheet:'fotos', rows: computeFotosRows()});
-        return true;
-      }
-      if(SHEET_TAB[key]){
+    if(LEGACY_WHOLE_TAB_KEYS.has(key)){
+      try{
         await sheetsPost({action:'saveSheet', sheet: SHEET_TAB[key], rows: toSheetRows(key, value)});
-        if(key==='caixaObra' || key==='empreiteiro' || key==='tasks'){
-          await sheetsPost({action:'saveSheet', sheet:'fotos', rows: computeFotosRows()});
-        }
-        if(key==='caixaObra' || key==='empreiteiro'){
-          await sheetsPost({action:'saveSheet', sheet:'notas', rows: computeNotasRows()});
-        }
         return true;
+      }catch(e){
+        console.error('sheets save error', key, e);
+        showToast(saveErrorMessage(e));
+        return false;
       }
-      return true;
-    }catch(e){
-      console.error('sheets save error', key, e);
-      showToast('Erro ao salvar no Google Sheets. Verifique sua internet.');
-      return false;
     }
+    if(key === 'notes'){
+      return await syncSheets({notas: computeNotasRows(), fotos: computeFotosRows()});
+    }
+    if(SHEET_TAB[key]){
+      const payload = {}; payload[SHEET_TAB[key]] = toSheetRows(key, value);
+      if(key==='caixaObra' || key==='empreiteiro' || key==='tasks') payload.fotos = computeFotosRows();
+      if(key==='caixaObra' || key==='empreiteiro') payload.notas = computeNotasRows();
+      return await syncSheets(payload);
+    }
+    return true;
   }
 
   // ---------- Photos & documents (Google Drive via Apps Script) ----------
@@ -1364,9 +1463,80 @@
     for(const f of fotos){ await deleteFromDrive(f.driveFileId); }
   }
 
-  async function loadAll(){
+  const CACHE_KEY = 'cmoreira_cache_v1';
+  let lastSyncTime = null;
+
+  function saveCacheToLocalStorage(){
     try{
-      const data = await sheetsGet({action:'getAll'});
+      localStorage.setItem(CACHE_KEY, JSON.stringify({
+        projects, caixaObra, empreiteiro, tasks, notes, documentos, tipos, unidades,
+        sheetSnapshot, savedAt: lastSyncTime,
+      }));
+    }catch(e){ console.error('cache save error', e); }
+  }
+  function loadCacheFromLocalStorage(){
+    try{
+      const raw = localStorage.getItem(CACHE_KEY);
+      if(!raw) return false;
+      const payload = JSON.parse(raw);
+      if(!payload.projects || !payload.projects.length) return false;
+      projects = payload.projects;
+      caixaObra = payload.caixaObra || [];
+      empreiteiro = payload.empreiteiro || [];
+      tasks = payload.tasks || [];
+      notes = payload.notes || [];
+      documentos = payload.documentos || [];
+      tipos = (payload.tipos && payload.tipos.length) ? payload.tipos : DEFAULT_TIPOS.slice();
+      unidades = (payload.unidades && payload.unidades.length) ? payload.unidades : DEFAULT_UNIDADES.slice();
+      sheetSnapshot = payload.sheetSnapshot || {};
+      lastSyncTime = payload.savedAt || null;
+      return true;
+    }catch(e){ console.error('cache load error', e); return false; }
+  }
+
+  function isNetworkError(err){
+    return (err instanceof TypeError) || (typeof navigator !== 'undefined' && navigator.onLine === false);
+  }
+  // Retries a flaky network call once or twice with a short pause before giving
+  // up — absorbs the brief connection blips that are common on a job site
+  // without the user needing to manually redo anything.
+  async function withRetry(fn, retries, delayMs){
+    retries = retries == null ? 2 : retries;
+    delayMs = delayMs == null ? 900 : delayMs;
+    let lastErr;
+    for(let attempt = 0; attempt <= retries; attempt++){
+      try{ return await fn(); }
+      catch(e){
+        lastErr = e;
+        if(attempt < retries) await new Promise(r=>setTimeout(r, delayMs));
+      }
+    }
+    throw lastErr;
+  }
+
+  function fmtRelativeTime(ts){
+    if(!ts) return '';
+    const diffSec = Math.floor((Date.now() - ts) / 1000);
+    if(diffSec < 45) return 'agora mesmo';
+    const diffMin = Math.round(diffSec / 60);
+    if(diffMin < 60) return diffMin + ' min atrás';
+    const diffH = Math.round(diffMin / 60);
+    if(diffH < 24) return diffH + 'h atrás';
+    const diffD = Math.round(diffH / 24);
+    return diffD + 'd atrás';
+  }
+  function updateSyncStatusText(){
+    const el = document.getElementById('syncStatus');
+    if(el) el.textContent = lastSyncTime ? ('atualizado ' + fmtRelativeTime(lastSyncTime)) : '';
+  }
+  setInterval(updateSyncStatusText, 30000); // keeps "X min atrás" accurate without any user action
+
+  // Fetches fresh data from Apps Script and applies it to the in-memory state.
+  // Returns true on success; on failure, existing state (cached or otherwise)
+  // is left completely untouched, so a failed refresh never blanks the screen.
+  async function fetchAndApplyFromServer(){
+    try{
+      const data = await withRetry(()=> sheetsGet({action:'getAll'}), 1, 800);
 
       projects = (data.projetos||[]).filter(p => p.ativo !== false).map(p => ({id: p.id, name: p.id}));
       if(projects.length === 0) projects = [{id:'Obra Gavião', name:'Obra Gavião'}, {id:'Obra Boreal', name:'Obra Boreal'}];
@@ -1374,14 +1544,14 @@
       const fotosByRef = {};
       (data.fotos||[]).forEach(f=>{
         const key = f.refTipo + '|' + f.refId;
-        (fotosByRef[key] = fotosByRef[key] || []).push({id:f.id, criadoEm:f.criadoEm, driveFileId:f.driveFileId, driveUrl:f.driveUrl});
+        (fotosByRef[key] = fotosByRef[key] || []).push({id:f.id, criadoEm:f.criadoEm, driveFileId:f.driveFileId, driveUrl:f.driveUrl, lastModified:f.lastModified});
       });
       const notasByRef = {};
       const standaloneNotasRows = [];
       (data.notas||[]).forEach(n=>{
         if(n.refTipo === 'caixa' || n.refTipo === 'emp'){
           const key = n.refTipo + '|' + n.refId;
-          (notasByRef[key] = notasByRef[key] || []).push({id:n.id, texto:n.texto, criadoEm:n.criadoEm});
+          (notasByRef[key] = notasByRef[key] || []).push({id:n.id, texto:n.texto, criadoEm:n.criadoEm, lastModified:n.lastModified});
         } else {
           standaloneNotasRows.push(n);
         }
@@ -1390,47 +1560,95 @@
       caixaObra = (data.caixaObra||[]).map(r => ({
         id:r.id, projectId:r.projeto, nome:r.nome, tipo:r.tipo, qtd:r.qtd, unidade:r.unidade,
         data:r.data, valor:r.valor, fornecedor:r.fornecedor, socio:r.socio,
-        notas: notasByRef['caixa|'+r.id] || [], fotos: fotosByRef['caixa|'+r.id] || [], criadoEm:r.criadoEm,
+        notas: notasByRef['caixa|'+r.id] || [], fotos: fotosByRef['caixa|'+r.id] || [], criadoEm:r.criadoEm, lastModified:r.lastModified,
       }));
       empreiteiro = (data.empreiteiro||[]).map(r => ({
         id:r.id, projectId:r.projeto, nome:r.nome, qtd:r.qtd, unidade:r.unidade,
         data:r.data, valor:r.valor, fornecedor:r.fornecedor, socio:r.socio,
-        notas: notasByRef['emp|'+r.id] || [], fotos: fotosByRef['emp|'+r.id] || [], criadoEm:r.criadoEm,
+        notas: notasByRef['emp|'+r.id] || [], fotos: fotosByRef['emp|'+r.id] || [], criadoEm:r.criadoEm, lastModified:r.lastModified,
       }));
       tasks = (data.tarefas||[]).map(r => ({
         id:r.id, projectId:r.projeto||null, texto:r.texto, prazo:r.prazo, prioridade:r.prioridade||'media',
-        feito: !!r.feito, fotos: fotosByRef['tasks|'+r.id] || [], criadoEm:r.criadoEm,
+        feito: !!r.feito, fotos: fotosByRef['tasks|'+r.id] || [], criadoEm:r.criadoEm, lastModified:r.lastModified,
       }));
       notes = standaloneNotasRows.map(r => ({
         id:r.id, projectId:r.projeto||null, texto:r.texto,
-        fotos: fotosByRef['notes|'+r.id] || [], criadoEm:r.criadoEm,
+        fotos: fotosByRef['notes|'+r.id] || [], criadoEm:r.criadoEm, lastModified:r.lastModified,
       }));
       documentos = (data.documentos||[]).map(r => ({
         id:r.id, projectId:r.projeto, nome:r.nome, mimeType:r.mimeType,
-        driveFileId:r.driveFileId, driveUrl:r.driveUrl, criadoEm:r.criadoEm,
+        driveFileId:r.driveFileId, driveUrl:r.driveUrl, criadoEm:r.criadoEm, lastModified:r.lastModified,
       }));
       tipos = (data.tipos||[]).map(t=>t.tipo).filter(Boolean);
       if(tipos.length === 0) tipos = DEFAULT_TIPOS.slice();
       unidades = (data.unidades||[]).map(u=>u.unidade).filter(Boolean);
       if(unidades.length === 0) unidades = DEFAULT_UNIDADES.slice();
+
+      // Seed the diff snapshot from what we just loaded, so the very next save
+      // only sends whatever actually changes from here — and so conflict checks
+      // compare against the lastModified values we actually just saw.
+      sheetSnapshot = {
+        caixaObra: toSheetRows('caixaObra', caixaObra),
+        empreiteiro: toSheetRows('empreiteiro', empreiteiro),
+        tarefas: toSheetRows('tasks', tasks),
+        documentos: toSheetRows('documentos', documentos),
+        notas: computeNotasRows(),
+        fotos: computeFotosRows(),
+      };
+
+      lastSyncTime = Date.now();
+      saveCacheToLocalStorage();
+      return true;
     }catch(err){
       console.error('Erro ao carregar do Google Sheets', err);
-      showToast('Não consegui conectar ao Google Sheets. Verifique sua internet e tente novamente.');
-      projects = projects.length ? projects : [{id:'Obra Gavião', name:'Obra Gavião'}, {id:'Obra Boreal', name:'Obra Boreal'}];
-      caixaObra = caixaObra || []; empreiteiro = empreiteiro || []; tasks = tasks || []; notes = notes || [];
-      documentos = documentos || []; tipos = tipos.length ? tipos : DEFAULT_TIPOS.slice(); unidades = unidades.length ? unidades : DEFAULT_UNIDADES.slice();
+      return false;
     }
+  }
 
+  function finishLoadSetup(){
     let savedActiveId = null;
     try{ savedActiveId = JSON.parse(localStorage.getItem('cmoreira_activeProjectId') || 'null'); }catch(e){}
     activeProjectId = (savedActiveId && projects.find(p=>p.id===savedActiveId)) ? savedActiveId : projects[0].id;
-
     renderProjectPills();
     populateTipoSelect();
     populateUnidadeSelect();
     populateTaskProjectSelect();
     resetForm();
+  }
+
+  async function loadAll(){
+    const hadCache = loadCacheFromLocalStorage();
+    if(hadCache){
+      // Instant render from what we had last time — no waiting on the network
+      // just to see the app. Then quietly refresh in the background.
+      finishLoadSetup();
+      renderAll();
+      updateSyncStatusText();
+      const ok = await fetchAndApplyFromServer();
+      if(ok){
+        finishLoadSetup();
+        renderAll();
+        updateSyncStatusText();
+      } else if(!navigator.onLine){
+        showToast('Sem internet — mostrando os últimos dados salvos neste aparelho.');
+      }
+      return;
+    }
+
+    // No cache at all (first-ever load on this device) — nothing to show yet,
+    // so this one genuinely has to wait on the network.
+    const ok = await fetchAndApplyFromServer();
+    if(!ok){
+      showToast(navigator.onLine
+        ? 'Não consegui conectar ao Google Sheets. Verifique sua internet e tente novamente.'
+        : 'Sem internet. Conecte-se e toque em sincronizar.');
+      projects = [{id:'Obra Gavião', name:'Obra Gavião'}, {id:'Obra Boreal', name:'Obra Boreal'}];
+      caixaObra = []; empreiteiro = []; tasks = []; notes = []; documentos = [];
+      tipos = DEFAULT_TIPOS.slice(); unidades = DEFAULT_UNIDADES.slice();
+    }
+    finishLoadSetup();
     renderAll();
+    updateSyncStatusText();
   }
 
   // ---------- Toast ----------
@@ -1636,7 +1854,6 @@
 
   function emptyStateHTML(title, hint){
     return `<div class="empty-state">
-      <svg viewBox="0 0 24 24"><path d="M12 4v16M4 12h16"/></svg>
       <p>${title}</p>
       <p class="hint">${hint}</p>
     </div>`;
@@ -1662,10 +1879,11 @@
   function entryTableRowHTML(e){
     const d = parseDateLocal(e.data);
     const dateStr = String(d.getDate()).padStart(2,'0') + '/' + String(d.getMonth()+1).padStart(2,'0');
+    const qtdUnd = [e.qtd, e.unidade].filter(Boolean).join(' ') || '—';
     return `<div class="entry-table-row" data-id="${e.id}" data-kind="${e.kind}">
       <span class="etr-date">${dateStr}</span>
       <span class="etr-name">${escapeHTML(toDisplayCase(e.nome))}</span>
-      <span class="etr-und">${escapeHTML(e.unidade || '—')}</span>
+      <span class="etr-und">${escapeHTML(qtdUnd)}</span>
       <span class="etr-forn">${escapeHTML(toDisplayCase(e.fornecedor) || '—')}</span>
       <span class="etr-valor">${fmtBRL(e.valor)}</span>
     </div>`;
@@ -1681,6 +1899,24 @@
   const ENTRIES_PAGE_SIZE = 60;
   let entriesPage = 1;
   let entriesViewMode = 'card';
+  let entrySortMode = localStorage.getItem('cmoreira_sortMode') || 'recent';
+  function applyEntrySort(list){
+    // __sheetIdx (ascending) is the tiebreaker throughout — it reflects the
+    // Google Sheet's own row order, which is a far more meaningful "which of
+    // these came first" signal than criadoEm for rows typed in by hand.
+    if(entrySortMode === 'oldest'){
+      list.sort((a,b)=> a.data.localeCompare(b.data) || a.__sheetIdx - b.__sheetIdx);
+    } else if(entrySortMode === 'valor-desc'){
+      list.sort((a,b)=> (b.valor||0) - (a.valor||0) || a.__sheetIdx - b.__sheetIdx);
+    } else if(entrySortMode === 'valor-asc'){
+      list.sort((a,b)=> (a.valor||0) - (b.valor||0) || a.__sheetIdx - b.__sheetIdx);
+    } else if(entrySortMode === 'nome'){
+      list.sort((a,b)=> (a.nome||'').localeCompare(b.nome||'', 'pt-BR') || a.__sheetIdx - b.__sheetIdx);
+    } else { // 'recent' — the default
+      list.sort((a,b)=> b.data.localeCompare(a.data) || b.__sheetIdx - a.__sheetIdx);
+    }
+    return list;
+  }
   const PHOTOS_PAGE_SIZE = 24;
   let photosPagePerCat = {caixa:1, emp:1, tasks:1, notes:1};
   const DOCS_PAGE_SIZE = 30;
@@ -1694,6 +1930,14 @@
       $('#entriesViewToggle').querySelectorAll('button[data-mode]').forEach(b=>b.classList.toggle('active', b===btn));
       renderEntries();
     });
+  });
+
+  $('#sortSelect').value = entrySortMode;
+  $('#sortSelect').addEventListener('change', (e)=>{
+    entrySortMode = e.target.value;
+    try{ localStorage.setItem('cmoreira_sortMode', entrySortMode); }catch(err){}
+    entriesPage = 1;
+    renderEntries();
   });
 
   $all('.segmented button[data-kind]').forEach(btn=>{
@@ -1775,8 +2019,13 @@
     if(!view || !view.classList.contains('active')) return; // switchView() re-renders fresh on entry, so this is safe to skip otherwise
     populateEntryFilters();
     const src = entriesKind === 'caixa' ? caixaObra : empreiteiro;
-    let list = projEntries(src).map(e=>({...e, kind: entriesKind}));
-    list.sort((a,b)=> b.data.localeCompare(a.data) || b.criadoEm - a.criadoEm);
+    const idxById = new Map(src.map((e,i)=>[e.id, i]));
+    // Tag each item with its original array index (= Google Sheet row order)
+    // before sorting, so ties (e.g. same date) fall back to sheet order rather
+    // than criadoEm — which isn't meaningful for rows typed directly into the
+    // sheet, since those all get stamped with roughly the same read-time value.
+    let list = projEntries(src).map(e=>({...e, kind: entriesKind, __sheetIdx: idxById.get(e.id)}));
+    applyEntrySort(list);
     if(searchTerm){
       list = list.filter(e =>
         (e.nome||'').toLowerCase().includes(searchTerm) ||
@@ -1807,7 +2056,7 @@
       : '';
 
     if(entriesViewMode === 'table'){
-      const header = `<div class="etr-header"><span class="etr-date">Data</span><span class="etr-name">Nome</span><span class="etr-und">Und</span><span class="etr-forn">Fornecedor</span><span class="etr-valor">Valor</span></div>`;
+      const header = `<div class="etr-header"><span class="etr-date">Data</span><span class="etr-name">Nome</span><span class="etr-und">Qtd/Und</span><span class="etr-forn">Fornecedor</span><span class="etr-valor">Valor</span></div>`;
       box.innerHTML = `<div class="entry-table-wrap">${header}${visible.map(entryTableRowHTML).join('')}</div>${loadMoreHTML}`;
     } else {
       box.innerHTML = visible.map(entryCardHTML).join('') + loadMoreHTML;
@@ -1969,14 +2218,14 @@
         list[idx] = {...list[idx], ...payload};
         if(notaTxt) list[idx].notas = [...(list[idx].notas||[]), {id: uid('n'), texto: notaTxt, criadoEm: Date.now()}];
       }
-      await saveKey(addKind === 'caixa' ? 'caixaObra' : 'empreiteiro', list);
-      showToast('Lançamento atualizado.');
+      const ok = await saveKey(addKind === 'caixa' ? 'caixaObra' : 'empreiteiro', list);
+      if(ok) showToast('Lançamento atualizado.');
     } else {
       const newEntry = {id: uid('e'), projectId: activeProjectId, criadoEm: Date.now(), notas: notaTxt ? [{id: uid('n'), texto: notaTxt, criadoEm: Date.now()}] : [], fotos: draftFotos.slice(), ...payload};
       list.push(newEntry);
-      await saveKey(addKind === 'caixa' ? 'caixaObra' : 'empreiteiro', list);
+      const ok = await saveKey(addKind === 'caixa' ? 'caixaObra' : 'empreiteiro', list);
       draftFotos = []; // now owned by the saved entry — clear without deleting their blobs
-      showToast('Lançamento salvo.');
+      if(ok) showToast('Lançamento salvo.');
     }
     resetForm();
     renderAll();
@@ -2170,6 +2419,7 @@
   }
   async function deleteFormPhotoNow(id){
     let driveFileId = null;
+    let saveOk = true;
     if(editingId){
       const list = getList(addKind);
       const entry = list.find(x=>x.id===editingId);
@@ -2177,17 +2427,17 @@
         const target = (entry.fotos||[]).find(f=>f.id===id);
         driveFileId = target && target.driveFileId;
         entry.fotos = (entry.fotos||[]).filter(f=>f.id!==id);
-        await saveKey(addKind==='caixa' ? 'caixaObra' : 'empreiteiro', list);
+        saveOk = await saveKey(addKind==='caixa' ? 'caixaObra' : 'empreiteiro', list);
       }
     } else {
       const target = draftFotos.find(f=>f.id===id);
       driveFileId = target && target.driveFileId;
       draftFotos = draftFotos.filter(f=>f.id!==id);
     }
-    await deleteFromDrive(driveFileId);
+    if(saveOk) await deleteFromDrive(driveFileId);
     renderFormPhotoThumbs();
     renderAll();
-    showToast('Foto excluída.');
+    if(saveOk) showToast('Foto excluída.');
   }
   async function deleteFormPhotoWithConfirm(id){
     const ok = await showConfirm('Excluir esta foto? Essa ação não pode ser desfeita.', {title:'Excluir foto', okLabel:'Excluir'});
@@ -2225,19 +2475,20 @@
       return;
     }
     const meta = {id: photoResult.id, criadoEm: Date.now(), driveFileId: photoResult.driveFileId, driveUrl: photoResult.driveUrl};
+    let saveOk = true;
     if(editingId){
       const list = getList(addKind);
       const entry = list.find(x=>x.id===editingId);
       if(entry){
         entry.fotos = [...(entry.fotos||[]), meta];
-        await saveKey(addKind==='caixa' ? 'caixaObra' : 'empreiteiro', list);
+        saveOk = await saveKey(addKind==='caixa' ? 'caixaObra' : 'empreiteiro', list);
       }
     } else {
       draftFotos.push(meta);
     }
     renderFormPhotoThumbs();
     renderAll();
-    showToast('Foto adicionada.');
+    if(saveOk) showToast('Foto adicionada.');
   });
 
   // --- Detail modal photo context ---
@@ -2255,11 +2506,11 @@
     if(!entry) return;
     const target = (entry.fotos||[]).find(f=>f.id===id);
     entry.fotos = (entry.fotos||[]).filter(f=>f.id!==id);
-    await saveKey(activeModal.kind==='caixa' ? 'caixaObra' : 'empreiteiro', list);
+    const saveOk0 = await saveKey(activeModal.kind==='caixa' ? 'caixaObra' : 'empreiteiro', list);
     await deleteFromDrive(target && target.driveFileId);
     renderModalPhotoThumbs(entry.fotos);
     renderAll();
-    showToast('Foto excluída.');
+    if(saveOk0) showToast('Foto excluída.');
   }
   async function deleteModalPhotoWithConfirm(id){
     const ok = await showConfirm('Excluir esta foto? Essa ação não pode ser desfeita.', {title:'Excluir foto', okLabel:'Excluir'});
@@ -2281,10 +2532,10 @@
       return;
     }
     entry.fotos = [...(entry.fotos||[]), {id: photoResult.id, criadoEm: Date.now(), driveFileId: photoResult.driveFileId, driveUrl: photoResult.driveUrl}];
-    await saveKey(activeModal.kind==='caixa' ? 'caixaObra' : 'empreiteiro', list);
+    const saveOk1 = await saveKey(activeModal.kind==='caixa' ? 'caixaObra' : 'empreiteiro', list);
     renderModalPhotoThumbs(entry.fotos);
     renderAll();
-    showToast('Foto adicionada.');
+    if(saveOk1) showToast('Foto adicionada.');
   });
 
   // ---------- Task photos (new-task draft + existing-task modal, immediate) ----------
@@ -2336,11 +2587,11 @@
     if(!t) return;
     const target = (t.fotos||[]).find(f=>f.id===id);
     t.fotos = (t.fotos||[]).filter(f=>f.id!==id);
-    await saveKey('tasks', tasks);
+    const saveOk2 = await saveKey('tasks', tasks);
     await deleteFromDrive(target && target.driveFileId);
     renderTaskModalPhotoThumbs(t.fotos);
     renderAll();
-    showToast('Foto excluída.');
+    if(saveOk2) showToast('Foto excluída.');
   }
   async function deleteTaskModalPhotoWithConfirm(id){
     const ok = await showConfirm('Excluir esta foto? Essa ação não pode ser desfeita.', {title:'Excluir foto', okLabel:'Excluir'});
@@ -2361,10 +2612,10 @@
       return;
     }
     t.fotos = [...(t.fotos||[]), {id: photoResult.id, criadoEm: Date.now(), driveFileId: photoResult.driveFileId, driveUrl: photoResult.driveUrl}];
-    await saveKey('tasks', tasks);
+    const saveOk3 = await saveKey('tasks', tasks);
     renderTaskModalPhotoThumbs(t.fotos);
     renderAll();
-    showToast('Foto adicionada.');
+    if(saveOk3) showToast('Foto adicionada.');
   });
 
   // ---------- Note edit/delete (works for standalone notes and notes attached to entries) ----------
@@ -2386,7 +2637,7 @@
       const n = notes.find(x=>x.id===ref.id);
       if(!n) return;
       current = n.texto;
-      applyEdit = async (txt)=>{ n.texto = txt; await saveKey('notes', notes); };
+      applyEdit = async (txt)=>{ n.texto = txt; return await saveKey('notes', notes); };
     } else {
       const list = ref.origin === 'caixa' ? caixaObra : empreiteiro;
       const entry = list.find(x=>x.id===ref.entryId);
@@ -2396,35 +2647,37 @@
       current = n.texto;
       applyEdit = async (txt)=>{
         n.texto = txt;
-        await saveKey(ref.origin === 'caixa' ? 'caixaObra' : 'empreiteiro', list);
+        const ok = await saveKey(ref.origin === 'caixa' ? 'caixaObra' : 'empreiteiro', list);
         refreshNoteViewsFor(ref.origin, ref.entryId);
+        return ok;
       };
     }
     const nt = await showPrompt(current, {title:'Editar nota'});
     if(nt === null) return;
-    await applyEdit(nt);
+    const saveOk = await applyEdit(nt);
     renderAll();
-    showToast('Nota atualizada.');
+    if(saveOk) showToast('Nota atualizada.');
   }
 
   async function deleteNoteRef(ref){
     const ok = await showConfirm('Excluir esta nota?', {title:'Excluir nota', okLabel:'Excluir'});
     if(!ok) return;
+    let saveOk;
     if(ref.origin === 'standalone'){
       const target = notes.find(x=>x.id===ref.id);
       notes = notes.filter(x=>x.id!==ref.id);
-      await saveKey('notes', notes);
-      if(target) deletePhotoBlobs(target.fotos);
+      saveOk = await saveKey('notes', notes);
+      if(saveOk && target) deletePhotoBlobs(target.fotos);
     } else {
       const list = ref.origin === 'caixa' ? caixaObra : empreiteiro;
       const entry = list.find(x=>x.id===ref.entryId);
       if(!entry) return;
       entry.notas = (entry.notas||[]).filter(x=>x.id!==ref.noteId);
-      await saveKey(ref.origin === 'caixa' ? 'caixaObra' : 'empreiteiro', list);
+      saveOk = await saveKey(ref.origin === 'caixa' ? 'caixaObra' : 'empreiteiro', list);
       refreshNoteViewsFor(ref.origin, ref.entryId);
     }
     renderAll();
-    showToast('Nota excluída.');
+    if(saveOk) showToast('Nota excluída.');
   }
 
   $('#modalAddNoteBtn').addEventListener('click', async ()=>{
@@ -2436,11 +2689,11 @@
     const e = list.find(x=>x.id === activeModal.id);
     if(!e) return;
     e.notas = [...(e.notas||[]), {id: uid('n'), texto: txt, criadoEm: Date.now()}];
-    await saveKey(activeModal.kind === 'caixa' ? 'caixaObra' : 'empreiteiro', list);
+    const saveOk4 = await saveKey(activeModal.kind === 'caixa' ? 'caixaObra' : 'empreiteiro', list);
     input.value = '';
     renderModalNotes(e.notas);
     renderAll();
-    showToast('Nota adicionada.');
+    if(saveOk4) showToast('Nota adicionada.');
   });
 
   $all('[data-close]').forEach(btn=>{
@@ -2503,12 +2756,12 @@
     const target = getList(activeModal.kind).find(x=>x.id === activeModal.id);
     if(activeModal.kind === 'caixa') caixaObra = caixaObra.filter(x=>x.id !== activeModal.id);
     else empreiteiro = empreiteiro.filter(x=>x.id !== activeModal.id);
-    await saveKey(key, activeModal.kind === 'caixa' ? caixaObra : empreiteiro);
+    const saveOk5 = await saveKey(key, activeModal.kind === 'caixa' ? caixaObra : empreiteiro);
     if(target) deletePhotoBlobs(target.fotos); // clean up any attached photo blobs too
     $('#detailModal').classList.remove('open');
     activeModal = null;
     renderAll();
-    showToast('Lançamento excluído.');
+    if(saveOk5) showToast('Lançamento excluído.');
   });
 
   // ---------- Tasks ----------
@@ -2618,7 +2871,7 @@
       projectId: $('#t_projeto').value || null,
       fotos: draftTaskFotos.slice(),
     });
-    await saveKey('tasks', tasks);
+    const saveOk = await saveKey('tasks', tasks);
     draftTaskFotos = []; // now owned by the saved task — clear without deleting their blobs
     $('#t_texto').value = '';
     $('#t_prazo').value = '';
@@ -2627,7 +2880,7 @@
     $('#t_projeto').value = activeProjectId || '';
     renderTaskFormPhotoThumbs();
     renderAll();
-    showToast('Tarefa adicionada.');
+    if(saveOk) showToast('Tarefa adicionada.');
   });
 
   function showTaskViewMode(){
@@ -2695,11 +2948,11 @@
     t.prazo = $('#te_prazo').value || '';
     t.prioridade = $('#te_prioridade').value;
     t.projectId = $('#te_projeto').value || null;
-    await saveKey('tasks', tasks);
+    const saveOk6 = await saveKey('tasks', tasks);
     $('#taskModal').classList.remove('open');
     activeTaskId = null;
     renderAll();
-    showToast('Tarefa atualizada.');
+    if(saveOk6) showToast('Tarefa atualizada.');
   });
 
   $('#deleteTaskBtn').addEventListener('click', async ()=>{
@@ -2708,12 +2961,12 @@
     if(!ok) return;
     const target = tasks.find(x=>x.id===activeTaskId);
     tasks = tasks.filter(x=>x.id !== activeTaskId);
-    await saveKey('tasks', tasks);
+    const saveOk7 = await saveKey('tasks', tasks);
     if(target) deletePhotoBlobs(target.fotos);
     $('#taskModal').classList.remove('open');
     activeTaskId = null;
     renderAll();
-    showToast('Tarefa excluída.');
+    if(saveOk7) showToast('Tarefa excluída.');
   });
 
   // ---------- Notes feed ----------
@@ -2770,11 +3023,11 @@
     if(!n) return;
     const target = (n.fotos||[]).find(f=>f.id===photoId);
     n.fotos = (n.fotos||[]).filter(f=>f.id!==photoId);
-    await saveKey('notes', notes);
+    const saveOk8 = await saveKey('notes', notes);
     await deleteFromDrive(target && target.driveFileId);
     renderExistingNotePhotoThumbs(n);
     renderAll();
-    showToast('Foto excluída.');
+    if(saveOk8) showToast('Foto excluída.');
   }
   async function deleteExistingNotePhotoWithConfirm(noteId, photoId){
     const ok = await showConfirm('Excluir esta foto? Essa ação não pode ser desfeita.', {title:'Excluir foto', okLabel:'Excluir'});
@@ -2797,23 +3050,23 @@
       return;
     }
     n.fotos = [...(n.fotos||[]), {id: photoResult.id, criadoEm: Date.now(), driveFileId: photoResult.driveFileId, driveUrl: photoResult.driveUrl}];
-    await saveKey('notes', notes);
+    const saveOk9 = await saveKey('notes', notes);
     renderExistingNotePhotoThumbs(n);
     renderAll();
-    showToast('Foto adicionada.');
+    if(saveOk9) showToast('Foto adicionada.');
   });
 
   $('#saveNoteBtn').addEventListener('click', async ()=>{
     const txt = $('#noteInput').value.trim();
     if(!txt){ showToast('Escreva algo antes de salvar.'); return; }
     notes.push({id: uid('sn'), projectId: activeProjectId, texto: txt, criadoEm: Date.now(), fotos: draftNoteFotos.slice()});
-    await saveKey('notes', notes);
+    const saveOk10 = await saveKey('notes', notes);
     draftNoteFotos = []; // now owned by the saved note — clear without deleting their blobs
     $('#noteInput').value = '';
     renderNoteFormPhotoThumbs();
     notesPage = 1;
     renderAll();
-    showToast('Nota adicionada.');
+    if(saveOk10) showToast('Nota adicionada.');
   });
 
   function dateGroupLabel(ts){
@@ -2905,6 +3158,23 @@
     renderSettingsProjects();
     $('#settingsModal').classList.add('open');
   });
+  $('#syncBtn').addEventListener('click', async ()=>{
+    const btn = $('#syncBtn');
+    if(btn.classList.contains('syncing')) return; // already in progress
+    btn.classList.add('syncing');
+    const ok = await fetchAndApplyFromServer();
+    btn.classList.remove('syncing');
+    if(ok){
+      finishLoadSetup();
+      renderAll();
+      updateSyncStatusText();
+      showToast('Sincronizado.');
+    } else {
+      showToast(!navigator.onLine
+        ? 'Sem internet. Tente novamente quando reconectar.'
+        : 'Não consegui sincronizar. Tente novamente.');
+    }
+  });
   function renderSettingsProjects(){
     const box = $('#settingsProjects');
     box.innerHTML = projects.map(p => `<div class="proj-row"><span class="pname"><span class="proj-dot-inline"></span>${escapeHTML(p.name)}</span><button data-rename="${p.id}">Renomear</button></div>`).join('');
@@ -2928,7 +3198,7 @@
           notes.forEach(n=>{ if(n.projectId===oldId) n.projectId = nn; });
           documentos.forEach(d=>{ if(d.projectId===oldId) d.projectId = nn; });
           if(activeProjectId === oldId) activeProjectId = nn;
-          await Promise.all([
+          const results = await Promise.all([
             saveKey('projects', projects),
             saveKey('caixaObra', caixaObra),
             saveKey('empreiteiro', empreiteiro),
@@ -2940,7 +3210,8 @@
           renderSettingsProjects();
           renderProjectPills();
           renderAll();
-          showToast('Projeto atualizado.');
+          if(results.every(Boolean)) showToast('Projeto atualizado.');
+          else showToast('Projeto renomeado, mas nem tudo foi sincronizado — recarregue a página para conferir.');
         }
       });
     });
@@ -3090,13 +3361,14 @@
     // Deletes from the actual source record (lançamento/tarefa/nota) — this hub is
     // a mirror of those photos, not a separate copy, so deleting here deletes there too.
     let driveFileId = null;
+    let saveOk = true;
     if(catKey === 'caixa' || catKey === 'emp'){
       const list = catKey === 'caixa' ? caixaObra : empreiteiro;
       for(const e of list){
         if(e.fotos && e.fotos.some(f=>f.id===photoId)){
           driveFileId = (e.fotos.find(f=>f.id===photoId)||{}).driveFileId;
           e.fotos = e.fotos.filter(f=>f.id!==photoId);
-          await saveKey(catKey==='caixa' ? 'caixaObra' : 'empreiteiro', list);
+          saveOk = await saveKey(catKey==='caixa' ? 'caixaObra' : 'empreiteiro', list);
           break;
         }
       }
@@ -3105,7 +3377,7 @@
         if(t.fotos && t.fotos.some(f=>f.id===photoId)){
           driveFileId = (t.fotos.find(f=>f.id===photoId)||{}).driveFileId;
           t.fotos = t.fotos.filter(f=>f.id!==photoId);
-          await saveKey('tasks', tasks);
+          saveOk = await saveKey('tasks', tasks);
           break;
         }
       }
@@ -3114,14 +3386,14 @@
         if(n.fotos && n.fotos.some(f=>f.id===photoId)){
           driveFileId = (n.fotos.find(f=>f.id===photoId)||{}).driveFileId;
           n.fotos = n.fotos.filter(f=>f.id!==photoId);
-          await saveKey('notes', notes);
+          saveOk = await saveKey('notes', notes);
           break;
         }
       }
     }
-    await deleteFromDrive(driveFileId);
+    if(saveOk) await deleteFromDrive(driveFileId);
     renderAll();
-    showToast('Foto excluída.');
+    if(saveOk) showToast('Foto excluída.');
   }
 
   function fileExtension(filename){
@@ -3233,10 +3505,10 @@
   async function deleteDocumentNow(id){
     const target = documentos.find(d=>d.id===id);
     documentos = documentos.filter(d=>d.id!==id);
-    await saveKey('documentos', documentos);
+    const saveOk11 = await saveKey('documentos', documentos);
     await deleteFromDrive(target && target.driveFileId);
     renderDocsList();
-    showToast('Documento excluído.');
+    if(saveOk11) showToast('Documento excluído.');
   }
   async function deleteDocumentWithConfirm(id){
     const ok = await showConfirm('Excluir este documento? Essa ação não pode ser desfeita.', {title:'Excluir documento', okLabel:'Excluir'});
