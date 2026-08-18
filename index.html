@@ -8,6 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
   :root{
     --ink:#211d19;
@@ -539,9 +540,34 @@
   @media (orientation:landscape) and (max-height:500px){
     #orientationGuard{display:flex;}
   }
+
+  #authGate{
+    position:fixed; inset:0; z-index:400; background:var(--ink);
+    display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding:30px;
+  }
+  #authGate .mark{
+    width:64px; height:64px; border-radius:18px; background:var(--orange);
+    display:flex; align-items:center; justify-content:center; margin-bottom:20px;
+  }
+  #authGate .mark svg{width:32px; height:32px; stroke:#fff; fill:none; stroke-width:1.8;}
+  #authGate h1{color:#fff; font-family:'Oswald',sans-serif; font-size:19px; margin:0 0 6px; text-transform:uppercase; letter-spacing:0.03em;}
+  #authGate p{color:#c9c2b4; font-size:13.5px; max-width:280px; line-height:1.5; margin:0 0 26px;}
+  #authGate .g-signin-slot{min-height:44px;}
+  #authGate .auth-error{color:#f5a794; font-size:13px; margin-top:16px; max-width:280px; line-height:1.5;}
+  #authGate .auth-spinner{color:#c9c2b4; font-size:13px;}
 </style>
 </head>
 <body>
+
+<div id="authGate">
+  <div class="mark">
+    <svg viewBox="0 0 24 24"><path d="M3 21h18"/><path d="M5 21V9l7-5 7 5v12"/><path d="M9 21v-6h6v6"/></svg>
+  </div>
+  <h1>Construtora Moreira</h1>
+  <p id="authGateMsg">Entre com sua conta Google para continuar.</p>
+  <div id="googleSignInSlot" class="g-signin-slot"></div>
+  <div id="authGateError" class="auth-error" style="display:none;"></div>
+</div>
 
 <div id="appScroll">
 
@@ -1055,7 +1081,7 @@
       <button class="btn btn-secondary btn-block" id="exportExcelBtn">Exportar tudo para Excel</button>
       <div class="storage-note">Lançamentos, tarefas, notas, fotos e documentos ficam salvos na sua conta. Arquivos muito grandes (PDFs acima de 3MB) ainda não são suportados — isso será resolvido com a integração ao Google Drive, na próxima etapa.</div>
     </div>
-    <div class="app-version">Construtora Moreira App — v32</div>
+    <div class="app-version">Construtora Moreira App — v34 (auth Phase B)</div>
   </div>
 </div>
 
@@ -1248,10 +1274,30 @@
   // trigger, so text/plain avoids that entirely; Code.gs parses the body as
   // JSON manually on its side either way.
   const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxoQYyrIMNNIKfO3wkAfj6f5HFAPCBfhw07cSsuRsAy4HWDODSjHBtGuTw2TgmfHRvZ_Q/exec';
-  // Must match SHARED_SECRET in Code.gs exactly.
-  const SHARED_SECRET = 'uJfz1csaClJz6rjFa-izI7FBt-FxxWuE';
+  // Must match GOOGLE_CLIENT_ID in Code.gs exactly.
+  const GOOGLE_CLIENT_ID = '901942652926-u3enra2v7f0mrd93f5tu26ll8c868io2.apps.googleusercontent.com';
+  // The signed-in user's Google ID token — memory only, never persisted, since
+  // it expires in about an hour anyway. AUTH_ERROR_MESSAGES marks which backend
+  // rejections mean "your session is invalid," as opposed to an unrelated error
+  // (network blip, conflict), so the app knows when to send someone back to the
+  // sign-in screen instead of just showing a toast.
+  let googleIdToken = null;
+  let currentUser = null;
+  const AUTH_ERROR_MESSAGES = new Set(['não autenticado', 'não autorizado', 'usuário desativado', 'usuário não cadastrado']);
+  function isAuthError(err){
+    return err && AUTH_ERROR_MESSAGES.has(String(err.message || err));
+  }
+  // Phase B rejections — a correctly signed-in user whose ROLE or PROJECT
+  // access doesn't permit this action. Distinct from AUTH_ERROR_MESSAGES on
+  // purpose: those mean "your session is invalid, sign in again," which would
+  // be actively wrong here — signing in again changes nothing for a Partner
+  // trying to write, since the backend will reject it again every time.
+  const PERMISSION_ERROR_MESSAGES = new Set(['sem permissão para escrever', 'sem acesso a este projeto']);
+  function isPermissionError(err){
+    return err && PERMISSION_ERROR_MESSAGES.has(String(err.message || err));
+  }
   async function sheetsGet(params){
-    const qs = new URLSearchParams(Object.assign({secret: SHARED_SECRET}, params || {})).toString();
+    const qs = new URLSearchParams(Object.assign({idToken: googleIdToken || ''}, params || {})).toString();
     const resp = await fetch(APPS_SCRIPT_URL + (qs ? '?' + qs : ''));
     if(!resp.ok) throw new Error('HTTP ' + resp.status);
     const data = await resp.json();
@@ -1262,7 +1308,7 @@
     const resp = await fetch(APPS_SCRIPT_URL, {
       method: 'POST',
       headers: {'Content-Type': 'text/plain;charset=utf-8'},
-      body: JSON.stringify(Object.assign({secret: SHARED_SECRET}, body)),
+      body: JSON.stringify(Object.assign({idToken: googleIdToken || ''}, body)),
     });
     if(!resp.ok) throw new Error('HTTP ' + resp.status);
     return await resp.json();
@@ -1384,6 +1430,21 @@
   }
 
   function saveErrorMessage(err){
+    if(isPermissionError(err)){
+      const msg = String(err.message || err);
+      if(msg === 'sem permissão para escrever') return 'Sua conta tem acesso somente para visualização.';
+      if(msg === 'sem acesso a este projeto') return 'Você não tem acesso a este projeto.';
+    }
+    if(isAuthError(err)){
+      // Their session was revoked or expired mid-use — retrying the save
+      // won't help, so send them back to sign-in instead of a dead-end toast.
+      setTimeout(()=>{
+        googleIdToken = null;
+        showAuthGate(String(err.message || err), true);
+        renderGoogleButton(); // the slot may still hold the "Entrando..." spinner from original sign-in — must restore the actual button or there's nothing left to click
+      }, 800);
+      return 'Sua sessão não é mais válida. Entre novamente.';
+    }
     if(isNetworkError(err)) return 'Sem internet — não foi possível salvar. Tente novamente quando reconectar.';
     return 'Erro ao salvar no Google Sheets. Tente novamente.';
   }
@@ -1434,7 +1495,11 @@
         mimeType: mimeFromDataUrl_(dataUrl), base64: dataUrlToBase64_(dataUrl),
       });
       return {driveFileId: resp.fileId, driveUrl: resp.url};
-    }catch(e){ console.error('drive upload error', e); return null; }
+    }catch(e){
+      console.error('drive upload error', e);
+      if(isPermissionError(e)) throw e; // don't swallow — retrying with a smaller image can't fix a permission rejection
+      return null;
+    }
   }
   async function deleteFromDrive(driveFileId){
     if(!driveFileId) return;
@@ -1623,9 +1688,11 @@
 
       lastSyncTime = Date.now();
       saveCacheToLocalStorage();
+      currentUser = data.currentUser || currentUser;
       return true;
     }catch(err){
       console.error('Erro ao carregar do Google Sheets', err);
+      if(isAuthError(err)) throw err; // let the sign-in flow handle this specifically, not the generic offline path
       return false;
     }
   }
@@ -2491,7 +2558,13 @@
     try{ dataUrl = await withTimeout(compressImageFile(file), 20000, 'photo-processing-timeout'); }
     catch(err){ console.error('photo compress error', err); throw new Error('process-failed'); }
     const photoId = uid('ph');
-    let uploaded = await uploadToDrive(dataUrl, photoId + '.jpg', projectName || activeProjectId);
+    let uploaded;
+    try{
+      uploaded = await uploadToDrive(dataUrl, photoId + '.jpg', projectName || activeProjectId);
+    }catch(err){
+      if(isPermissionError(err)) throw err; // no point retrying with heavier compression — a smaller file won't change the answer
+      uploaded = null;
+    }
     if(!uploaded){
       try{
         dataUrl = await withTimeout(compressImageFile(file, 800, 0.5), 20000, 'photo-processing-timeout');
@@ -3644,7 +3717,59 @@
     renderDocsView();
   }
 
-  loadAll();
+  // ==================================================================
+  // AUTH: Google Sign-In — reusable as-is in future apps built on this
+  // same template; only GOOGLE_CLIENT_ID above needs to change per app.
+  // ==================================================================
+  function showAuthGate(message, isError){
+    $('#appScroll').style.display = 'none';
+    $('#authGate').style.display = 'flex';
+    $('#authGateMsg').textContent = message || 'Entre com sua conta Google para continuar.';
+    const errEl = $('#authGateError');
+    if(isError){ errEl.textContent = message; errEl.style.display = 'block'; $('#authGateMsg').textContent = 'Entre com sua conta Google para continuar.'; }
+    else { errEl.style.display = 'none'; }
+  }
+  function hideAuthGate(){
+    $('#authGate').style.display = 'none';
+    $('#appScroll').style.display = '';
+  }
+  async function onGoogleSignIn(response){
+    googleIdToken = response.credential;
+    $('#googleSignInSlot').innerHTML = '<div class="auth-spinner">Entrando...</div>';
+    try{
+      await loadAll();
+      hideAuthGate();
+      if(currentUser) showToast('Bem-vindo, ' + (currentUser.nome || currentUser.email) + '.');
+    }catch(err){
+      googleIdToken = null;
+      const msg = isAuthError(err) ? String(err.message) : 'Não consegui entrar. Tente novamente.';
+      if(isAuthError(err)){
+        try{ localStorage.removeItem(CACHE_KEY); }catch(e){} // don't let a revoked device keep old business data around
+      }
+      showAuthGate(msg, true);
+      renderGoogleButton();
+    }
+  }
+  function renderGoogleButton(){
+    if(!window.google || !google.accounts || !google.accounts.id) return;
+    google.accounts.id.renderButton($('#googleSignInSlot'), { theme:'filled_black', size:'large', shape:'pill', text:'signin_with' });
+  }
+  function initAuth(){
+    if(!window.google || !google.accounts || !google.accounts.id){
+      // Google's script hasn't finished loading yet — try again shortly rather
+      // than failing outright, since it's loaded with `defer` and can lag.
+      setTimeout(initAuth, 300);
+      return;
+    }
+    google.accounts.id.initialize({
+      client_id: GOOGLE_CLIENT_ID,
+      callback: onGoogleSignIn,
+    });
+    renderGoogleButton();
+    google.accounts.id.prompt(); // offers One Tap for a returning user, no-ops otherwise
+  }
+  showAuthGate();
+  initAuth();
 })();
 </script>
 </body>
