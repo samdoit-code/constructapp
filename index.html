@@ -477,6 +477,21 @@
 
   .settings-block{margin-bottom:20px;}
   .settings-block h3{font-size:12.5px; color:var(--ink-soft); margin:0 0 10px; letter-spacing:0.06em;}
+  .account-card{
+    display:flex; align-items:center; gap:12px; background:var(--paper-2); border:1.5px solid var(--line);
+    border-radius:12px; padding:12px 14px;
+  }
+  .account-card .avatar{
+    width:38px; height:38px; border-radius:50%; background:var(--orange); color:#fff; flex:0 0 auto;
+    display:flex; align-items:center; justify-content:center; font-family:'Oswald',sans-serif; font-size:16px; font-weight:600;
+  }
+  .account-card .info{min-width:0;}
+  .account-card .name{font-weight:700; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .account-card .email{font-size:12px; color:var(--ink-soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .account-card .role-badge{
+    margin-left:auto; flex:0 0 auto; font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em;
+    padding:3px 9px; border-radius:20px; background:var(--orange); color:#fff;
+  }
   .proj-row{display:flex; align-items:center; justify-content:space-between; background:#fff; border:1px solid var(--line); border-radius:10px; padding:11px 13px; margin-bottom:8px;}
   .proj-row .pname{font-size:14px; font-weight:600; display:flex; align-items:center; gap:8px;}
   .proj-row button{background:none; border:none; color:var(--blue); font-size:12px; font-weight:700; cursor:pointer;}
@@ -1072,6 +1087,11 @@
       <button class="modal-close" data-close="settingsModal"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
     </div>
     <div class="settings-block">
+      <h3>CONTA</h3>
+      <div id="settingsAccount" class="account-card"></div>
+      <button class="btn btn-ghost btn-block btn-sm" id="signOutBtn" style="margin-top:10px;">Sair da conta</button>
+    </div>
+    <div class="settings-block">
       <h3>PROJETOS</h3>
       <div id="settingsProjects"></div>
       <button class="btn btn-ghost btn-block btn-sm" id="addProjectBtn">+ Adicionar projeto</button>
@@ -1081,7 +1101,7 @@
       <button class="btn btn-secondary btn-block" id="exportExcelBtn">Exportar tudo para Excel</button>
       <div class="storage-note">Lançamentos, tarefas, notas, fotos e documentos ficam salvos na sua conta. Arquivos muito grandes (PDFs acima de 3MB) ainda não são suportados — isso será resolvido com a integração ao Google Drive, na próxima etapa.</div>
     </div>
-    <div class="app-version">Construtora Moreira App — v34 (auth Phase B)</div>
+    <div class="app-version">Construtora Moreira App — v35 (auth bugfix + account UI)</div>
   </div>
 </div>
 
@@ -1275,7 +1295,7 @@
   // JSON manually on its side either way.
   const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxoQYyrIMNNIKfO3wkAfj6f5HFAPCBfhw07cSsuRsAy4HWDODSjHBtGuTw2TgmfHRvZ_Q/exec';
   // Must match GOOGLE_CLIENT_ID in Code.gs exactly.
-  const GOOGLE_CLIENT_ID = '901942652926-u3enra2v7f0mrd93f5tu26ll8c868io2.apps.googleusercontent.com';
+  const GOOGLE_CLIENT_ID = 'REPLACE_WITH_YOUR_CLIENT_ID.apps.googleusercontent.com';
   // The signed-in user's Google ID token — memory only, never persisted, since
   // it expires in about an hour anyway. AUTH_ERROR_MESSAGES marks which backend
   // rejections mean "your session is invalid," as opposed to an unrelated error
@@ -1708,11 +1728,13 @@
     resetForm();
   }
 
-  async function loadAll(){
+  async function loadAll(isInitialSignIn){
     const hadCache = loadCacheFromLocalStorage();
-    if(hadCache){
+    if(hadCache && !isInitialSignIn){
       // Instant render from what we had last time — no waiting on the network
-      // just to see the app. Then quietly refresh in the background.
+      // just to see the app. Then quietly refresh in the background. This
+      // tolerant fallback is ONLY safe for a background refresh of an
+      // ALREADY-proven session — never for the initial sign-in itself, see below.
       finishLoadSetup();
       renderAll();
       updateSyncStatusText();
@@ -1727,10 +1749,13 @@
       return;
     }
 
-    // No cache at all (first-ever load on this device) — nothing to show yet,
-    // so this one genuinely has to wait on the network.
+    // Either no cache exists, OR this is the initial sign-in — in both cases
+    // a failed fetch must be a hard failure, not silently smoothed over by
+    // old local data. Trusting stale cache during sign-in specifically would
+    // let a rejected/unauthorized request look like a successful login.
     const ok = await fetchAndApplyFromServer();
     if(!ok){
+      if(isInitialSignIn) throw new Error('Não foi possível confirmar sua sessão.');
       showToast(navigator.onLine
         ? 'Não consegui conectar ao Google Sheets. Verifique sua internet e tente novamente.'
         : 'Sem internet. Conecte-se e toque em sincronizar.');
@@ -3300,25 +3325,65 @@
   }
 
   // ---------- Settings ----------
+  const ROLE_LABELS = { admin:'Admin', owner:'Owner', partner:'Partner' };
+  function renderAccountCard(){
+    const box = $('#settingsAccount');
+    if(!currentUser){ box.innerHTML = ''; return; }
+    const name = currentUser.nome || currentUser.email;
+    const initial = (name.charAt(0) || '?').toUpperCase();
+    const roleLabel = ROLE_LABELS[currentUser.role] || currentUser.role || '—';
+    box.innerHTML = `
+      <div class="avatar">${escapeHTML(initial)}</div>
+      <div class="info">
+        <div class="name">${escapeHTML(name)}</div>
+        <div class="email">${escapeHTML(currentUser.email)}</div>
+      </div>
+      <div class="role-badge">${escapeHTML(roleLabel)}</div>
+    `;
+  }
   $('#settingsBtn').addEventListener('click', ()=>{
+    renderAccountCard();
     renderSettingsProjects();
     $('#settingsModal').classList.add('open');
+  });
+  $('#signOutBtn').addEventListener('click', async ()=>{
+    const ok = await showConfirm('Sair da sua conta Google?', {title:'Sair', okLabel:'Sair'});
+    if(!ok) return;
+    googleIdToken = null;
+    currentUser = null;
+    try{ localStorage.removeItem(CACHE_KEY); }catch(e){}
+    if(window.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect();
+    $('#settingsModal').classList.remove('open');
+    showAuthGate();
+    renderGoogleButton();
   });
   $('#syncBtn').addEventListener('click', async ()=>{
     const btn = $('#syncBtn');
     if(btn.classList.contains('syncing')) return; // already in progress
     btn.classList.add('syncing');
-    const ok = await fetchAndApplyFromServer();
-    btn.classList.remove('syncing');
-    if(ok){
-      finishLoadSetup();
-      renderAll();
-      updateSyncStatusText();
-      showToast('Sincronizado.');
-    } else {
-      showToast(!navigator.onLine
-        ? 'Sem internet. Tente novamente quando reconectar.'
-        : 'Não consegui sincronizar. Tente novamente.');
+    try{
+      const ok = await fetchAndApplyFromServer();
+      btn.classList.remove('syncing');
+      if(ok){
+        finishLoadSetup();
+        renderAll();
+        updateSyncStatusText();
+        showToast('Sincronizado.');
+      } else {
+        showToast(!navigator.onLine
+          ? 'Sem internet. Tente novamente quando reconectar.'
+          : 'Não consegui sincronizar. Tente novamente.');
+      }
+    }catch(err){
+      btn.classList.remove('syncing');
+      if(isAuthError(err)){
+        googleIdToken = null;
+        try{ localStorage.removeItem(CACHE_KEY); }catch(e){}
+        showAuthGate(String(err.message || err), true);
+        renderGoogleButton();
+      } else {
+        showToast('Não consegui sincronizar. Tente novamente.');
+      }
     }
   });
   function renderSettingsProjects(){
@@ -3737,7 +3802,7 @@
     googleIdToken = response.credential;
     $('#googleSignInSlot').innerHTML = '<div class="auth-spinner">Entrando...</div>';
     try{
-      await loadAll();
+      await loadAll(true);
       hideAuthGate();
       if(currentUser) showToast('Bem-vindo, ' + (currentUser.nome || currentUser.email) + '.');
     }catch(err){
