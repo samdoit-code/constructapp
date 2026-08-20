@@ -505,6 +505,20 @@
   .toast.show{opacity:1; transform:translateX(-50%) translateY(0) scale(1);}
   .toast svg{width:15px;height:15px; stroke:#7fd99a; fill:none; stroke-width:2.5; flex:0 0 auto;}
 
+  .update-banner{
+    position:fixed; left:12px; right:12px; bottom:calc(78px + var(--safe-bottom)); z-index:410;
+    background:var(--ink); color:#fff; border-radius:14px; padding:12px 14px;
+    display:none; align-items:center; gap:10px; box-shadow:0 6px 20px rgba(0,0,0,0.3);
+  }
+  .update-banner.show{display:flex; animation: dialogPop .22s var(--ease);}
+  .update-banner span{flex:1; font-size:13px; line-height:1.4;}
+  .update-banner button{
+    flex:0 0 auto; border:none; border-radius:20px; padding:8px 14px; font-size:12.5px; font-weight:700;
+    font-family:'Inter',sans-serif; cursor:pointer;
+  }
+  .update-banner .btn-update{background:var(--orange); color:#fff;}
+  .update-banner .btn-dismiss{background:rgba(255,255,255,0.12); color:#fff; padding:8px 10px;}
+
   .storage-note{font-size:11px; color:#9c9385; text-align:center; margin-top:14px; line-height:1.5;}
   .app-version{font-size:10.5px; color:#c2bbab; text-align:center; margin-top:6px; letter-spacing:0.02em;}
 
@@ -569,6 +583,7 @@
   #authGate p{color:#c9c2b4; font-size:13.5px; max-width:280px; line-height:1.5; margin:0 0 26px;}
   #authGate .g-signin-slot{min-height:44px;}
   #authGate .auth-error{color:#f5a794; font-size:13px; margin-top:16px; max-width:280px; line-height:1.5;}
+  .auth-gate-version{position:absolute; bottom:calc(16px + var(--safe-bottom)); left:0; right:0; text-align:center; font-size:10.5px; color:rgba(255,255,255,0.28);}
   #authGate .auth-spinner{color:#c9c2b4; font-size:13px;}
 </style>
 </head>
@@ -582,6 +597,7 @@
   <p id="authGateMsg">Entre com sua conta Google para continuar.</p>
   <div id="googleSignInSlot" class="g-signin-slot"></div>
   <div id="authGateError" class="auth-error" style="display:none;"></div>
+  <div id="authGateVersion" class="auth-gate-version"></div>
 </div>
 
 <div id="appScroll">
@@ -1101,7 +1117,7 @@
       <button class="btn btn-secondary btn-block" id="exportExcelBtn">Exportar tudo para Excel</button>
       <div class="storage-note">Lançamentos, tarefas, notas, fotos e documentos ficam salvos na sua conta. Arquivos muito grandes (PDFs acima de 3MB) ainda não são suportados — isso será resolvido com a integração ao Google Drive, na próxima etapa.</div>
     </div>
-    <div class="app-version">Construtora Moreira App — v35 (auth bugfix + account UI)</div>
+    <div class="app-version" id="appVersionLabel">Construtora Moreira App</div>
   </div>
 </div>
 
@@ -1132,6 +1148,11 @@
 </div>
 
 <div class="toast" id="toast"><svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg><span id="toastMsg"></span></div>
+<div class="update-banner" id="updateBanner">
+  <span>Nova versão disponível.</span>
+  <button type="button" class="btn-dismiss" id="updateDismissBtn">Depois</button>
+  <button type="button" class="btn-update" id="updateNowBtn">Atualizar</button>
+</div>
 
 <div id="orientationGuard">
   <svg viewBox="0 0 24 24"><rect x="6" y="3" width="12" height="18" rx="2.5"/><path d="M10 19h4"/></svg>
@@ -1293,6 +1314,26 @@
   // doesn't respond usefully to the OPTIONS preflight a JSON content-type would
   // trigger, so text/plain avoids that entirely; Code.gs parses the body as
   // JSON manually on its side either way.
+  // ---------- App version / update check ----------
+  // Bump this AND version.json together on every deploy. Independent of the
+  // auth/session logic — this only ever checks for a newer build and offers
+  // to reload; it never touches googleIdToken or the session hint.
+  const APP_VERSION = 35;
+  const VERSION_CHECK_INTERVAL_MS = 15 * 60 * 1000; // every 15 min while the app is open
+  let updateAvailable = false;
+  async function checkForUpdate(){
+    if(updateAvailable) return; // already showing the banner, no need to re-check
+    try{
+      const resp = await fetch('version.json?t=' + Date.now()); // cache-bust — this one fetch must always hit the network
+      if(!resp.ok) return;
+      const data = await resp.json();
+      if(data && typeof data.version === 'number' && data.version > APP_VERSION){
+        updateAvailable = true;
+        $('#updateBanner').classList.add('show');
+      }
+    }catch(e){ /* offline or blocked — just skip silently, this is a non-critical check */ }
+  }
+
   const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxoQYyrIMNNIKfO3wkAfj6f5HFAPCBfhw07cSsuRsAy4HWDODSjHBtGuTw2TgmfHRvZ_Q/exec';
   // Must match GOOGLE_CLIENT_ID in Code.gs exactly.
   const GOOGLE_CLIENT_ID = '901942652926-u3enra2v7f0mrd93f5tu26ll8c868io2.apps.googleusercontent.com';
@@ -1460,6 +1501,7 @@
       // won't help, so send them back to sign-in instead of a dead-end toast.
       setTimeout(()=>{
         googleIdToken = null;
+        clearSessionHint();
         showAuthGate(String(err.message || err), true);
         renderGoogleButton(); // the slot may still hold the "Entrando..." spinner from original sign-in — must restore the actual button or there's nothing left to click
       }, 800);
@@ -3351,6 +3393,7 @@
     if(!ok) return;
     googleIdToken = null;
     currentUser = null;
+    clearSessionHint();
     try{ localStorage.removeItem(CACHE_KEY); }catch(e){}
     if(window.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect();
     $('#settingsModal').classList.remove('open');
@@ -3378,6 +3421,7 @@
       btn.classList.remove('syncing');
       if(isAuthError(err)){
         googleIdToken = null;
+        clearSessionHint();
         try{ localStorage.removeItem(CACHE_KEY); }catch(e){}
         showAuthGate(String(err.message || err), true);
         renderGoogleButton();
@@ -3804,9 +3848,11 @@
     try{
       await loadAll(true);
       hideAuthGate();
+      if(currentUser) saveSessionHint(currentUser.email); // written only after the backend has independently verified the token
       if(currentUser) showToast('Bem-vindo, ' + (currentUser.nome || currentUser.email) + '.');
     }catch(err){
       googleIdToken = null;
+      clearSessionHint();
       const msg = isAuthError(err) ? String(err.message) : 'Não consegui entrar. Tente novamente.';
       if(isAuthError(err)){
         try{ localStorage.removeItem(CACHE_KEY); }catch(e){} // don't let a revoked device keep old business data around
@@ -3819,10 +3865,30 @@
     if(!window.google || !google.accounts || !google.accounts.id) return;
     google.accounts.id.renderButton($('#googleSignInSlot'), { theme:'filled_black', size:'large', shape:'pill', text:'signin_with' });
   }
+  // Session-restoration marker — email + timestamp ONLY, never the token
+  // itself. This is a UI hint for whether to try a silent re-auth before
+  // showing the gate; it grants no access on its own. Every request still
+  // requires a fresh ID token, independently verified server-side by
+  // getCurrentUser_ — this marker never reaches the backend.
+  const SESSION_HINT_KEY = 'cmoreira_session_hint';
+  const SESSION_HINT_MAX_AGE_MS = 5 * 60 * 1000; // short on purpose: optimistic UI shortcut, not a session
+  function saveSessionHint(email){
+    try{ localStorage.setItem(SESSION_HINT_KEY, JSON.stringify({email, ts: Date.now()})); }catch(e){}
+  }
+  function clearSessionHint(){
+    try{ localStorage.removeItem(SESSION_HINT_KEY); }catch(e){}
+  }
+  function hasFreshSessionHint(){
+    try{
+      const raw = localStorage.getItem(SESSION_HINT_KEY);
+      if(!raw) return false;
+      const hint = JSON.parse(raw);
+      return !!(hint && hint.ts && (Date.now() - hint.ts) < SESSION_HINT_MAX_AGE_MS);
+    }catch(e){ return false; }
+  }
+
   function initAuth(){
     if(!window.google || !google.accounts || !google.accounts.id){
-      // Google's script hasn't finished loading yet — try again shortly rather
-      // than failing outright, since it's loaded with `defer` and can lag.
       setTimeout(initAuth, 300);
       return;
     }
@@ -3831,8 +3897,32 @@
       callback: onGoogleSignIn,
     });
     renderGoogleButton();
-    google.accounts.id.prompt(); // offers One Tap for a returning user, no-ops otherwise
+    if(hasFreshSessionHint()){
+      // Recently signed in on this device — try a silent restore before
+      // showing the gate. onGoogleSignIn (unchanged) still runs the full
+      // real flow: fresh token, then the backend independently verifies it.
+      showAuthGate('Restaurando sua sessão...');
+      google.accounts.id.prompt((notification)=>{
+        if(notification.isNotDisplayed() || notification.isSkippedMoment()){
+          clearSessionHint(); // silent restore genuinely unavailable — don't keep retrying every load
+          showAuthGate();
+        }
+      });
+    } else {
+      google.accounts.id.prompt(); // no hint — normal first-time behavior, unchanged
+    }
   }
+  $('#updateNowBtn').addEventListener('click', ()=> window.location.reload());
+  $('#updateDismissBtn').addEventListener('click', ()=>{
+    $('#updateBanner').classList.remove('show');
+    // Stays dismissed only for this session — reappears next launch if still
+    // outdated, rather than being silently forgotten forever.
+  });
+  checkForUpdate();
+  setInterval(checkForUpdate, VERSION_CHECK_INTERVAL_MS);
+  $('#appVersionLabel').textContent = 'Construtora Moreira App — v' + APP_VERSION;
+  $('#authGateVersion').textContent = 'v' + APP_VERSION;
+
   showAuthGate();
   initAuth();
 })();
