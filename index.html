@@ -3887,6 +3887,13 @@
     }catch(e){ return false; }
   }
 
+  // iOS home-screen PWAs run in a WKWebView with a storage partition separate
+  // from Safari itself — Google's silent-restore check has no session to find
+  // there, ever, regardless of how recently someone signed in within the PWA.
+  // This isn't a bug to work around; it's enforced below the API. Detecting it
+  // lets the app stop pretending a restore might work in that specific case.
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+
   function initAuth(){
     if(!window.google || !google.accounts || !google.accounts.id){
       setTimeout(initAuth, 300);
@@ -3895,12 +3902,14 @@
     google.accounts.id.initialize({
       client_id: GOOGLE_CLIENT_ID,
       callback: onGoogleSignIn,
+      cancel_on_tap_outside: true,
     });
     renderGoogleButton();
-    if(hasFreshSessionHint()){
-      // Recently signed in on this device — try a silent restore before
-      // showing the gate. onGoogleSignIn (unchanged) still runs the full
-      // real flow: fresh token, then the backend independently verifies it.
+    if(hasFreshSessionHint() && !isStandalone){
+      // Recently signed in on this device, AND we're in a regular browser tab
+      // (not a standalone PWA) — only there does Google have a real session to
+      // silently resume. onGoogleSignIn (unchanged) still runs the full real
+      // flow: fresh token, then the backend independently verifies it.
       showAuthGate('Restaurando sua sessão...');
       google.accounts.id.prompt((notification)=>{
         if(notification.isNotDisplayed() || notification.isSkippedMoment()){
@@ -3908,9 +3917,12 @@
           showAuthGate();
         }
       });
-    } else {
-      google.accounts.id.prompt(); // no hint — normal first-time behavior, unchanged
     }
+    // No hint, or running as a standalone PWA: skip prompt() entirely and show
+    // just the button. prompt() is Google's floating "One Tap" card — calling
+    // it here would pop that up on every single visit, even for someone who
+    // has never signed in, which is a real nuisance, not a restore attempt
+    // with any chance of succeeding.
   }
   $('#updateNowBtn').addEventListener('click', ()=> window.location.reload());
   $('#updateDismissBtn').addEventListener('click', ()=>{
