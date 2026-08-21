@@ -1343,6 +1343,7 @@
   // (network blip, conflict), so the app knows when to send someone back to the
   // sign-in screen instead of just showing a toast.
   let googleIdToken = null;
+  let googleIdTokenObtainedAt = null; // in-memory only, same lifetime as the token itself
   let currentUser = null;
   const AUTH_ERROR_MESSAGES = new Set(['não autenticado', 'não autorizado', 'usuário desativado', 'usuário não cadastrado']);
   function isAuthError(err){
@@ -1759,6 +1760,37 @@
     }
   }
 
+  // Maps each nav tab to the backend "page" it belongs to. "add" (the create
+  // form) is tied to lancamentos access, since it's specifically the form for
+  // that data — there's no separate backend concept for it.
+  const VIEW_TO_PAGE = {
+    dashboard: 'painel', entries: 'lancamentos', add: 'lancamentos',
+    tasks: 'tarefas', notes: 'notas', docs: 'docs',
+  };
+  function hasPageAccess(viewName){
+    const page = VIEW_TO_PAGE[viewName];
+    if(!page || !currentUser) return true; // unmapped view or not yet signed in — don't block
+    return currentUser.pages === '*' || (currentUser.pages || []).indexOf(page) > -1;
+  }
+  // Hides nav buttons the user can't access. This is a courtesy, NOT the
+  // enforcement — the actual authority is the backend rejecting requests for
+  // pages outside currentUser.pages, same as project access already works.
+  function applyPageAccessToNav(){
+    $all('.tab-btn').forEach(btn=>{
+      const allowed = hasPageAccess(btn.dataset.view);
+      btn.style.display = allowed ? '' : 'none';
+    });
+    // If the currently-active view just became disallowed (permissions changed
+    // and the user is sitting on a page they just lost), redirect to the first
+    // still-allowed tab rather than leaving them on a hidden, inert view.
+    const tabBtns = Array.from($all('.tab-btn')); // $all returns a NodeList — no .find() without converting
+    const activeBtn = tabBtns.find(b => b.classList.contains('active'));
+    if(activeBtn && !hasPageAccess(activeBtn.dataset.view)){
+      const firstAllowed = tabBtns.find(b => hasPageAccess(b.dataset.view));
+      if(firstAllowed) switchView(firstAllowed.dataset.view);
+    }
+  }
+
   function finishLoadSetup(){
     let savedActiveId = null;
     try{ savedActiveId = JSON.parse(localStorage.getItem('cmoreira_activeProjectId') || 'null'); }catch(e){}
@@ -1768,6 +1800,7 @@
     populateUnidadeSelect();
     populateTaskProjectSelect();
     resetForm();
+    applyPageAccessToNav(); // re-checked on every load — sync/refresh picks up permission changes automatically, same mechanism as project access
   }
 
   async function loadAll(isInitialSignIn){
@@ -1947,6 +1980,7 @@
     if(sc) sc.scrollTo({top:0, behavior:'smooth'});
   }
   function switchView(name){
+    if(!hasPageAccess(name)) return; // blocks direct console calls too, not just hidden buttons — though the backend rejecting the underlying data/writes is the real authority
     const previousView = document.querySelector('.view.active')?.id?.replace('view-','');
     if(previousView === 'tasks' && name !== 'tasks' && draftTaskFotos.length){
       const orphans = draftTaskFotos;
@@ -3844,6 +3878,7 @@
   }
   async function onGoogleSignIn(response){
     googleIdToken = response.credential;
+    googleIdTokenObtainedAt = Date.now();
     $('#googleSignInSlot').innerHTML = '<div class="auth-spinner">Entrando...</div>';
     try{
       await loadAll(true);
@@ -3934,6 +3969,31 @@
   setInterval(checkForUpdate, VERSION_CHECK_INTERVAL_MS);
   $('#appVersionLabel').textContent = 'Construtora Moreira App — v' + APP_VERSION;
   $('#authGateVersion').textContent = 'v' + APP_VERSION;
+
+  // Proactive token refresh on foreground return — Google ID tokens are valid
+  // for about an hour (Google's own fixed lifetime, not something this app
+  // controls), and until now nothing refreshed one before it expired: the
+  // app just waited for a request to fail after the phone was locked a while.
+  // This tries to get ahead of that using the exact same silent-restore
+  // mechanism already proven for cold launches (google.accounts.id.prompt()),
+  // triggered by "we just became visible again" instead of "just launched."
+  const TOKEN_REFRESH_THRESHOLD_MS = 45 * 60 * 1000; // well before the ~60min expiry, not cutting it close
+  document.addEventListener('visibilitychange', ()=>{
+    if(document.visibilityState !== 'visible') return;
+    if(!googleIdToken || !googleIdTokenObtainedAt) return; // not signed in / gate already showing — nothing to proactively refresh
+    if($('#authGate').style.display !== 'none') return; // already on the sign-in screen for some other reason
+    const age = Date.now() - googleIdTokenObtainedAt;
+    if(age < TOKEN_REFRESH_THRESHOLD_MS) return; // still comfortably fresh
+    if(!window.google || !google.accounts || !google.accounts.id) return;
+    // Silent attempt only — reuses onGoogleSignIn exactly as the cold-launch
+    // restore does. On success: fresh token via the callback already wired in
+    // initialize(), app carries on with no visible interruption. On failure,
+    // nothing happens here immediately (no gate popping up unprompted just
+    // from a background check) — the existing reactive fallback (isAuthError
+    // → sign-in gate) still correctly catches it on the user's next real
+    // action, exactly as it did before this change.
+    google.accounts.id.prompt();
+  });
 
   showAuthGate();
   initAuth();
