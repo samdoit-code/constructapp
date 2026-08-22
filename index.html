@@ -1347,11 +1347,15 @@
   // trigger, so text/plain avoids that entirely; Code.gs parses the body as
   // JSON manually on its side either way.
   // ---------- App version / update check ----------
-  // Bump this AND version.json together on every deploy. Independent of the
+  // version.json is the single source of truth for "the latest version" — bump
+  // ONLY that file on every deploy. The running version is never hardcoded here:
+  // the first successful fetch below establishes it as a baseline (whatever
+  // version.json said at the moment this page loaded), and every check after
+  // that compares a fresh fetch against that baseline. Independent of the
   // auth/session logic — this only ever checks for a newer build and offers
   // to reload; it never touches googleIdToken or the session hint.
-  const APP_VERSION = 36;
   const VERSION_CHECK_INTERVAL_MS = 15 * 60 * 1000; // every 15 min while the app is open
+  let runningVersion = null; // set on the first successful check, below
   let updateAvailable = false;
   async function checkForUpdate(){
     if(updateAvailable) return; // already showing the banner, no need to re-check
@@ -1359,7 +1363,15 @@
       const resp = await fetch('version.json?t=' + Date.now()); // cache-bust — this one fetch must always hit the network
       if(!resp.ok) return;
       const data = await resp.json();
-      if(data && typeof data.version === 'number' && data.version > APP_VERSION){
+      if(!data || typeof data.version !== 'number') return;
+      if(runningVersion === null){
+        // First check of this session: this IS the running version, not something to compare against.
+        runningVersion = data.version;
+        $('#appVersionLabel').textContent = 'Construtora Moreira App — v' + runningVersion;
+        $('#authGateVersion').textContent = 'v' + runningVersion;
+        return;
+      }
+      if(data.version > runningVersion){
         updateAvailable = true;
         $('#updateBanner').classList.add('show');
       }
@@ -4114,8 +4126,6 @@
   });
   checkForUpdate();
   setInterval(checkForUpdate, VERSION_CHECK_INTERVAL_MS);
-  $('#appVersionLabel').textContent = 'Construtora Moreira App — v' + APP_VERSION;
-  $('#authGateVersion').textContent = 'v' + APP_VERSION;
 
   // Proactive token refresh on foreground return — Google ID tokens are valid
   // for about an hour (Google's own fixed lifetime, not something this app
