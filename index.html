@@ -698,8 +698,10 @@
       </div>
     </div>
 
-    <div class="section-title">Tarefas <span class="link" data-goto="tasks">ver todas</span></div>
-    <div class="recent-list" id="dashTasks-list"></div>
+    <div id="dashTarefasWidget">
+      <div class="section-title">Tarefas <span class="link" data-goto="tasks">ver todas</span></div>
+      <div class="recent-list" id="dashTasks-list"></div>
+    </div>
 
     <div class="section-title">Últimos lançamentos</div>
     <div class="recent-list" id="dashRecent"></div>
@@ -1609,10 +1611,10 @@
   function photoEmbedUrl(driveFileId){ return 'https://lh3.googleusercontent.com/d/' + driveFileId; }
   function pdfEmbedUrl(driveFileId){ return 'https://drive.google.com/file/d/' + driveFileId + '/preview'; }
 
-  async function uploadToDrive(dataUrl, filename, projectName){
+  async function uploadToDrive(dataUrl, filename, projectName, section){
     try{
       const resp = await sheetsPost({
-        action: 'uploadFile', projeto: projectName || '', filename: filename,
+        action: 'uploadFile', projeto: projectName || '', filename: filename, section: section,
         mimeType: mimeFromDataUrl_(dataUrl), base64: dataUrlToBase64_(dataUrl),
       });
       return {driveFileId: resp.fileId, driveUrl: resp.url};
@@ -1880,15 +1882,18 @@
     if(el) el.style.display = hidden ? 'none' : '';
   }
   function applySectionUIAccess(){
+    setHidden('#dashTarefasWidget', !canSection('painel.tarefas','view'));
     setHidden('#editEntryBtn', !canSection('lancamentos','edit'));
     setHidden('#deleteEntryBtn', !canSection('lancamentos','delete'));
     // The <input type="file"> elements below stay permanently display:none —
     // they're only ever triggered by clicking their <label>, never shown
     // directly — so only the label (the actual visible button) is toggled.
     setHidden(document.querySelector('label[for="modalPhotoInput"]'), !canSection('lancamentos','upload'));
+    // A note added here is attached to this Lançamento, so it's gated by
+    // 'lancamentos' (not 'notas', which governs standalone notes only).
     const modalNoteInput = $('#modalNoteInput');
-    setHidden(modalNoteInput, !canSection('notas','create'));
-    setHidden('#modalAddNoteBtn', !canSection('notas','create'));
+    setHidden(modalNoteInput, !canSection('lancamentos','create'));
+    setHidden('#modalAddNoteBtn', !canSection('lancamentos','create'));
     setHidden(document.querySelector('label[for="docFileInput"]'), !canSection('docs','upload'));
     setHidden('#pdfViewDeleteBtn', !canSection('docs','delete'));
     setHidden('#addProjectBtn', !canSection('config','edit'));
@@ -2703,21 +2708,29 @@
     $('#detailModal').classList.add('open');
   }
 
-  function notesThreadHTML(notasList){
+  // These notes are always attached to a Lançamento (this thread only ever
+  // renders inside the entry add/edit form or the entry detail modal), so
+  // their edit/delete rights come from the 'lancamentos' section — not
+  // 'notas', which governs standalone notes only. perms defaults to fully
+  // open for any caller that doesn't pass one (there are none left, but this
+  // keeps the helper safe to reuse).
+  function notesThreadHTML(notasList, perms){
+    perms = perms || {edit:true, delete:true};
     if(!notasList || notasList.length === 0){
       return '<div style="font-size:12.5px; color:var(--ink-soft); padding:4px 0 8px;">Nenhuma nota ainda.</div>';
     }
     const sorted = [...notasList].sort((a,b)=>b.criadoEm-a.criadoEm);
     return sorted.map(n => {
       const dt = new Date(n.criadoEm);
+      const actions = [
+        perms.edit ? `<button class="n-edit" data-note-edit="${n.id}">Editar</button>` : '',
+        perms.delete ? `<button class="n-del" data-note-del="${n.id}">Excluir</button>` : '',
+      ].join('');
       return `<div class="n-item">
         <div>${escapeHTML(n.texto)}</div>
         <div class="n-item-actions">
           <span class="n-ts">${dt.toLocaleDateString('pt-BR')} às ${dt.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</span>
-          <span class="n-actions">
-            <button class="n-edit" data-note-edit="${n.id}">Editar</button>
-            <button class="n-del" data-note-del="${n.id}">Excluir</button>
-          </span>
+          ${actions ? `<span class="n-actions">${actions}</span>` : ''}
         </div>
       </div>`;
     }).join('');
@@ -2732,12 +2745,12 @@
   }
   function renderModalNotes(notasList){
     const box = $('#modalNotes');
-    box.innerHTML = notesThreadHTML(notasList);
+    box.innerHTML = notesThreadHTML(notasList, {edit: canSection('lancamentos','edit'), delete: canSection('lancamentos','delete')});
     attachNotesThreadHandlers(box, (noteId)=>({origin: activeModal.kind, entryId: activeModal.id, noteId}));
   }
   function renderEditNotes(notasList){
     const box = $('#editNotesList');
-    box.innerHTML = notesThreadHTML(notasList);
+    box.innerHTML = notesThreadHTML(notasList, {edit: canSection('lancamentos','edit'), delete: canSection('lancamentos','delete')});
     attachNotesThreadHandlers(box, (noteId)=>({origin: addKind, entryId: editingId, noteId}));
   }
 
@@ -2881,14 +2894,14 @@
   // retrying with much heavier compression if the first attempt fails (covers
   // oversized source images — a computer photo or screenshot can be far
   // bigger than what a phone camera capture produces).
-  async function processAndSavePhoto(file, projectName){
+  async function processAndSavePhoto(file, projectName, section){
     let dataUrl;
     try{ dataUrl = await withTimeout(compressImageFile(file), 20000, 'photo-processing-timeout'); }
     catch(err){ console.error('photo compress error', err); throw new Error('process-failed'); }
     const photoId = uid('ph');
     let uploaded;
     try{
-      uploaded = await uploadToDrive(dataUrl, photoId + '.jpg', projectName || activeProjectId);
+      uploaded = await uploadToDrive(dataUrl, photoId + '.jpg', projectName || activeProjectId, section);
     }catch(err){
       if(isPermissionError(err)) throw err; // no point retrying with heavier compression — a smaller file won't change the answer
       uploaded = null;
@@ -2896,7 +2909,7 @@
     if(!uploaded){
       try{
         dataUrl = await withTimeout(compressImageFile(file, 800, 0.5), 20000, 'photo-processing-timeout');
-        uploaded = await uploadToDrive(dataUrl, photoId + '.jpg', projectName || activeProjectId);
+        uploaded = await uploadToDrive(dataUrl, photoId + '.jpg', projectName || activeProjectId, section);
       }catch(err){ console.error('photo compress retry error', err); }
     }
     if(!uploaded) throw new Error('save-failed');
@@ -2911,7 +2924,7 @@
     let anyFail = false;
     for(const file of files){
       let photoResult;
-      try{ photoResult = await processAndSavePhoto(file, activeProjectId); }
+      try{ photoResult = await processAndSavePhoto(file, activeProjectId, 'lancamentos'); }
       catch(err){ anyFail = true; continue; }
       metas.push({id: photoResult.id, criadoEm: Date.now(), driveFileId: photoResult.driveFileId, driveUrl: photoResult.driveUrl});
     }
@@ -2974,7 +2987,7 @@
     let anyFail = false;
     for(const file of files){
       let photoResult;
-      try{ photoResult = await processAndSavePhoto(file, entry.projectId); }
+      try{ photoResult = await processAndSavePhoto(file, entry.projectId, 'lancamentos'); }
       catch(err){ anyFail = true; continue; }
       metas.push({id: photoResult.id, criadoEm: Date.now(), driveFileId: photoResult.driveFileId, driveUrl: photoResult.driveUrl});
     }
@@ -3018,7 +3031,7 @@
     let anyFail = false;
     for(const file of files){
       let photoResult;
-      try{ photoResult = await processAndSavePhoto(file, activeProjectId); }
+      try{ photoResult = await processAndSavePhoto(file, activeProjectId, 'tarefas'); }
       catch(err){ anyFail = true; continue; }
       metas.push({id: photoResult.id, criadoEm: Date.now(), driveFileId: photoResult.driveFileId, driveUrl: photoResult.driveUrl});
     }
@@ -3066,7 +3079,7 @@
     let anyFail = false;
     for(const file of files){
       let photoResult;
-      try{ photoResult = await processAndSavePhoto(file, t.projectId || activeProjectId); }
+      try{ photoResult = await processAndSavePhoto(file, t.projectId || activeProjectId, 'tarefas'); }
       catch(err){ anyFail = true; continue; }
       metas.push({id: photoResult.id, criadoEm: Date.now(), driveFileId: photoResult.driveFileId, driveUrl: photoResult.driveUrl});
     }
@@ -3462,7 +3475,7 @@
     let anyFail = false;
     for(const file of files){
       let photoResult;
-      try{ photoResult = await processAndSavePhoto(file, activeProjectId); }
+      try{ photoResult = await processAndSavePhoto(file, activeProjectId, 'notas'); }
       catch(err){ anyFail = true; continue; }
       metas.push({id: photoResult.id, criadoEm: Date.now(), driveFileId: photoResult.driveFileId, driveUrl: photoResult.driveUrl});
     }
@@ -3481,9 +3494,10 @@
   function renderExistingNotePhotoThumbs(note){
     const container = document.getElementById('notephotos-' + note.id);
     if(!container) return;
+    const canDelete = canSection('notas','delete');
     renderPhotoThumbs(container, note.fotos || [], {
-      deletable: true,
-      onView: (id, dataUrl)=> openPhotoLightbox(id, dataUrl, ()=> deleteExistingNotePhotoNow(note.id, id)),
+      deletable: canDelete,
+      onView: (id, dataUrl)=> openPhotoLightbox(id, dataUrl, canDelete ? (()=> deleteExistingNotePhotoNow(note.id, id)) : null),
       onDelete: (id)=> deleteExistingNotePhotoWithConfirm(note.id, id),
     });
   }
@@ -3516,7 +3530,7 @@
     let anyFail = false;
     for(const file of files){
       let photoResult;
-      try{ photoResult = await processAndSavePhoto(file, n.projectId || activeProjectId); }
+      try{ photoResult = await processAndSavePhoto(file, n.projectId || activeProjectId, 'notas'); }
       catch(err){ anyFail = true; continue; }
       metas.push({id: photoResult.id, criadoEm: Date.now(), driveFileId: photoResult.driveFileId, driveUrl: photoResult.driveUrl});
     }
@@ -3583,6 +3597,14 @@
       if(label !== lastLabel){ html += `<div class="date-group-header">${label}</div>`; lastLabel = label; }
       const dt = new Date(it.criadoEm);
       const ts = dt.toLocaleTimeString('pt-BR', {hour:'2-digit', minute:'2-digit'});
+      // A standalone note is governed by 'notas'; one attached to a
+      // Lançamento (shown here too, labeled "Caixa da obra: X" / "Empreiteiro:
+      // X") is governed by 'lancamentos' — same split as the entry modal's
+      // own notes thread, just per-item here since this feed mixes both.
+      const itemSection = isStandalone ? 'notas' : 'lancamentos';
+      const canEditNote = canSection(itemSection, 'edit');
+      const canDeleteNote = canSection(itemSection, 'delete');
+      const canAddPhoto = isStandalone && canSection('notas', 'upload');
       html += `<div class="note-card">
         <div class="txt">${escapeHTML(it.texto)}</div>
         <div class="meta-row">
@@ -3591,9 +3613,9 @@
         </div>
         ${isStandalone ? `<div class="photo-thumbs" id="notephotos-${escapeHTML(it.ref.id)}"></div>` : ''}
         <div class="note-actions">
-          <button class="n-edit" data-feed-idx="${idx}">Editar</button>
-          ${isStandalone ? `<button type="button" class="n-photo" data-note-photo-trigger="${escapeHTML(it.ref.id)}">+ Foto</button>` : ''}
-          <button class="n-del" data-feed-idx="${idx}">Excluir</button>
+          ${canEditNote ? `<button class="n-edit" data-feed-idx="${idx}">Editar</button>` : ''}
+          ${canAddPhoto ? `<button type="button" class="n-photo" data-note-photo-trigger="${escapeHTML(it.ref.id)}">+ Foto</button>` : ''}
+          ${canDeleteNote ? `<button class="n-del" data-feed-idx="${idx}">Excluir</button>` : ''}
         </div>
       </div>`;
     }
@@ -3798,17 +3820,24 @@
         ${hasMore ? `<button class="btn btn-ghost btn-sm" data-load-more-photos="${c.key}" style="margin-top:8px;">Carregar mais (${c.items.length - visibleCount} restantes)</button>` : ''}
       </div>`;
     }).join('');
+    // Each category's photos are owned by whichever section owns their real
+    // parent (caixa/emp -> lancamentos; tasks -> tarefas; notes -> the
+    // standalone Notas section) — not by 'docs', which this gallery merely
+    // happens to live under. Same rule the backend enforces per row; deleting
+    // here has to respect it too, not just what got returned to display.
+    const CAT_SECTION = {caixa:'lancamentos', emp:'lancamentos', tasks:'tarefas', notes:'notas'};
     cats.forEach(c => {
       const page = photosPagePerCat[c.key] || 1;
       const visibleItems = c.items.slice(0, page * PHOTOS_PAGE_SIZE);
       const el = document.getElementById('docsPhotos-' + c.key);
+      const canDelete = canSection(CAT_SECTION[c.key], 'delete');
       renderPhotoThumbs(el, visibleItems, {
-        deletable: true,
+        deletable: canDelete,
         onView: (id, dataUrl)=>{
           // Navigation spans the FULL group (not just the visible page) — pagination
           // only bounds what's fetched/rendered up front, never what you can browse to.
           const idx = c.items.findIndex(x=>x.id===id);
-          openPhotoLightbox(id, dataUrl, ()=> deleteAggregatedPhotoNow(c.key, id), {items: c.items, index: idx, catKey: c.key});
+          openPhotoLightbox(id, dataUrl, canDelete ? (()=> deleteAggregatedPhotoNow(c.key, id)) : null, {items: c.items, index: idx, catKey: c.key});
         },
         onDelete: (id)=> deleteAggregatedPhotoWithConfirm(c.key, id),
       });
@@ -4020,7 +4049,7 @@
           continue;
         }
         const docId = uid('doc');
-        const uploaded = await uploadToDrive(dataUrl, file.name, activeProjectId);
+        const uploaded = await uploadToDrive(dataUrl, file.name, activeProjectId, 'docs');
         if(!uploaded){ anyFail = true; continue; }
         newDocs.push({id: docId, projectId: activeProjectId, nome: file.name, mimeType: file.type || 'application/octet-stream', criadoEm: Date.now(), driveFileId: uploaded.driveFileId, driveUrl: uploaded.driveUrl});
       }

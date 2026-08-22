@@ -127,32 +127,70 @@ function getCurrentUser_(idToken) {
 // — deny by default, always (see buildPermissionMatrixFromSheet_).
 // ==================================================================
 
-// Each section maps to the business-data sheet(s) it owns. Purely additive —
-// a section not listed here has no sheet data to filter. 'config' and
-// 'usuarios' are sections with no page of their own (see VIEW_FILTERED_SECTIONS
-// below) — they exist purely to gate WRITE actions (editing Projetos/Tipos/
-// Unidades; a future user-management screen), not to hide a nav tab.
+// Each section maps to the business-data sheet(s) it OWNS OUTRIGHT — a sheet
+// whose every row belongs to that section, wholesale. 'config' and 'usuarios'
+// are sections with no page of their own (see VIEW_FILTERED_SECTIONS below)
+// — they exist purely to gate WRITE actions (editing Projetos/Tipos/Unidades;
+// a future user-management screen), not to hide a nav tab. 'painel.tarefas'
+// is a dotted PAGE.SUBSECTION key, not a data-owning section — it carries no
+// sheets of its own (see "Page vs. section" below).
+//
+// Notas and Fotos are deliberately NOT listed under any section here, even
+// though both are real sheets — see "Cross-cutting sheets" below for why.
 const SECTIONS = {
   painel: [],
+  'painel.tarefas': [],
   lancamentos: ['caixaObra', 'empreiteiro'],
   tarefas: ['tarefas'],
-  notas: ['notas'],
-  docs: ['documentos', 'fotos'],
+  notas: [],
+  docs: ['documentos'],
   config: ['projetos', 'tipos', 'unidades'],
   usuarios: [], // reserved for a future user-management screen — not built yet
 };
 
-// Sections whose sheets get wiped from getAll when the user lacks 'view' on
-// them. 'config'/'usuarios' are excluded on purpose: Tipos/Unidades are
-// shared reference data (never section-gated, see writeSheet_ comments) and
-// Projetos is filtered by PROJECT scope only (below) — neither has ever been
-// page/section-view-gated, only action-gated (who may edit them).
+// Page vs. section: for most of this app a "section" IS a page (painel,
+// lancamentos, tarefas, notas, docs each have exactly one nav tab). The one
+// exception is 'painel.tarefas' — a WIDGET on the Painel dashboard that
+// summarizes Tarefas data. It is deliberately a separate permission from
+// both 'painel' (is the dashboard itself reachable) and 'tarefas' (is
+// Tarefas data viewable at all, standalone-page-or-otherwise): a role could
+// see the Tarefas page but not the dashboard widget, or vice versa. The
+// widget can never show MORE than 'tarefas'.view already allows — it only
+// additionally hides an already-authorized widget. Reusable pattern: a
+// future dashboard widget for another section is just another 'painel.X' key
+// here, no new mechanism.
+//
+// Cross-cutting sheets (Notas, Fotos): unlike every other sheet, a single
+// Notas or Fotos row does NOT belong to one fixed section — it belongs to
+// whichever section owns its actual parent, and both sheets are rendered
+// embedded on MULTIPLE pages (a task's photo shows inside Tarefas AND in the
+// Docs gallery; an entry's note shows inside the Lançamentos detail modal AND
+// in the standalone Notas feed). A blanket "this whole sheet is section X"
+// flag can't express that, and — critically — can't enforce it: a role
+// denied 'tarefas' but granted 'docs' would still receive task-photo rows if
+// Fotos were blanket-owned by 'docs'. So these two sheets are filtered PER
+// ROW instead, via resolveNotaSection_()/resolveFotoSection_() below: a
+// standalone note/photo -> 'notas'; one attached to a Lançamento -> matches
+// e.g photos or notes embedded in DETAIL MODAL -> 'lancamentos'; a task's
+// photo -> 'tarefas'. 'docs' ends up meaning "standalone Documentos only".
+// filterAllByAccess_ and assertBatchAccess_ both special-case these two
+// sheets for this reason — see there for the enforcement itself.
+
+// Sections whose sheets get wiped wholesale from getAll when the user lacks
+// 'view' on them. 'config'/'usuarios' are excluded on purpose: Tipos/Unidades
+// are shared reference data (never section-gated, see writeSheet_ comments)
+// and Projetos is filtered by PROJECT scope only (below) — neither has ever
+// been page/section-view-gated, only action-gated (who may edit them).
+// 'painel.tarefas' harmlessly no-ops here (it owns no sheets); Notas/Fotos
+// are handled separately, per row, not by this blanket loop.
 const VIEW_FILTERED_SECTIONS = Object.keys(SECTIONS).filter(function (s) { return s !== 'config' && s !== 'usuarios'; });
 
 const PERMISSION_ACTIONS = ['view', 'create', 'edit', 'delete', 'upload', 'export'];
 
 // Reverse of SECTIONS — which section owns a given sheet, for the write
-// check in assertBatchAccess_.
+// check in assertBatchAccess_. Notas/Fotos intentionally have NO entry here
+// (see "Cross-cutting sheets" above) — assertBatchAccess_ resolves their
+// section per row instead of looking it up in this map.
 const SHEET_TO_SECTION = {};
 Object.keys(SECTIONS).forEach(function (section) {
   SECTIONS[section].forEach(function (sheet) { SHEET_TO_SECTION[sheet] = section; });
@@ -269,13 +307,48 @@ function resolveFotoProject_(foto, entryIdx, notaProjectById) {
   return undefined;
 }
 
+// Section counterparts of resolveNotaProject_/resolveFotoProject_ above —
+// same parent-chain walk, but resolving WHICH SECTION owns the row instead
+// of which project. See the "Cross-cutting sheets" comment on SECTIONS for
+// why this has to be per-row rather than one flag for the whole sheet.
+function resolveNotaSection_(nota) {
+  if (!nota) return undefined;
+  if (nota.projeto) return 'notas'; // standalone note
+  if (nota.refTipo === 'caixa' || nota.refTipo === 'emp') return 'lancamentos';
+  return undefined;
+}
+function resolveFotoSection_(foto, notaSectionById) {
+  if (!foto) return undefined;
+  if (foto.refTipo === 'caixa' || foto.refTipo === 'emp') return 'lancamentos';
+  if (foto.refTipo === 'tasks') return 'tarefas';
+  if (foto.refTipo === 'notes') return notaSectionById[foto.refId]; // 2-hop: whatever section that note itself belongs to
+  return undefined;
+}
+
 // Trims a freshly-read getAll payload down to what this user is allowed to
 // see. Runs generically over SECTIONS — no section name is special-cased.
 // Tipos/Unidades pass through untouched — small shared reference lists, not
 // project- or section-scoped data.
 function filterAllByAccess_(user, data) {
-  // Section/view axis first — independent of project access, so this runs
-  // regardless of whether the user has '*' projects or a restricted list.
+  // Built from the ORIGINAL unfiltered read, before anything below wipes or
+  // trims these arrays — so resolving which section a Notas/Fotos row's
+  // parent belongs to is always based on real data, never on what happens to
+  // be left after some other section already got wiped.
+  const entryIdx = buildEntryProjectIndex_(data.caixaObra, data.empreiteiro, data.tarefas);
+  const notaSectionById = {};
+  data.notas.forEach(function (n) { notaSectionById[n.id] = resolveNotaSection_(n); });
+
+  // Notas/Fotos are cross-cutting (see SECTIONS above) — filtered per row by
+  // whichever section actually owns each row's parent, not by a single
+  // blanket flag for the whole sheet. This is what makes deny-by-default
+  // reach data embedded on another page: a task's photo shown in the Docs
+  // gallery still has to pass the 'tarefas' section, not 'docs'.
+  data.notas = data.notas.filter(function (n) { return can_(user, resolveNotaSection_(n), 'view'); });
+  data.fotos = data.fotos.filter(function (f) { return can_(user, resolveFotoSection_(f, notaSectionById), 'view'); });
+
+  // Section/view axis for everything else — independent of project access,
+  // so this runs regardless of whether the user has '*' projects or a
+  // restricted list.
   VIEW_FILTERED_SECTIONS.forEach(function (section) {
     if (can_(user, section, 'view')) return;
     SECTIONS[section].forEach(function (sheet) { data[sheet] = []; });
@@ -283,7 +356,6 @@ function filterAllByAccess_(user, data) {
 
   if (user.projects === '*') return data; // full project access — nothing further to trim
 
-  const entryIdx = buildEntryProjectIndex_(data.caixaObra, data.empreiteiro, data.tarefas);
   const notaProjectById = {};
   data.notas.forEach(n => { notaProjectById[n.id] = resolveNotaProject_(n, entryIdx); });
 
@@ -322,17 +394,46 @@ function assertBatchAccess_(user, ops) {
     return idCache[sheetKey];
   }
 
+  // notaSectionById: needed only to resolve a Fotos row attached to a Notas
+  // row (refTipo === 'notes') — which section it belongs to depends on
+  // whether THAT note is itself standalone or attached to a Lançamento. Built
+  // lazily and merges same-batch new/edited notas, same pattern as the
+  // project-scope section below.
+  let notaSectionById = null;
+  function notaSectionMap_() {
+    if (notaSectionById) return notaSectionById;
+    notaSectionById = {};
+    const existingNotas = existingRows_('notas');
+    Object.keys(existingNotas).forEach(function (id) { notaSectionById[id] = resolveNotaSection_(existingNotas[id]); });
+    ops.forEach(function (op) {
+      if (op.sheet === 'notas') (op.upserts || []).forEach(function (u) { notaSectionById[u.id] = resolveNotaSection_(u.row); });
+    });
+    return notaSectionById;
+  }
+
+  // Notas/Fotos can't use SHEET_TO_SECTION like every other sheet (see the
+  // "Cross-cutting sheets" comment on SECTIONS) — their section is resolved
+  // per row instead, from whichever parent the row (new or existing) actually
+  // points to.
+  function sectionForOp_(sheet, id, row) {
+    if (sheet === 'notas') return resolveNotaSection_(row || existingRows_('notas')[id]);
+    if (sheet === 'fotos') return resolveFotoSection_(row || existingRows_('fotos')[id], notaSectionMap_());
+    return SHEET_TO_SECTION[sheet];
+  }
+
   ops.forEach(function (op) {
-    const section = SHEET_TO_SECTION[op.sheet];
-    if (!section) throw new Error('sem acesso a esta seção'); // unknown sheet — fail closed
     const existing = existingRows_(op.sheet);
     (op.upserts || []).forEach(function (u) {
+      const section = sectionForOp_(op.sheet, u.id, u.row);
+      if (!section) throw new Error('sem acesso a esta seção'); // unknown sheet, or a row that resolves to no known parent — fail closed
       const action = existing[u.id] ? 'edit' : 'create';
       if (!can_(user, section, action)) throw new Error('sem permissão para ' + action);
     });
-    if ((op.deletes || []).length && !can_(user, section, 'delete')) {
-      throw new Error('sem permissão para excluir');
-    }
+    (op.deletes || []).forEach(function (id) {
+      const section = sectionForOp_(op.sheet, id, null);
+      if (!section) throw new Error('sem acesso a esta seção');
+      if (!can_(user, section, 'delete')) throw new Error('sem permissão para excluir');
+    });
   });
 
   if (user.projects === '*') return; // full project access — nothing further to check
@@ -645,7 +746,17 @@ function doPost(e) {
       }
 
       if (action === 'uploadFile') {
-        if (!can_(user, 'docs', 'upload')) throw new Error('sem permissão para enviar arquivos');
+        // uploadFile alone can't leak anything — the file it creates isn't
+        // visible anywhere in the app until a subsequent batchMulti attaches
+        // it to a Fotos/Documentos row, and THAT step independently resolves
+        // its real section from the row's own refTipo (see assertBatchAccess_
+        // above), never trusting what the client claims. So body.section here
+        // is only a client-declared hint for which upload-permission bucket
+        // to check — cheap enough to keep a denied role from writing to Drive
+        // at all, but the attach step is what actually enforces the true
+        // section either way.
+        const uploadSection = String(body.section || '').toLowerCase().trim();
+        if (!can_(user, uploadSection, 'upload')) throw new Error('sem permissão para enviar arquivos');
         if (!hasProjectAccess_(user, body.projeto)) throw new Error('sem acesso a este projeto');
         const folderId = PROJECT_FOLDERS[body.projeto] || FALLBACK_FOLDER_ID;
         const folder = DriveApp.getFolderById(folderId);
@@ -657,14 +768,25 @@ function doPost(e) {
       }
 
       if (action === 'deleteFile') {
-        if (!can_(user, 'docs', 'delete')) throw new Error('sem permissão para excluir arquivos');
         // Only allow trashing a file this app actually knows about (a photo or
         // document it uploaded) — otherwise, since the script runs as the
         // deploying account, a raw fileId could reach ANY file that account
-        // can access, not just this app's own.
-        const isKnown = readSheet_('fotos').some(f => f.driveFileId === body.fileId) ||
-          readSheet_('documentos').some(d => d.driveFileId === body.fileId);
-        if (!isKnown) throw new Error('arquivo não encontrado');
+        // can access, not just this app's own. Unlike uploadFile, the section
+        // check here is fully server-resolved from the row itself — a photo's
+        // refTipo (and, for one attached to a note, that note's own resolved
+        // section) says which section owns it; nothing here trusts the client.
+        const fotoRow = readSheet_('fotos').find(f => f.driveFileId === body.fileId);
+        const docRow = !fotoRow && readSheet_('documentos').find(d => d.driveFileId === body.fileId);
+        if (!fotoRow && !docRow) throw new Error('arquivo não encontrado');
+        let section;
+        if (fotoRow) {
+          const notaSectionById = {};
+          readSheet_('notas').forEach(function (n) { notaSectionById[n.id] = resolveNotaSection_(n); });
+          section = resolveFotoSection_(fotoRow, notaSectionById);
+        } else {
+          section = 'docs';
+        }
+        if (!section || !can_(user, section, 'delete')) throw new Error('sem permissão para excluir arquivos');
         const file = DriveApp.getFileById(body.fileId);
         file.setTrashed(true);
         return jsonOut_({ ok: true });
@@ -742,6 +864,7 @@ function installPapeisSheet() {
   const seed = [
     header,
     ['admin', 'painel', 'SIM', '', '', '', '', ''],
+    ['admin', 'painel.tarefas', 'SIM', '', '', '', '', ''],
     ['admin', 'lancamentos', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM'],
     ['admin', 'tarefas', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM', ''],
     ['admin', 'notas', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM', ''],
@@ -749,6 +872,7 @@ function installPapeisSheet() {
     ['admin', 'config', 'SIM', 'SIM', 'SIM', 'SIM', '', ''],
     ['admin', 'usuarios', 'SIM', 'SIM', 'SIM', 'SIM', '', ''],
     ['owner', 'painel', 'SIM', '', '', '', '', ''],
+    ['owner', 'painel.tarefas', 'SIM', '', '', '', '', ''],
     ['owner', 'lancamentos', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM'],
     ['owner', 'tarefas', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM', ''],
     ['owner', 'notas', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM', ''],
@@ -758,7 +882,9 @@ function installPapeisSheet() {
     ['partner', 'painel', 'SIM', '', '', '', '', ''],
     ['partner', 'lancamentos', 'SIM', '', '', '', '', ''],
     ['partner', 'docs', 'SIM', '', '', '', '', ''],
-    // partner has no 'tarefas' or 'notas' row — both fully denied (nav hidden AND data withheld).
+    // partner has no 'painel.tarefas', 'tarefas', or 'notas' row — the dashboard
+    // Tarefas widget, the standalone Tarefas page, and all Notas data (including
+    // notes attached to a Lançamento) are all denied — nav hidden AND data withheld.
   ];
   sheet.getRange(1, 1, seed.length, header.length).setValues(seed);
   sheet.setFrozenRows(1);
