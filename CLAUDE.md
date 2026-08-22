@@ -30,7 +30,7 @@ Exception: Do NOT increment the version when the only file being changed is CLAU
 
 - **Frontend:** Single self-contained `construtora_moreira.html` file — HTML/CSS/JS, no framework, no build step, no bundler. All JS is inline in one `<script>` tag wrapped in an IIFE.
 - **Backend:** Google Apps Script (`Code.gs`), deployed as a Web App (`doGet`/`doPost`).
-- **Database:** Google Sheets — one spreadsheet holds business data (tabs: Projetos, CaixaObra, Empreiteiro, Tarefas, Notas, Fotos, Documentos, Tipos, Unidades). A **separate** spreadsheet (`Usuarios`) holds user/role/permission data, intentionally isolated from business data for defense-in-depth.
+- **Database:** Google Sheets — one spreadsheet holds business data (tabs: Projetos, CaixaObra, Empreiteiro, Tarefas, Notas, Fotos, Documentos, Tipos, Unidades). A **separate** spreadsheet holds user/role/permission data (tabs: `Usuarios` for identity, `Papeis` for role capabilities), intentionally isolated from business data for defense-in-depth.
 - **File/photo storage:** Google Drive, organized as project-specific subfolders under a parent "Construtora Moreira" folder, plus a `Backups` subfolder for automated daily spreadsheet backups.
 - **Authentication:** Google Identity Services (GIS) — the Sign-In/One-Tap API (`google.accounts.id`), not the separate OAuth token-client API.
 - **Hosting/deployment:** Frontend on GitHub Pages (static). Backend via Apps Script's own Web App deployment mechanism (URL stays stable across "new version" deploys).
@@ -92,27 +92,32 @@ Exception: Do NOT increment the version when the only file being changed is CLAU
 - The raw Google ID token is held **only in an in-memory JS variable** (`googleIdToken`), never written to `localStorage` or any persistent storage.
 - A lightweight **session hint** (`cmoreira_session_hint` in `localStorage`) stores only `{email, timestamp}` — never the token. It is a UI hint only ("should I attempt a silent restore on load?"), never treated as proof of authentication. Real access always requires the backend to independently re-verify a fresh token.
 
-### Roles (established, exactly three)
-Defined in a `ROLES` config object in `Code.gs`:
-- `admin` — `manageUsers: true, write: true, pages: '*'`
-- `owner` — `manageUsers: false, write: true, pages: '*'`
-- `partner` — `manageUsers: false, write: false, pages: ['painel', 'lancamentos', 'docs']`
+### Roles, sections, and actions (established — section/action permission model)
+Permissions are no longer hardcoded per role in `Code.gs`. Instead, `Code.gs` defines the *shape* of the model and a **`Papeis` tab** (in the same `Usuarios` spreadsheet) holds the actual role capabilities as data:
 
-Role names are lowercase internally; the sheet value is lowercased/trimmed on read, so casing in the sheet (`Partner`, `partner`, `PARTNER`) should not matter.
+- **Section** — the unit of permission. In this app a section is 1:1 with a nav page for most sections (`painel`, `lancamentos`, `tarefas`, `notas`, `docs`), plus two sections with no nav page of their own (`config` — Projetos/Tipos/Unidades; `usuarios` — reserved for a future user-management screen). `SECTIONS` in `Code.gs` maps each section to the business-data sheet(s) it owns.
+- **Action** — `view | create | edit | delete | upload | export`, defined once in `PERMISSION_ACTIONS`.
+- **Papeis tab** — columns `role | section | view | create | edit | delete | upload | export` (`SIM`/blank). A `(role, section)` pair with **no row** means every action on that section is denied — deny-by-default falls out of the data itself, not an `if` naming a role or section. Run `installPapeisSheet_()` once (Apps Script editor) to create and seed this tab; it won't overwrite a tab that already has content, so it's safe to re-run.
+- `sectionsForRole_(role)` resolves a role into an explicit `{section: {action: bool}}` object (every known section/action gets a real `true`/`false`, never an implied default) — attached to the user as `user.sections` in `doPost`, right after `getCurrentUser_()`, **not** inside it (see below). `can_(user, section, action)` is the one generic check every enforcement point uses; no role or section name is ever compared by name in code.
+- Role names are lowercase internally; the sheet value is lowercased/trimmed on read, so casing in the sheet (`Partner`, `partner`, `PARTNER`) should not matter.
+
+### Authentication vs. authorization are two separate blocks, on purpose
+`getCurrentUser_()` (AUTH BLOCK) returns identity only — `{email, nome, role, projects}` — read live from `Usuarios` on every request, never cached. It has no idea what a role is allowed to do. `user.sections = sectionsForRole_(user.role)` (AUTHORIZATION BLOCK) is attached separately in `doPost()`. Keep this split if either block is touched again: authentication must never depend on authorization, and vice versa.
 
 ### Where users/roles are stored
-Separate `Usuarios` spreadsheet (not the business-data spreadsheet), single tab, columns:
-`email | nome | role | projetos | ativo | criadoEm`
+Separate `Usuarios` spreadsheet (not the business-data spreadsheet):
+- **`Usuarios` tab** — identity/eligibility only: `email | nome | role | projetos | ativo | criadoEm`. `projetos`: `*` (all projects) or a comma-separated list of exact project names. Deliberately has **no** permission columns — those live in `Papeis` instead, so a permission change is a `Papeis` edit, never a `Usuarios` schema change.
+- **`Papeis` tab** — role capabilities, see above.
+- `user.sections` is *derived* server-side and sent to the frontend as part of the user object on every `getAll`. The frontend never re-implements role→permission logic; it only renders what the backend says (`currentUser.sections`).
 
-- `projetos`: `*` (all projects) or a comma-separated list of exact project names.
-- `pages` is **not** a column in `Usuarios` — it is *derived* from `role` via the `ROLES` config and resolved server-side in `getCurrentUser_()`, then sent to the frontend as part of the user object. The frontend never re-implements role→pages logic; it only renders what the backend says.
-
-### How page permissions are determined
-- `PAGE_SHEETS` in `Code.gs` maps each page name (`painel`, `lancamentos`, `tarefas`, `notas`, `docs`) to the sheet(s) that belong to it.
-- `filterAllByAccess_()` wipes disallowed pages' sheets to empty arrays in the `getAll` response.
-- `assertBatchProjectAccess_()` rejects writes to sheets outside the user's allowed pages (via a `SHEET_TO_PAGE` reverse map), checked server-side regardless of what the frontend UI shows.
-- **Established, non-obvious rule:** page access and project access are **independent axes**. The page check must run unconditionally, even for a user with unrestricted (`'*'`) project access — an early-return for `projects === '*'` must never skip the page check. (This was caught as a real bug during implementation and fixed; worth re-verifying if this logic is ever touched again.)
-- Frontend: nav buttons are hidden based on `currentUser.pages`, **and** `switchView()` itself refuses to activate a disallowed page — guarding against both a hidden-button bypass and a direct function-call bypass. This is still just a courtesy; the backend is the real authority.
+### How section/action permissions are determined and cached
+- `filterAllByAccess_()` wipes a section's sheets to empty arrays in the `getAll` response when the user lacks `view` on that section — runs generically over `SECTIONS`, no section name special-cased.
+- `assertBatchAccess_()` rejects a write when an op's section+action isn't permitted (via a `SHEET_TO_SECTION` reverse map), independently of the existing project-scope check, checked server-side regardless of what the frontend UI shows.
+- **create vs. edit is resolved from the sheet's own current state** (does this row id already exist?), **never from anything the client claims** — a client mislabeling an edit as a create (or vice versa) cannot use that to dodge a per-action restriction.
+- **Established, non-obvious rule:** section/action access and project access are **independent axes**. The section/action check must run unconditionally, even for a user with unrestricted (`'*'`) project access — an early-return for `projects === '*'` must never skip it. (Originally caught as a page-vs-project bug; the same rule now also covers action vs. project — re-verify if this logic is ever touched again.)
+- **Permission matrix caching:** `loadPermissionMatrix_()` caches the *role→section→action shape* (from `Papeis`) via `CacheService`, TTL 300s — this is safe because that shape is identical for every user sharing a role. **Never cache a specific user's resolved permissions or identity** — `getCurrentUser_()` stays uncached so a role/`ativo` change on one user takes effect on their very next request. Any cache/read failure falls back to an **empty matrix — fail closed**, not open. Run `flushPermissionCache_()` after hand-editing `Papeis` if you don't want to wait out the TTL.
+- Frontend: nav buttons are hidden based on `currentUser.sections[section].view`, **and** `switchView()` itself refuses to activate a disallowed page — guarding against both a hidden-button bypass and a direct function-call bypass. Write-affordances within a page (add/edit/delete buttons, photo/document upload inputs) are likewise hidden via a generic `canSection(section, action)` helper (`applySectionUIAccess()`), reusing the same pages/components — never a role-specific duplicate view. All of this is still just a courtesy; the backend is the real authority.
+- **Reusable pattern for future apps on this stack:** to add a genuinely new restricted section (not just a new role), add it to `SECTIONS` (and `VIEW_FILTERED_SECTIONS` if it should gate a nav page's data), add `Papeis` rows granting it to the roles that should have it, and — if it's a page — a `VIEW_ACCESS` entry on the frontend. No existing role's code path needs to change.
 
 ### Session behavior (iOS/PWA-specific, established through direct investigation)
 - **Home-screen PWA (standalone mode) cannot silently restore a session on a fresh launch.** A standalone PWA runs in a WKWebView with a storage partition fully separate from Safari — there is no shared Google session for `google.accounts.id.prompt()` to find, regardless of how recently the user signed in within the PWA previously. This is a confirmed platform limitation, not a bug, and is not fixable via GIS configuration.
@@ -121,15 +126,8 @@ Separate `Usuarios` spreadsheet (not the business-data spreadsheet), single tab,
 - **Proactive token refresh on foreground return:** a `visibilitychange` listener checks token age when the app becomes visible again; if older than 45 minutes (Google ID tokens last ~1 hour, not app-configurable), it attempts a silent `prompt()` before the user's next action would otherwise fail. Whether this reliably succeeds in practice on real iOS depends on live Google session state that could not be verified from a sandboxed environment — this should be treated as "implemented and reasoned through" but **not** as "confirmed working end-to-end on device."
 - `google.accounts.id.prompt()` should never be called unconditionally on every load — doing so previously caused an unwanted One Tap popup for every visitor, including first-time users with no session to restore. It should only be called when there's a specific reason to believe a restore might succeed.
 
-### Known open issue (unresolved as of end of this conversation)
-A user changed their `Usuarios` row `role` to `Partner` and refreshed, but the app still showed all pages/tabs. An investigation was requested and only partially completed:
-- ✅ Checked: role parsing in `getCurrentUser_()` — confirmed it does `.toLowerCase().trim()`, so `"Partner"` → `"partner"` should normalize correctly. This specific step is not the bug.
-- ❌ **NEEDS VERIFICATION:** what `currentUser.pages` the backend actually returns for this user in practice.
-- ❌ **NEEDS VERIFICATION:** whether the deployed Apps Script is genuinely running the latest `Code.gs` (this project has a strong recurring history of bugs traced back to an edit being saved but not deployed as a "new version" — this should be checked early, not last).
-- ❌ **NEEDS VERIFICATION:** whether `finishLoadSetup()` on the frontend is receiving and correctly applying `currentUser.pages`.
-- ❌ **NEEDS VERIFICATION:** whether the frontend's page-name strings (`painel`, `lancamentos`, etc.) exactly match what the backend sends.
-
-This should be the first thing investigated when work resumes.
+### Formerly-open issue: role change not taking visible effect (superseded)
+A user once changed their `Usuarios` row `role` to `Partner` and refreshed, but the app still showed all pages/tabs; the investigation was never fully completed on the old `ROLES`/`pages` model. That entire model (`ROLES` object, `currentUser.pages`, `PAGE_SHEETS`) has since been replaced by the section/action permission model in Section 4 (`Papeis` tab, `currentUser.sections`, `SECTIONS`) — so the specific code paths named in the old investigation no longer exist. If a similar symptom (role change not taking effect) recurs under the new model, first check: the deployed Apps Script is genuinely running the latest `Code.gs` (see Section 7 — this project has a strong recurring history of bugs traced back to an edit being saved but not deployed as a "new version"); then whether `Papeis` actually has a row for that role+section; then the `flushPermissionCache_()` / 5-minute TTL on the (role-shape-only, never per-user) permission cache — note `getCurrentUser_()` itself is never cached, so this narrows to the `Papeis` matrix specifically.
 
 ---
 
@@ -151,7 +149,9 @@ This should be the first thing investigated when work resumes.
 - **Whole-tab replace (simpler, no conflict tracking — small reference lists, rarely concurrently edited):** Projetos, Tipos, Unidades.
 
 ### Auth spreadsheet
-**Usuarios** (separate spreadsheet): `email, nome, role, projetos, ativo, criadoEm` — see Section 4.
+Separate spreadsheet, two tabs — see Section 4:
+- **Usuarios**: `email, nome, role, projetos, ativo, criadoEm`.
+- **Papeis**: `role, section, view, create, edit, delete, upload, export` — role capability matrix.
 
 ### Relationships worth knowing
 - Determining which project a Nota or Foto belongs to requires resolving through `refTipo`/`refId`, potentially two hops deep (photo → note → entry). This logic lives in `buildEntryProjectIndex_`, `resolveNotaProject_`, `resolveFotoProject_` in `Code.gs` and is duplicated conceptually (not literally) on the frontend for local state reconstruction after a `getAll` fetch.
@@ -220,8 +220,8 @@ This should be the first thing investigated when work resumes.
 
 - **Drive files are currently shared as `ANYONE_WITH_LINK` (view-only), not private.** This was explicitly identified as a security gap. A fix was designed (per-project `addViewer()`/domain-restricted sharing synced automatically with `Usuarios` role/project changes, with a manual "reconcile now" function rather than a scheduled job) but **not implemented**. Anyone possessing a direct file link can currently view it without going through the app's auth at all.
 - **iOS standalone PWA cannot silently restore a session on a fresh (fully-closed) launch** — this is a confirmed platform limitation (separate WKWebView storage partition from Safari), not something fixable in this app's code. The app is designed to fail gracefully here (show the button immediately) rather than pretend otherwise.
-- **Page permissions are role-based, not per-user.** All users sharing a role (e.g., all `partner` users) get identical page access. Per-user page customization would require a new column in `Usuarios` (analogous to how `projetos` already works) and is not currently supported.
-- **`deleteFile` (Drive) has no project-level authorization check.** It only receives a `fileId`; the only role that would need this check (`partner`) is already blocked earlier by the write-role gate, so this was judged an acceptable, deliberate scope boundary — not an oversight.
+- **Section/action permissions are role-based, not per-user.** All users sharing a role (e.g., all `partner` users) get identical `Papeis` capabilities. Per-user customization would require a new per-user override, layered on top of `sectionsForRole_()` — not currently supported, no current requirement for it.
+- **`deleteFile` (Drive) has no project-level authorization check.** It only receives a `fileId`; it IS gated on the `docs`/`delete` action via `can_()`, but not on which project the file belongs to. The only role that would need a project-level check here (`partner`) has no delete rights on `docs` at all today, so this was judged an acceptable, deliberate scope boundary — not an oversight. Worth adding a project check if a future project-scoped role ever gets `docs`/`delete`.
 - **Entry-attached notes are the one nested feature requiring the two-tab (Notas ↔ parent entry) resolution logic described in Section 5** — any future data model change touching Notas or Fotos should account for this union/multi-hop structure rather than assuming a flat 1:1 relationship.
 
 ---
@@ -233,7 +233,7 @@ This should be the first thing investigated when work resumes.
 - Google Sheets + Drive backend via Apps Script, replacing an earlier `window.storage`-based approach entirely.
 - Row-level writes with conflict detection, locking, and daily backups.
 - Google Sign-In authentication with backend-verified ID tokens.
-- Two-axis authorization: project-level and page-level, both enforced server-side.
+- Two-axis authorization: project-level and section/action-level (role capabilities data-driven via the `Papeis` tab), both enforced server-side, independently of each other.
 - Session-restoration UX tuned specifically for iOS PWA constraints (session hint, standalone detection, proactive foreground-return refresh).
 - Cache-first loading, offline-tolerant reads, clear-fail writes, retry logic for transient network errors.
 - App-version update-check banner (dismissible, never forces a reload).
@@ -241,9 +241,9 @@ This should be the first thing investigated when work resumes.
 - Mobile-focused UI polish pass (typography, shadows, transitions) — token-level, no layout changes.
 
 **Not yet implemented / open work:**
-- The open page-permissions bug described in Section 4 (role change not taking visible effect) — **investigate before any new feature work on the permissions system.**
 - Private Drive file sharing (Section 9) — designed but not built.
-- Per-user (rather than per-role) page permission customization — not built, no current requirement for it.
+- Per-user (rather than per-role) permission customization — not built, no current requirement for it.
+- A user-management UI (the `usuarios` section in `Papeis`/`SECTIONS` is reserved for this but nothing reads/writes it yet).
 
 ---
 

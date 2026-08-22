@@ -1818,21 +1818,40 @@
     }
   }
 
-  // Maps each nav tab to the backend "page" it belongs to. "add" (the create
-  // form) is tied to lancamentos access, since it's specifically the form for
-  // that data — there's no separate backend concept for it.
-  const VIEW_TO_PAGE = {
-    dashboard: 'painel', entries: 'lancamentos', add: 'lancamentos',
-    tasks: 'tarefas', notes: 'notas', docs: 'docs',
+  // Generic (section, action) permission check against whatever the backend
+  // sent back as currentUser.sections — never a role-name or section-name
+  // "if" here, so a new restricted section never needs new frontend code,
+  // only a Papeis row. This is a courtesy layer only: the backend enforces
+  // the same (role, section, action) check independently on every request,
+  // and never trusts what the frontend shows or hides.
+  function canSection(section, action){
+    if(!currentUser) return false;
+    const perms = currentUser.sections && currentUser.sections[section];
+    return !!(perms && perms[action]);
+  }
+
+  // Maps each nav tab to the section+action(s) that must be allowed for it to
+  // be reachable. "add" is the SAME form used to both create a new entry and
+  // edit an existing one, so it needs 'create' OR 'edit' on lancamentos, not
+  // just 'view' — a viewer can browse Lançamentos without being able to open
+  // that form at all.
+  const VIEW_ACCESS = {
+    dashboard: {section:'painel', actions:['view']},
+    entries: {section:'lancamentos', actions:['view']},
+    add: {section:'lancamentos', actions:['create','edit']},
+    tasks: {section:'tarefas', actions:['view']},
+    notes: {section:'notas', actions:['view']},
+    docs: {section:'docs', actions:['view']},
   };
   function hasPageAccess(viewName){
-    const page = VIEW_TO_PAGE[viewName];
-    if(!page || !currentUser) return true; // unmapped view or not yet signed in — don't block
-    return currentUser.pages === '*' || (currentUser.pages || []).indexOf(page) > -1;
+    const req = VIEW_ACCESS[viewName];
+    if(!req || !currentUser) return true; // unmapped view or not yet signed in — don't block
+    return req.actions.some(a => canSection(req.section, a));
   }
   // Hides nav buttons the user can't access. This is a courtesy, NOT the
   // enforcement — the actual authority is the backend rejecting requests for
-  // pages outside currentUser.pages, same as project access already works.
+  // sections/actions outside currentUser.sections, same as project access
+  // already works.
   function applyPageAccessToNav(){
     $all('.tab-btn').forEach(btn=>{
       const allowed = hasPageAccess(btn.dataset.view);
@@ -1849,6 +1868,32 @@
     }
   }
 
+  // Hides the write-affordances (add/edit/delete buttons, photo/document
+  // upload inputs) this app currently exposes outside the nav, based on the
+  // same generic canSection() check — reused pages/components throughout,
+  // no role name ever compared here. Elements not present in the current DOM
+  // (e.g. detailModal buttons before it's ever been opened) are skipped
+  // harmlessly. Call this whenever one of these elements is (re)rendered, not
+  // just once — same pattern as applyPageAccessToNav.
+  function setHidden(selector, hidden){
+    const el = typeof selector === 'string' ? $(selector) : selector;
+    if(el) el.style.display = hidden ? 'none' : '';
+  }
+  function applySectionUIAccess(){
+    setHidden('#editEntryBtn', !canSection('lancamentos','edit'));
+    setHidden('#deleteEntryBtn', !canSection('lancamentos','delete'));
+    // The <input type="file"> elements below stay permanently display:none —
+    // they're only ever triggered by clicking their <label>, never shown
+    // directly — so only the label (the actual visible button) is toggled.
+    setHidden(document.querySelector('label[for="modalPhotoInput"]'), !canSection('lancamentos','upload'));
+    const modalNoteInput = $('#modalNoteInput');
+    setHidden(modalNoteInput, !canSection('notas','create'));
+    setHidden('#modalAddNoteBtn', !canSection('notas','create'));
+    setHidden(document.querySelector('label[for="docFileInput"]'), !canSection('docs','upload'));
+    setHidden('#pdfViewDeleteBtn', !canSection('docs','delete'));
+    setHidden('#addProjectBtn', !canSection('config','edit'));
+  }
+
   function finishLoadSetup(){
     let savedActiveId = null;
     try{ savedActiveId = JSON.parse(localStorage.getItem('cmoreira_activeProjectId') || 'null'); }catch(e){}
@@ -1859,6 +1904,7 @@
     populateTaskProjectSelect();
     resetForm();
     applyPageAccessToNav(); // re-checked on every load — sync/refresh picks up permission changes automatically, same mechanism as project access
+    applySectionUIAccess();
   }
 
   async function loadAll(isInitialSignIn){
@@ -2750,6 +2796,10 @@
     $('#photoZoomViewport').style.display = 'block';
     photoZoom.reset();
     photoViewDeleteHandler = onDelete;
+    // Courtesy only — hide the button when the caller didn't give us a
+    // delete handler (either nothing to delete, or the caller withheld it
+    // because the current user lacks delete rights for this photo's section).
+    $('#photoViewDeleteBtn').style.display = onDelete ? '' : 'none';
   }
   function updatePhotoNavUI(){
     const controls = $('#photoNavControls');
@@ -2887,9 +2937,10 @@
 
   // --- Detail modal photo context ---
   function renderModalPhotoThumbs(fotos){
+    const canDelete = canSection('lancamentos','delete');
     renderPhotoThumbs($('#modalPhotoThumbs'), fotos || [], {
-      deletable: true,
-      onView: (id, dataUrl)=> openPhotoLightbox(id, dataUrl, ()=> deleteModalPhotoNow(id)),
+      deletable: canDelete,
+      onView: (id, dataUrl)=> openPhotoLightbox(id, dataUrl, canDelete ? (()=> deleteModalPhotoNow(id)) : null),
       onDelete: (id)=> deleteModalPhotoWithConfirm(id),
     });
   }
@@ -3644,7 +3695,9 @@
   function renderSettingsProjects(){
     const box = $('#settingsProjects');
     box.innerHTML = projects.map(p => `<div class="proj-row"><span class="pname"><span class="proj-dot-inline"></span>${escapeHTML(p.name)}</span><button data-rename="${p.id}">Renomear</button></div>`).join('');
+    const canEditConfig = canSection('config','edit');
     box.querySelectorAll('[data-rename]').forEach(btn=>{
+      if(!canEditConfig){ btn.style.display = 'none'; return; }
       btn.addEventListener('click', async ()=>{
         const p = projects.find(x=>x.id===btn.dataset.rename);
         if(!p) return;
@@ -3852,7 +3905,9 @@
         openDocument(row.dataset.docId);
       });
     });
+    const canDeleteDocs = canSection('docs','delete');
     box.querySelectorAll('[data-del-doc]').forEach(btn=>{
+      if(!canDeleteDocs){ btn.style.display = 'none'; return; }
       btn.addEventListener('click', (e)=>{ e.stopPropagation(); deleteDocumentWithConfirm(btn.dataset.delDoc); });
     });
     // Image-type documents get a real thumbnail, straight from Drive.
@@ -3915,7 +3970,7 @@
     const d = documentos.find(x=>x.id===id);
     if(!d || !d.driveFileId){ showToast('Não consegui carregar esse documento.'); return; }
     if((d.mimeType||'').startsWith('image/')){
-      openPhotoLightbox(id, photoEmbedUrl(d.driveFileId), ()=> deleteDocumentNow(id));
+      openPhotoLightbox(id, photoEmbedUrl(d.driveFileId), canSection('docs','delete') ? (()=> deleteDocumentNow(id)) : null);
       return;
     }
     if(d.mimeType === 'application/pdf'){

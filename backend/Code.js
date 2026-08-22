@@ -18,6 +18,9 @@
  *    Notas, Fotos, Documentos) needs a "lastModified" column added as the
  *    LAST column, after whatever is already there. Projetos/Tipos/Unidades
  *    do not need this column.
+ * 5. Run installPapeisSheet_() ONCE from this editor to create and seed the
+ *    "Papeis" role/permission tab in the Usuarios spreadsheet (see the
+ *    AUTHORIZATION BLOCK below) — only needed once, ever, same as step 3.
  *
  * NORMAL DEPLOYS: push to `main` under backend/** and
  * .github/workflows/deploy-backend.yml pushes AND redeploys the live Web App
@@ -93,60 +96,145 @@ function getCurrentUser_(idToken) {
     if (!ativo) throw new Error('usuário desativado');
 
     const projetosRaw = String(row[3] || '').trim();
-    const role = String(row[2] || '').toLowerCase().trim();
     return {
       email: email,
       nome: row[1] || identity.name,
-      role: role,
+      role: String(row[2] || '').toLowerCase().trim(),
       // '*' means all projects; otherwise a plain array to check membership against.
       projects: projetosRaw === '*' ? '*' : projetosRaw.split(',').map(p => p.trim()).filter(Boolean),
-      // '*' means all pages; otherwise a plain array. Resolved here (not left
-      // for the frontend to compute) so the UI never re-implements role logic —
-      // it just renders what the backend, the actual source of authority, says.
-      pages: (ROLES[role] && ROLES[role].pages) || [],
     };
   }
   throw new Error('usuário não cadastrado');
 }
 // ==================================================================
-// END AUTH BLOCK
+// END AUTH BLOCK — identity only. What a role/section/action combination is
+// allowed to do lives entirely in the AUTHORIZATION BLOCK below; nothing
+// here knows or cares about permissions.
 // ==================================================================
 
 // ==================================================================
-// AUTHORIZATION BLOCK (Phase B) — role + project-level enforcement, built
-// entirely on getCurrentUser_()'s existing {email, role, projects} contract
-// from Phase A. Reusable as-is: ROLES is the only thing a future app would
-// likely want to edit (add a role, change what it can do) — everything else
-// here reads that config rather than hardcoding role names.
+// AUTHORIZATION BLOCK (Phase B) — section + action permission model, built
+// entirely on getCurrentUser_()'s {email, role, projects} contract from
+// Phase A. Deliberately kept separate from Phase A: authentication (who is
+// calling) never depends on authorization (what they can do).
+//
+// Every permission check is a (role, section, action) lookup against the
+// "Papeis" tab in the same spreadsheet as Usuarios (see loadPermissionMatrix_
+// below) — no role name or section name is ever hardcoded in an "if" here.
+// Adding a role, changing what an existing role can do, or adding a new
+// section is a spreadsheet edit, not a code change. Missing role, missing
+// section, missing tab, or any read failure all resolve to "no permissions"
+// — deny by default, always (see buildPermissionMatrixFromSheet_).
 // ==================================================================
-const ROLES = {
-  admin:   { manageUsers: true,  write: true,  pages: '*' },
-  owner:   { manageUsers: false, write: true,  pages: '*' },
-  partner: { manageUsers: false, write: false, pages: ['painel', 'lancamentos', 'docs'] },
-};
 
-// Maps each page to the sheet(s) whose data belongs to it. Purely additive —
-// pages not listed here (dashboard-only reference data, etc.) are unaffected.
-// A page's SHEETS are wiped to empty for a user lacking that page — same
-// "trim the getAll payload" principle as project filtering, just a second,
-// independent axis over the same data.
-const PAGE_SHEETS = {
-  painel: [],                              // dashboard reads from other sheets already filtered by project
+// Each section maps to the business-data sheet(s) it owns. Purely additive —
+// a section not listed here has no sheet data to filter. 'config' and
+// 'usuarios' are sections with no page of their own (see VIEW_FILTERED_SECTIONS
+// below) — they exist purely to gate WRITE actions (editing Projetos/Tipos/
+// Unidades; a future user-management screen), not to hide a nav tab.
+const SECTIONS = {
+  painel: [],
   lancamentos: ['caixaObra', 'empreiteiro'],
   tarefas: ['tarefas'],
   notas: ['notas'],
   docs: ['documentos', 'fotos'],
+  config: ['projetos', 'tipos', 'unidades'],
+  usuarios: [], // reserved for a future user-management screen — not built yet
 };
 
-function hasPageAccess_(user, page) {
-  const cfg = ROLES[user.role];
-  if (!cfg) return false;
-  return cfg.pages === '*' || cfg.pages.indexOf(page) > -1;
+// Sections whose sheets get wiped from getAll when the user lacks 'view' on
+// them. 'config'/'usuarios' are excluded on purpose: Tipos/Unidades are
+// shared reference data (never section-gated, see writeSheet_ comments) and
+// Projetos is filtered by PROJECT scope only (below) — neither has ever been
+// page/section-view-gated, only action-gated (who may edit them).
+const VIEW_FILTERED_SECTIONS = Object.keys(SECTIONS).filter(function (s) { return s !== 'config' && s !== 'usuarios'; });
+
+const PERMISSION_ACTIONS = ['view', 'create', 'edit', 'delete', 'upload', 'export'];
+
+// Reverse of SECTIONS — which section owns a given sheet, for the write
+// check in assertBatchAccess_.
+const SHEET_TO_SECTION = {};
+Object.keys(SECTIONS).forEach(function (section) {
+  SECTIONS[section].forEach(function (sheet) { SHEET_TO_SECTION[sheet] = section; });
+});
+
+function truthy_(v) {
+  return v === true || String(v || '').trim().toUpperCase() === 'SIM';
 }
 
-function requireWrite_(user) {
-  const cfg = ROLES[user.role];
-  if (!cfg || !cfg.write) throw new Error('sem permissão para escrever');
+// Reads the Papeis tab into { role: { section: {view,create,edit,delete,upload,export} } }.
+// Columns: role | section | view | create | edit | delete | upload | export.
+// Any failure (missing tab, unreadable spreadsheet, bad row) returns an EMPTY
+// matrix rather than throwing — that is what makes every permission check
+// fail closed instead of crashing open or silently granting access.
+function buildPermissionMatrixFromSheet_() {
+  const matrix = {};
+  try {
+    const sheet = SpreadsheetApp.openById(AUTH_SHEET_ID).getSheetByName('Papeis');
+    if (!sheet) return matrix;
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) return matrix;
+    const values = sheet.getRange(2, 1, lastRow - 1, 2 + PERMISSION_ACTIONS.length).getValues();
+    values.forEach(function (row) {
+      const role = String(row[0] || '').toLowerCase().trim();
+      const section = String(row[1] || '').toLowerCase().trim();
+      if (!role || !section) return;
+      const perms = {};
+      PERMISSION_ACTIONS.forEach(function (action, i) { perms[action] = truthy_(row[2 + i]); });
+      if (!matrix[role]) matrix[role] = {};
+      matrix[role][section] = perms;
+    });
+  } catch (err) {
+    return {}; // read/parse failure — deny everyone rather than guess
+  }
+  return matrix;
+}
+
+// The matrix (role capabilities) changes rarely, so it is cached briefly to
+// avoid a spreadsheet read on every request. Nothing user-specific is ever
+// cached here — only the role→section→action shape, identical for every user
+// sharing a role. getCurrentUser_() itself is NEVER cached, so a role/ativo
+// change on one specific user still takes effect on their very next request
+// regardless of this TTL.
+const PERMISSION_CACHE_KEY = 'papeis_matrix_v1';
+const PERMISSION_CACHE_TTL_SECONDS = 300; // 5 min — cuts repeat reads while keeping a Papeis edit landing quickly
+
+function loadPermissionMatrix_() {
+  try {
+    const cache = CacheService.getScriptCache();
+    const cached = cache.get(PERMISSION_CACHE_KEY);
+    if (cached) return JSON.parse(cached);
+    const matrix = buildPermissionMatrixFromSheet_();
+    try { cache.put(PERMISSION_CACHE_KEY, JSON.stringify(matrix), PERMISSION_CACHE_TTL_SECONDS); } catch (e) { /* cache write is best-effort */ }
+    return matrix;
+  } catch (err) {
+    return buildPermissionMatrixFromSheet_(); // cache service itself unavailable — fall back to a direct read
+  }
+}
+
+// Resolves a role into its full section/action permission object — every
+// section this app knows about gets an explicit true/false per action, so
+// callers (can_ below, and the frontend) never have to guess what a missing
+// key means.
+function sectionsForRole_(role) {
+  const matrix = loadPermissionMatrix_();
+  const roleCfg = matrix[role] || {};
+  const out = {};
+  Object.keys(SECTIONS).forEach(function (section) {
+    const perms = roleCfg[section];
+    out[section] = {};
+    PERMISSION_ACTIONS.forEach(function (action) { out[section][action] = !!(perms && perms[action]); });
+  });
+  return out;
+}
+
+// The single generic permission check every enforcement point below goes
+// through. No role name or section name is ever compared here, by design —
+// a new role or a new restricted section never needs a new "if" anywhere in
+// this file, only a new row in the Papeis tab.
+function can_(user, section, action) {
+  const perms = user.sections && user.sections[section];
+  return !!(perms && perms[action]);
 }
 
 function hasProjectAccess_(user, projectName) {
@@ -182,14 +270,15 @@ function resolveFotoProject_(foto, entryIdx, notaProjectById) {
 }
 
 // Trims a freshly-read getAll payload down to what this user is allowed to
-// see. Tipos/Unidades pass through untouched — small shared reference lists,
-// not project- or page-scoped data.
+// see. Runs generically over SECTIONS — no section name is special-cased.
+// Tipos/Unidades pass through untouched — small shared reference lists, not
+// project- or section-scoped data.
 function filterAllByAccess_(user, data) {
-  // Page axis first — independent of project access, so this runs regardless
-  // of whether the user has '*' projects or a restricted list.
-  Object.keys(PAGE_SHEETS).forEach(page => {
-    if (hasPageAccess_(user, page)) return;
-    PAGE_SHEETS[page].forEach(sheet => { data[sheet] = []; });
+  // Section/view axis first — independent of project access, so this runs
+  // regardless of whether the user has '*' projects or a restricted list.
+  VIEW_FILTERED_SECTIONS.forEach(function (section) {
+    if (can_(user, section, 'view')) return;
+    SECTIONS[section].forEach(function (sheet) { data[sheet] = []; });
   });
 
   if (user.projects === '*') return data; // full project access — nothing further to trim
@@ -208,34 +297,56 @@ function filterAllByAccess_(user, data) {
   return data;
 }
 
-// Rejects a write outright if ANY row it touches belongs to a project outside
-// the user's access — checked BEFORE anything is written, same all-or-nothing
-// principle as the existing conflict check. Reads current sheet state once
-// (cheap: just id+projeto per row) so it can resolve deletes and edits to
-// EXISTING rows, then merges in any new parent rows created within this same
-// batch, so "new entry + its new photo/note" (a normal single save) resolves
-// correctly without a false rejection.
-// Reverse of PAGE_SHEETS — which page owns a given sheet, for the write check below.
-const SHEET_TO_PAGE = {};
-Object.keys(PAGE_SHEETS).forEach(page => {
-  PAGE_SHEETS[page].forEach(sheet => { SHEET_TO_PAGE[sheet] = page; });
-});
+// Rejects a write outright if any op targets a section/action the user
+// doesn't have, OR (independently) a project outside their scope — checked
+// BEFORE anything is written, same all-or-nothing principle as the existing
+// conflict check.
+//
+// The section/action check runs unconditionally, even for a user with
+// projects:'*' — same non-obvious rule the old page check already relied on:
+// the two axes must never short-circuit each other, otherwise a future role
+// with unrestricted project access but restricted actions would silently
+// bypass its action limits.
+//
+// create vs. edit is decided from the sheet's OWN current state (does this id
+// already exist?), never from anything the client claims — a client
+// declaring an edit as a "create" (or vice versa) must not be able to dodge
+// a per-action restriction.
+function assertBatchAccess_(user, ops) {
+  const idCache = {};
+  function existingRows_(sheetKey) {
+    if (!idCache[sheetKey]) {
+      idCache[sheetKey] = {};
+      readSheet_(sheetKey).forEach(function (r) { idCache[sheetKey][r.id] = r; });
+    }
+    return idCache[sheetKey];
+  }
 
-function assertBatchProjectAccess_(user, ops) {
-  // Page axis first, unconditionally — independent of project access, so this
-  // must run even for a user with projects:'*' but a restricted page list.
-  ops.forEach(op => {
-    const page = SHEET_TO_PAGE[op.sheet];
-    if (page && !hasPageAccess_(user, page)) throw new Error('sem acesso a esta página');
+  ops.forEach(function (op) {
+    const section = SHEET_TO_SECTION[op.sheet];
+    if (!section) throw new Error('sem acesso a esta seção'); // unknown sheet — fail closed
+    const existing = existingRows_(op.sheet);
+    (op.upserts || []).forEach(function (u) {
+      const action = existing[u.id] ? 'edit' : 'create';
+      if (!can_(user, section, action)) throw new Error('sem permissão para ' + action);
+    });
+    if ((op.deletes || []).length && !can_(user, section, 'delete')) {
+      throw new Error('sem permissão para excluir');
+    }
   });
 
   if (user.projects === '*') return; // full project access — nothing further to check
 
-  const existingCaixa = readSheet_('caixaObra');
-  const existingEmp = readSheet_('empreiteiro');
-  const existingTasks = readSheet_('tarefas');
-  const existingNotas = readSheet_('notas');
-  const entryIdx = buildEntryProjectIndex_(existingCaixa, existingEmp, existingTasks);
+  // Project-scope check below, reusing the same sheet reads already cached
+  // above instead of reading caixaObra/empreiteiro/tarefas/notas again.
+  const existingCaixaObj = existingRows_('caixaObra');
+  const existingEmpObj = existingRows_('empreiteiro');
+  const existingTasksObj = existingRows_('tarefas');
+  const existingNotasObj = existingRows_('notas');
+  const entryIdx = { caixa: {}, emp: {}, tasks: {} };
+  Object.keys(existingCaixaObj).forEach(function (id) { entryIdx.caixa[id] = existingCaixaObj[id].projeto; });
+  Object.keys(existingEmpObj).forEach(function (id) { entryIdx.emp[id] = existingEmpObj[id].projeto; });
+  Object.keys(existingTasksObj).forEach(function (id) { entryIdx.tasks[id] = existingTasksObj[id].projeto; });
 
   // Merge in same-batch new/edited parents so a brand-new entry's own photos/
   // notes (created in the same request) resolve correctly.
@@ -245,7 +356,7 @@ function assertBatchProjectAccess_(user, ops) {
     if (op.sheet === 'tarefas') (op.upserts || []).forEach(u => { entryIdx.tasks[u.id] = u.row.projeto; });
   });
   const notaProjectById = {};
-  existingNotas.forEach(n => { notaProjectById[n.id] = resolveNotaProject_(n, entryIdx); });
+  Object.keys(existingNotasObj).forEach(function (id) { notaProjectById[id] = resolveNotaProject_(existingNotasObj[id], entryIdx); });
   ops.forEach(op => {
     if (op.sheet === 'notas') (op.upserts || []).forEach(u => { notaProjectById[u.id] = resolveNotaProject_(u.row, entryIdx); });
   });
@@ -490,7 +601,8 @@ function doPost(e) {
   }
 
   try {
-    const user = getCurrentUser_(body.idToken);
+    const user = getCurrentUser_(body.idToken); // AUTH: identity only
+    user.sections = sectionsForRole_(user.role); // AUTHZ: effective permissions, resolved fresh every request
     const action = body.action;
 
     // Pure read — no lock needed, same as this used to behave under doGet.
@@ -499,8 +611,6 @@ function doPost(e) {
       Object.keys(SHEETS).forEach(key => { out[key] = readSheet_(key); });
       return jsonOut_(filterAllByAccess_(user, out));
     }
-
-    requireWrite_(user); // every remaining action is a write — Partner is rejected here, before any of them
 
     const lock = LockService.getScriptLock();
     try {
@@ -511,7 +621,7 @@ function doPost(e) {
     try {
       if (action === 'batchMulti') {
         const ops = body.ops || [];
-        assertBatchProjectAccess_(user, ops); // rejects the WHOLE batch if any row is outside the user's projects
+        assertBatchAccess_(user, ops); // rejects the WHOLE batch if any op is outside the user's section/action or project access
         const conflicts = findConflicts_(ops);
         if (conflicts.length > 0) {
           return jsonOut_({ conflict: true, conflicts: conflicts });
@@ -520,11 +630,12 @@ function doPost(e) {
         return jsonOut_({ ok: true, updated: updated });
       }
 
-      // Legacy whole-tab save — still used for Projetos/Tipos/Unidades. Tipos/
-      // Unidades are small shared reference lists (no further authorization
-      // needed beyond the write-role check above); Projetos IS access-scoped,
-      // see saveProjetos_.
+      // Legacy whole-tab save — still used for Projetos/Tipos/Unidades, gated
+      // by the 'config' section's edit action. Tipos/Unidades are small
+      // shared reference lists (no further authorization needed beyond that);
+      // Projetos IS access-scoped, see saveProjetos_.
       if (action === 'saveSheet') {
+        if (!can_(user, 'config', 'edit')) throw new Error('sem permissão para editar');
         if (body.sheet === 'projetos') {
           saveProjetos_(user, body.rows);
         } else {
@@ -534,6 +645,7 @@ function doPost(e) {
       }
 
       if (action === 'uploadFile') {
+        if (!can_(user, 'docs', 'upload')) throw new Error('sem permissão para enviar arquivos');
         if (!hasProjectAccess_(user, body.projeto)) throw new Error('sem acesso a este projeto');
         const folderId = PROJECT_FOLDERS[body.projeto] || FALLBACK_FOLDER_ID;
         const folder = DriveApp.getFolderById(folderId);
@@ -545,6 +657,7 @@ function doPost(e) {
       }
 
       if (action === 'deleteFile') {
+        if (!can_(user, 'docs', 'delete')) throw new Error('sem permissão para excluir arquivos');
         // Only allow trashing a file this app actually knows about (a photo or
         // document it uploaded) — otherwise, since the script runs as the
         // deploying account, a raw fileId could reach ANY file that account
@@ -607,4 +720,52 @@ function backupSpreadsheet_() {
     const f = files.next();
     if (f.getDateCreated() < cutoff) f.setTrashed(true);
   }
+}
+
+// ------------------------------------------------------------
+// One-time setup: creates the "Papeis" tab (role/section/action permission
+// matrix, see the AUTHORIZATION BLOCK above) in the Usuarios spreadsheet if
+// it doesn't exist yet, and seeds it with the same effective permissions the
+// app used to have hardcoded. Run ONCE manually from this editor (select
+// installPapeisSheet_ in the function dropdown, click Run) — same pattern as
+// installDailyBackupTrigger. Safe to re-run: it only seeds rows when the tab
+// is completely empty, never overwrites rows you've already edited by hand.
+// ------------------------------------------------------------
+function installPapeisSheet_() {
+  const ss = SpreadsheetApp.openById(AUTH_SHEET_ID);
+  let sheet = ss.getSheetByName('Papeis');
+  if (!sheet) sheet = ss.insertSheet('Papeis');
+
+  const header = ['role', 'section', 'view', 'create', 'edit', 'delete', 'upload', 'export'];
+  if (sheet.getLastRow() >= 1) return; // already has content (header and/or rows) — don't touch it
+
+  const seed = [
+    header,
+    ['admin', 'painel', 'SIM', '', '', '', '', ''],
+    ['admin', 'lancamentos', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM'],
+    ['admin', 'tarefas', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM', ''],
+    ['admin', 'notas', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM', ''],
+    ['admin', 'docs', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM'],
+    ['admin', 'config', 'SIM', 'SIM', 'SIM', 'SIM', '', ''],
+    ['admin', 'usuarios', 'SIM', 'SIM', 'SIM', 'SIM', '', ''],
+    ['owner', 'painel', 'SIM', '', '', '', '', ''],
+    ['owner', 'lancamentos', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM'],
+    ['owner', 'tarefas', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM', ''],
+    ['owner', 'notas', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM', ''],
+    ['owner', 'docs', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM'],
+    ['owner', 'config', 'SIM', 'SIM', 'SIM', 'SIM', '', ''],
+    // owner has no 'usuarios' row — cannot manage users, same as the old manageUsers:false.
+    ['partner', 'painel', 'SIM', '', '', '', '', ''],
+    ['partner', 'lancamentos', 'SIM', '', '', '', '', ''],
+    ['partner', 'docs', 'SIM', '', '', '', '', ''],
+    // partner has no 'tarefas' or 'notas' row — both fully denied (nav hidden AND data withheld).
+  ];
+  sheet.getRange(1, 1, seed.length, header.length).setValues(seed);
+  sheet.setFrozenRows(1);
+}
+
+// Run manually after hand-editing the Papeis tab if you don't want to wait
+// out the (short, ~5 min) cache TTL for the change to take effect everywhere.
+function flushPermissionCache_() {
+  CacheService.getScriptCache().remove(PERMISSION_CACHE_KEY);
 }
