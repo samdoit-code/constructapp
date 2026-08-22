@@ -23,6 +23,22 @@
 
 ---
 
+## 2A. Source Control, Branching & Deployment
+
+- **Source control:** Git, hosted on GitHub at `samdoit-code/constructapp`.
+- **Production branch:** `main`. Changes intended for production should ultimately be merged into `main`.
+- **Development branches:** Claude Code and other development work should normally occur on a branch rather than directly on `main`.
+- **Pull requests:** When practical, use a pull request to review significant changes before merging into `main`. Small, explicitly authorized changes may follow the project's established workflow.
+- **GitHub is the source of truth:** The repository contains the authoritative frontend and backend source files. Do not treat manually edited production files as the canonical source.
+- **Frontend deployment:** GitHub Pages automatically builds/deploys the frontend from the repository.
+- **Backend deployment:** `.github/workflows/deploy-backend.yml` automatically deploys the Apps Script backend using Google `clasp`.
+- **Backend deployment trigger:** Changes to `backend/**` pushed to `main` trigger the Apps Script deployment workflow.
+- **Frontend and backend deployment are independent:** A frontend-only change should not require an Apps Script deployment, and a backend-only change should not require a frontend deployment.
+- **CI/CD:** GitHub Actions is used for automated deployment. Do not manually copy `Code.js` into the Apps Script editor when the change is already committed to the repository.
+- **Production:** `main` represents the production-ready source. GitHub Pages and the Apps Script deployment workflow publish the corresponding frontend/backend changes after they reach `main`.
+- 
+---
+
 ## 3. Architecture
 
 ### Frontend ↔ Backend communication
