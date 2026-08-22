@@ -7,7 +7,6 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
   :root{
@@ -1137,9 +1136,8 @@
       <button class="btn btn-ghost btn-block btn-sm" id="addProjectBtn">+ Adicionar projeto</button>
     </div>
     <div class="settings-block">
-      <h3>DADOS</h3>
-      <button class="btn btn-secondary btn-block" id="exportExcelBtn">Exportar tudo para Excel</button>
-      <div class="storage-note">Lançamentos, tarefas, notas, fotos e documentos ficam salvos na sua conta. Arquivos muito grandes (PDFs acima de 3MB) ainda não são suportados — isso será resolvido com a integração ao Google Drive, na próxima etapa.</div>
+      <h3>APP</h3>
+      <button class="btn btn-ghost btn-block btn-sm" id="updateAppBtn">Atualizar aplicativo</button>
     </div>
     <div class="app-version" id="appVersionLabel">Construtora Moreira App</div>
   </div>
@@ -1376,6 +1374,18 @@
         $('#updateBanner').classList.add('show');
       }
     }catch(e){ /* offline or blocked — just skip silently, this is a non-critical check */ }
+  }
+  // Hard reload: a plain location.reload() can be served straight from the
+  // browser's HTTP/back-forward cache on some engines (notably iOS), which
+  // would re-run the very code we're trying to replace. Navigating to a
+  // cache-busted URL instead forces a genuine network fetch of the new
+  // index.html. This is an APP update (new code) — unrelated to the
+  // "Sincronizar agora" gear icon, which only re-fetches business data
+  // without touching what code is running.
+  function forceAppReload(){
+    const url = new URL(window.location.href);
+    url.searchParams.set('_r', Date.now());
+    window.location.href = url.toString();
   }
 
   const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxoQYyrIMNNIKfO3wkAfj6f5HFAPCBfhw07cSsuRsAy4HWDODSjHBtGuTw2TgmfHRvZ_Q/exec';
@@ -3684,55 +3694,6 @@
     }
   });
 
-  // ---------- Excel export ----------
-  function notesToText(list){
-    if(!list || list.length===0) return '';
-    return list.map(n=>{
-      const d = new Date(n.criadoEm);
-      return '[' + d.toLocaleDateString('pt-BR') + '] ' + n.texto;
-    }).join(' | ');
-  }
-
-  $('#exportExcelBtn').addEventListener('click', ()=>{
-    if(typeof XLSX === 'undefined'){ showToast('Não foi possível carregar o gerador de Excel.'); return; }
-    const wb = XLSX.utils.book_new();
-
-    const projRows = [['ID','Nome']].concat(projects.map(p=>[p.id, p.name]));
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(projRows), 'Projetos');
-
-    const caixaHead = ['Projeto','Data','Nome','Tipo','Quantidade','Unidade','Valor','Fornecedor','Pago por Socio','Notas','Fotos'];
-    const caixaRows = [caixaHead].concat(caixaObra.map(e=>[projName(e.projectId), e.data, toDisplayCase(e.nome), e.tipo||'', e.qtd||'', e.unidade||'', e.valor||0, toDisplayCase(e.fornecedor)||'', e.socio||'', notesToText(e.notas), (e.fotos||[]).length]));
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(caixaRows), 'Caixa da Obra');
-
-    const empHead = ['Projeto','Data','Nome','Quantidade','Unidade','Valor','Fornecedor','Pago por Socio','Notas','Fotos'];
-    const empRows = [empHead].concat(empreiteiro.map(e=>[projName(e.projectId), e.data, toDisplayCase(e.nome), e.qtd||'', e.unidade||'', e.valor||0, toDisplayCase(e.fornecedor)||'', e.socio||'', notesToText(e.notas), (e.fotos||[]).length]));
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(empRows), 'Empreiteiro');
-
-    const taskHead = ['Projeto','Tarefa','Prazo','Prioridade','Status','Criado em','Fotos'];
-    const taskRows = [taskHead].concat(tasks.map(t=>[t.projectId?projName(t.projectId):'Geral', t.texto, t.prazo||'', t.prioridade, t.feito?'Concluída':'Pendente', new Date(t.criadoEm).toLocaleString('pt-BR'), (t.fotos||[]).length]));
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(taskRows), 'Tarefas');
-
-    const noteHead = ['Projeto','Data','Nota','Origem','Fotos'];
-    const noteRows = [noteHead];
-    notes.forEach(n=> noteRows.push([projName(n.projectId), new Date(n.criadoEm).toLocaleString('pt-BR'), n.texto, 'Geral', (n.fotos||[]).length]));
-    caixaObra.forEach(e => (e.notas||[]).forEach(n => noteRows.push([projName(e.projectId), new Date(n.criadoEm).toLocaleString('pt-BR'), n.texto, 'Caixa da Obra: ' + e.nome, ''])));
-    empreiteiro.forEach(e => (e.notas||[]).forEach(n => noteRows.push([projName(e.projectId), new Date(n.criadoEm).toLocaleString('pt-BR'), n.texto, 'Empreiteiro: ' + e.nome, ''])));
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(noteRows), 'Notas');
-
-    const docHead = ['Projeto','Nome do arquivo','Tipo','Adicionado em'];
-    const docRows = [docHead].concat(documentos.map(d=>[projName(d.projectId), d.nome, fileExtension(d.nome) || d.mimeType, new Date(d.criadoEm).toLocaleString('pt-BR')]));
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(docRows), 'Documentos');
-
-    const tiposRows = [['Tipo']].concat(tipos.map(t=>[t]));
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(tiposRows), 'Tipos de Despesa');
-
-    const unidadesRows = [['Unidade']].concat(unidades.map(u=>[u]));
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(unidadesRows), 'Unidades');
-
-    XLSX.writeFile(wb, 'construtora_moreira.xlsx');
-    showToast('Excel exportado.');
-  });
-
   // ---------- Init render ----------
   // ---------- Documentos (project document hub) ----------
   function projectFotosGrouped(){
@@ -4118,7 +4079,8 @@
     // has never signed in, which is a real nuisance, not a restore attempt
     // with any chance of succeeding.
   }
-  $('#updateNowBtn').addEventListener('click', ()=> window.location.reload());
+  $('#updateNowBtn').addEventListener('click', forceAppReload);
+  $('#updateAppBtn').addEventListener('click', forceAppReload);
   $('#updateDismissBtn').addEventListener('click', ()=>{
     $('#updateBanner').classList.remove('show');
     // Stays dismissed only for this session — reappears next launch if still
