@@ -18,7 +18,7 @@
  *    Notas, Fotos, Documentos) needs a "lastModified" column added as the
  *    LAST column, after whatever is already there. Projetos/Tipos/Unidades
  *    do not need this column.
- * 5. Run installPapeisSheet_() ONCE from this editor to create and seed the
+ * 5. Run installPapeisSheet() ONCE from this editor to create and seed the
  *    "Papeis" role/permission tab in the Usuarios spreadsheet (see the
  *    AUTHORIZATION BLOCK below) — only needed once, ever, same as step 3.
  *
@@ -727,11 +727,11 @@ function backupSpreadsheet_() {
 // matrix, see the AUTHORIZATION BLOCK above) in the Usuarios spreadsheet if
 // it doesn't exist yet, and seeds it with the same effective permissions the
 // app used to have hardcoded. Run ONCE manually from this editor (select
-// installPapeisSheet_ in the function dropdown, click Run) — same pattern as
+// installPapeisSheet in the function dropdown, click Run) — same pattern as
 // installDailyBackupTrigger. Safe to re-run: it only seeds rows when the tab
 // is completely empty, never overwrites rows you've already edited by hand.
 // ------------------------------------------------------------
-function installPapeisSheet_() {
+function installPapeisSheet() {
   const ss = SpreadsheetApp.openById(AUTH_SHEET_ID);
   let sheet = ss.getSheetByName('Papeis');
   if (!sheet) sheet = ss.insertSheet('Papeis');
@@ -766,6 +766,6 @@ function installPapeisSheet_() {
 
 // Run manually after hand-editing the Papeis tab if you don't want to wait
 // out the (short, ~5 min) cache TTL for the change to take effect everywhere.
-function flushPermissionCache_() {
+function flushPermissionCache() {
   CacheService.getScriptCache().remove(PERMISSION_CACHE_KEY);
 }
