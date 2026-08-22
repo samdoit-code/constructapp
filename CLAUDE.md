@@ -34,6 +34,7 @@ Exception: Do NOT increment the version when the only file being changed is CLAU
 - **File/photo storage:** Google Drive, organized as project-specific subfolders under a parent "Construtora Moreira" folder, plus a `Backups` subfolder for automated daily spreadsheet backups.
 - **Authentication:** Google Identity Services (GIS) — the Sign-In/One-Tap API (`google.accounts.id`), not the separate OAuth token-client API.
 - **Hosting/deployment:** Frontend on GitHub Pages (static). Backend via Apps Script's own Web App deployment mechanism (URL stays stable across "new version" deploys).
+- **Static assets** (logo, generated PWA/iPhone icons, web manifest, self-hosted `lottie-web` player + Lottie animation JSON) live in `/assets`, referenced from `index.html` by relative path. See `assets/README.md` for how the icon set and the white header/sign-in logo variant were derived from the original logo, and for the specific Lottie keyframe quirk (integer frame numbers + explicit `i`/`o` easing handles required, or a shape silently fails to render) worth knowing before hand-editing `anim-login.json` again. Small decorative libraries like this are self-hosted rather than pulled from a CDN, so a delight-feature dependency never risks breaking the sign-in screen if a third party is unreachable.
 
 ---
 
