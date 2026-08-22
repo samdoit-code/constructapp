@@ -6,7 +6,7 @@ Versioning
 
 Every time you make a code update or modification to the app, you MUST increment version.json by 1 before considering the task complete.
 
-Example: {"version": 35} → {"version": 36}
+Example format: {"version": 35} → {"version": 36}
 
 Do this automatically for every code update. Never skip it.
 
