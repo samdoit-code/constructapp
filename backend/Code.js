@@ -771,22 +771,30 @@ function doPost(e) {
         // Only allow trashing a file this app actually knows about (a photo or
         // document it uploaded) — otherwise, since the script runs as the
         // deploying account, a raw fileId could reach ANY file that account
-        // can access, not just this app's own. Unlike uploadFile, the section
-        // check here is fully server-resolved from the row itself — a photo's
-        // refTipo (and, for one attached to a note, that note's own resolved
-        // section) says which section owns it; nothing here trusts the client.
+        // can access, not just this app's own. Both the section and the
+        // project are fully server-resolved from the row itself — nothing
+        // here trusts the client — same two independent axes (section/action,
+        // then project) every other write path checks.
         const fotoRow = readSheet_('fotos').find(f => f.driveFileId === body.fileId);
         const docRow = !fotoRow && readSheet_('documentos').find(d => d.driveFileId === body.fileId);
         if (!fotoRow && !docRow) throw new Error('arquivo não encontrado');
-        let section;
+        let section, project;
         if (fotoRow) {
+          const entryIdx = buildEntryProjectIndex_(readSheet_('caixaObra'), readSheet_('empreiteiro'), readSheet_('tarefas'));
           const notaSectionById = {};
-          readSheet_('notas').forEach(function (n) { notaSectionById[n.id] = resolveNotaSection_(n); });
+          const notaProjectById = {};
+          readSheet_('notas').forEach(function (n) {
+            notaSectionById[n.id] = resolveNotaSection_(n);
+            notaProjectById[n.id] = resolveNotaProject_(n, entryIdx);
+          });
           section = resolveFotoSection_(fotoRow, notaSectionById);
+          project = resolveFotoProject_(fotoRow, entryIdx, notaProjectById);
         } else {
           section = 'docs';
+          project = docRow.projeto;
         }
         if (!section || !can_(user, section, 'delete')) throw new Error('sem permissão para excluir arquivos');
+        if (!hasProjectAccess_(user, project)) throw new Error('sem acesso a este projeto');
         const file = DriveApp.getFileById(body.fileId);
         file.setTrashed(true);
         return jsonOut_({ ok: true });

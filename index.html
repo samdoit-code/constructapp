@@ -692,7 +692,7 @@
         <div class="num" id="dashWeek">R$ 0</div>
         <div class="lbl">Gasto geral · últimos 7 dias</div>
       </div>
-      <div class="stat-card warn">
+      <div class="stat-card warn" id="dashTasksCard">
         <div class="num" id="dashTasks">0</div>
         <div class="lbl">Tarefas em aberto</div>
       </div>
@@ -1882,7 +1882,13 @@
     if(el) el.style.display = hidden ? 'none' : '';
   }
   function applySectionUIAccess(){
-    setHidden('#dashTarefasWidget', !canSection('painel.tarefas','view'));
+    // painel.tarefas covers BOTH the widget list and the "Tarefas em aberto"
+    // stat-card count — hiding one but not the other would still surface the
+    // real open-task count to a role that has tarefas.view (data legitimately
+    // sent) but painel.tarefas denied (widget meant to be hidden).
+    const canPainelTarefas = canSection('painel.tarefas','view');
+    setHidden('#dashTarefasWidget', !canPainelTarefas);
+    setHidden('#dashTasksCard', !canPainelTarefas);
     setHidden('#editEntryBtn', !canSection('lancamentos','edit'));
     setHidden('#deleteEntryBtn', !canSection('lancamentos','delete'));
     // The <input type="file"> elements below stay permanently display:none —
