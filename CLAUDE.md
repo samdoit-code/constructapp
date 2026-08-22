@@ -57,8 +57,7 @@ Exception: Do NOT increment the version when the only file being changed is CLAU
 
 ### Frontend ↔ Backend communication
 - Frontend calls the Apps Script Web App via `fetch()`.
-- **Reads:** `GET ?action=getAll` (plus an `idToken` query param). Simple request, no CORS preflight.
-- **Writes:** `POST` with `Content-Type: text/plain;charset=utf-8` — **deliberately not `application/json`**, because Apps Script does not handle the CORS preflight that a JSON content-type would trigger. `Code.gs` parses the raw body as JSON manually on its side.
+- **Reads and writes are both `POST`**, with `Content-Type: text/plain;charset=utf-8` — **deliberately not `application/json`**, because Apps Script does not handle the CORS preflight that a JSON content-type would trigger. `Code.gs` parses the raw body as JSON manually on its side. Reads (`action=getAll`) used to be a `GET` with `idToken` as a query param; this was changed (see Security below) so the bearer token never travels in a URL. `doGet` is now an intentional no-op — do not resurrect a GET-based read path.
 - The Apps Script Web App URL and `GOOGLE_CLIENT_ID` are configured as constants near the top of the frontend `<script>` and near the top of `Code.gs`. They must match exactly between the two files (case-sensitive, no typos) — a mismatch was the root cause of a real production auth failure once already.
 
 ### Apps Script ↔ Sheets/Drive
@@ -168,6 +167,7 @@ This should be the first thing investigated when work resumes.
 - **No manual zoom buttons** on photo/PDF viewers (removed per explicit request) — the underlying zoom-reset-on-open mechanism was kept, just not exposed via visible +/− controls.
 - **Visual design system:** a small set of CSS custom properties (`--shadow`, `--shadow-hover`, `--ease`) drive card elevation and transition timing app-wide. Changes to these tokens cascade broadly — prefer adjusting the token over one-off overrides.
 - **Things established as intentional, not to be "fixed" without asking:** the tactile 3D press-down style on the primary button; the dark, minimal sign-in gate; pagination page sizes (see below) chosen deliberately for performance at scale.
+- **Every value interpolated into an `innerHTML` template must go through `escapeHTML()`** — including URLs built from sheet data (e.g. a Drive-derived photo `src`), not just visible text. A URL/attribute value is exactly as capable of breaking out of its attribute as any other string; an audit found one such gap (an unescaped photo `src`) that has since been fixed. `window.open()` targets built from sheet data (`driveUrl`, etc.) should also go through a protocol allowlist (see `openSafeUrl()`), not be passed straight through.
 
 ---
 
@@ -181,6 +181,12 @@ This should be the first thing investigated when work resumes.
 - **Backups:** a time-based trigger (`installDailyBackupTrigger`, run once manually to install) copies the business-data spreadsheet daily into a `Backups` folder in Drive, pruning copies older than 30 days. This must be manually re-installed if ever removed — it is not automatic on deploy.
 - **Deployment discipline:** editing `Code.gs` in the script editor does **not** take effect for the live Web App until explicitly redeployed (Deploy → Manage deployments → Edit existing deployment → "New version" → Deploy). This exact step has been the root cause of multiple confusing bugs in this project's history — always suspect this first when backend changes don't seem to take effect.
 - **OAuth scopes:** the script needs `spreadsheets`, `drive`, `script.external_request` (for `UrlFetchApp` calls to verify tokens), and `userinfo.email`. If these are not explicitly declared in `appsscript.json`'s `oauthScopes`, Apps Script's automatic scope detection has previously been unreliable across edits — explicit declaration is safer. **NEEDS VERIFICATION:** whether `oauthScopes` is currently explicitly declared in the live `appsscript.json` or still relying on auto-detection.
+
+### Security practices established (from a full security audit; reusable in future apps on this stack)
+- **Reads never go over GET.** A bearer `idToken` must never travel in a URL/query string (server logs, browser history, proxies can all capture it) — `getAll` is `POST`, same as writes. `doGet` is kept only because Apps Script requires it to exist; it must stay an inert no-op, not a second read path.
+- **Every free-text value written to a sheet cell is run through `sanitizeCell_()`** (prefixes a value starting with `=+-@` with a leading apostrophe) before `setValues()`. Without this, a value planted through the write API becomes a live formula the moment anyone opens the sheet directly or exports it — a real CSV/formula-injection vector, not hypothetical.
+- **A whole-tab "clear and replace" write (`writeSheet_`) must never be used for data that is also access-scoped** (i.e. anything `hasProjectAccess_` filters). A project-scoped user's in-memory copy only ever contains what they're allowed to see, so replacing the whole tab with it silently deletes everything else. `saveProjetos_` is the pattern to copy: preserve out-of-scope rows, only replace the caller's own subset. `Tipos`/`Unidades` are fine to whole-tab-replace because they are genuinely shared, not access-scoped.
+- **Any action that operates on a raw Drive `fileId` from the client (e.g. `deleteFile`) must first confirm that ID is one this app actually issued** (present in `Fotos`/`Documentos`), before touching it via `DriveApp`. Because the script runs `executeAs: USER_DEPLOYING`, an unchecked fileId can reach anything that Google account can access — not just this app's own files.
 
 ---
 
@@ -236,3 +242,19 @@ This should be the first thing investigated when work resumes.
 - The open page-permissions bug described in Section 4 (role change not taking visible effect) — **investigate before any new feature work on the permissions system.**
 - Private Drive file sharing (Section 9) — designed but not built.
 - Per-user (rather than per-role) page permission customization — not built, no current requirement for it.
+
+---
+
+## 11. CLAUDE.md Maintenance
+
+Keep `CLAUDE.md` up to date. When a code change introduces or changes an important:
+
+- Architecture decision
+- Workflow or convention
+- Security rule
+- Development instruction
+- Pattern or practice that should be replicated as a foundation for future apps
+
+...update `CLAUDE.md` accordingly, in the same piece of work that makes the change (not as a separate follow-up to remember later).
+
+Do not update it for trivial implementation changes or app-specific details that have no future value.
