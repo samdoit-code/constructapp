@@ -1354,13 +1354,13 @@
   // that compares a fresh fetch against that baseline. Independent of the
   // auth/session logic — this only ever checks for a newer build and offers
   // to reload; it never touches googleIdToken or the session hint.
-  const VERSION_CHECK_INTERVAL_MS = 15 * 60 * 1000; // every 15 min while the app is open
+  const VERSION_CHECK_INTERVAL_MS = 90 * 1000; // frequent fallback poll while the app stays open
   let runningVersion = null; // set on the first successful check, below
   let updateAvailable = false;
   async function checkForUpdate(){
     if(updateAvailable) return; // already showing the banner, no need to re-check
     try{
-      const resp = await fetch('version.json?t=' + Date.now()); // cache-bust — this one fetch must always hit the network
+      const resp = await fetch('version.json?t=' + Date.now(), {cache:'no-store'}); // belt-and-suspenders cache-bust — this one fetch must always hit the network
       if(!resp.ok) return;
       const data = await resp.json();
       if(!data || typeof data.version !== 'number') return;
@@ -4137,6 +4137,7 @@
   const TOKEN_REFRESH_THRESHOLD_MS = 45 * 60 * 1000; // well before the ~60min expiry, not cutting it close
   document.addEventListener('visibilitychange', ()=>{
     if(document.visibilityState !== 'visible') return;
+    checkForUpdate(); // catch a version bump immediately on foreground return, not just on the next poll
     if(!googleIdToken || !googleIdTokenObtainedAt) return; // not signed in / gate already showing — nothing to proactively refresh
     if($('#authGate').style.display !== 'none') return; // already on the sign-in screen for some other reason
     const age = Date.now() - googleIdTokenObtainedAt;
