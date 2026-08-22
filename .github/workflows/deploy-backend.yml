@@ -11,6 +11,9 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
 
+    environment:
+      name: production
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -23,13 +26,12 @@ jobs:
       - name: Install clasp
         run: npm install -g @google/clasp
 
-      - name: Configure clasp credentials
+      - name: Configure clasp
         env:
           CLASP_CLIENT_ID: ${{ secrets.CLASP_CLIENT_ID }}
           CLASP_CLIENT_SECRET: ${{ secrets.CLASP_CLIENT_SECRET }}
           CLASP_REFRESH_TOKEN: ${{ secrets.CLASP_REFRESH_TOKEN }}
         run: |
-          mkdir -p ~/.config/.clasp
           cat > ~/.clasprc.json <<EOF
           {
             "token": {
