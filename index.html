@@ -1338,9 +1338,10 @@
   }
 
   // ---------- Storage: Google Sheets via Apps Script ----------
-  // This app has no server of its own — Apps Script is the backend. GET is used
-  // for reads (a "simple request", no CORS preflight). POST bodies are sent as
-  // text/plain rather than application/json — a real Apps Script quirk: it
+  // This app has no server of its own — Apps Script is the backend. Reads AND
+  // writes both go through POST, so the idToken always travels in the request
+  // body, never a URL/query string (where it could end up logged somewhere).
+  // Bodies are sent as text/plain rather than application/json — a real Apps Script quirk: it
   // doesn't respond usefully to the OPTIONS preflight a JSON content-type would
   // trigger, so text/plain avoids that entirely; Code.gs parses the body as
   // JSON manually on its side either way.
@@ -1411,14 +1412,6 @@
   const PERMISSION_ERROR_MESSAGES = new Set(['sem permissão para escrever', 'sem acesso a este projeto']);
   function isPermissionError(err){
     return err && PERMISSION_ERROR_MESSAGES.has(String(err.message || err));
-  }
-  async function sheetsGet(params){
-    const qs = new URLSearchParams(Object.assign({idToken: googleIdToken || ''}, params || {})).toString();
-    const resp = await fetch(APPS_SCRIPT_URL + (qs ? '?' + qs : ''));
-    if(!resp.ok) throw new Error('HTTP ' + resp.status);
-    const data = await resp.json();
-    if(data && data.error) throw new Error(data.error);
-    return data;
   }
   async function sheetsPostRaw(body){
     const resp = await fetch(APPS_SCRIPT_URL, {
@@ -1743,7 +1736,7 @@
   // is left completely untouched, so a failed refresh never blanks the screen.
   async function fetchAndApplyFromServer(){
     try{
-      const data = await withRetry(()=> sheetsGet({action:'getAll'}), 1, 800);
+      const data = await sheetsPost({action:'getAll'});
 
       projects = (data.projetos||[]).filter(p => p.ativo !== false).map(p => ({id: p.id, name: p.id}));
       if(projects.length === 0) projects = [{id:'Obra Gavião', name:'Obra Gavião'}, {id:'Obra Boreal', name:'Obra Boreal'}];
@@ -2697,7 +2690,7 @@
     if(!fotos || fotos.length === 0){ containerEl.innerHTML = ''; return; }
     containerEl.innerHTML = fotos.map(f=>{
       const url = f.driveFileId ? photoEmbedUrl(f.driveFileId) : '';
-      const img = url ? `<img src="${url}" alt="Recibo" loading="lazy">` : `<div class="photo-spinner">Erro</div>`;
+      const img = url ? `<img src="${escapeHTML(url)}" alt="Recibo" loading="lazy">` : `<div class="photo-spinner">Erro</div>`;
       const delBtn = ctx.deletable ? `<button type="button" class="photo-del" data-del="${escapeHTML(f.id)}"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>` : '';
       return `<div class="photo-thumb" data-photo-id="${escapeHTML(f.id)}">${img}${delBtn}</div>`;
     }).join('');
@@ -3871,6 +3864,13 @@
       reader.readAsDataURL(file);
     });
   }
+  // driveUrl/driveFileId ultimately come from sheet rows written through the
+  // API, not just from our own upload flow — guard against anything other
+  // than a real https:// link (e.g. a javascript: URL) reaching window.open.
+  function openSafeUrl(url){
+    if(!/^https:\/\//i.test(url || '')) return;
+    window.open(url, '_blank');
+  }
   let pdfViewCurrentId = null;
   let pdfViewCurrentDriveUrl = null;
   function openPdfPreview(id, driveFileId, filename, driveUrl){
@@ -3889,7 +3889,7 @@
   }
   $('#pdfViewDownloadBtn').addEventListener('click', ()=>{
     if(!pdfViewCurrentDriveUrl) return;
-    window.open(pdfViewCurrentDriveUrl, '_blank');
+    openSafeUrl(pdfViewCurrentDriveUrl);
   });
   $('#pdfViewDeleteBtn').addEventListener('click', async ()=>{
     if(!pdfViewCurrentId) return;
@@ -3913,7 +3913,7 @@
     }
     // Other file types (Word/Excel/etc): hand off to Drive directly, letting it
     // preview or download as appropriate for that file type.
-    window.open(d.driveUrl || ('https://drive.google.com/file/d/' + d.driveFileId + '/view'), '_blank');
+    openSafeUrl(d.driveUrl || ('https://drive.google.com/file/d/' + d.driveFileId + '/view'));
   }
   async function deleteDocumentNow(id){
     const target = documentos.find(d=>d.id===id);

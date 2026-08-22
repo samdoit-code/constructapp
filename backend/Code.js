@@ -347,6 +347,16 @@ function readSheet_(key) {
   return rows;
 }
 
+// A cell value starting with =, +, -, or @ is live-formula syntax the moment
+// anyone opens the sheet directly (or exports it to CSV/Excel) — a leading
+// apostrophe forces Sheets to treat it as literal text instead. Only applies
+// to free-text string fields typed by users (nome, fornecedor, texto, etc.);
+// numbers/booleans are untouched.
+function sanitizeCell_(v) {
+  if (typeof v === 'string' && /^[=+\-@]/.test(v)) return "'" + v;
+  return v;
+}
+
 // Legacy whole-tab replace — still used for Projetos/Tipos/Unidades, the small
 // reference lists that don't need row-level conflict tracking.
 function writeSheet_(key, rows) {
@@ -364,7 +374,7 @@ function writeSheet_(key, rows) {
     const v = r[c];
     if (v === undefined || v === null) return '';
     if (typeof v === 'boolean') return v ? 'SIM' : 'NAO';
-    return v;
+    return sanitizeCell_(v);
   }));
   sheet.getRange(2, 1, values.length, cfg.cols.length).setValues(values);
 }
@@ -384,7 +394,7 @@ function rowValuesFromObj_(cfg, rowObj) {
     const v = rowObj[c];
     if (v === undefined || v === null) return '';
     if (typeof v === 'boolean') return v ? 'SIM' : 'NAO';
-    return v;
+    return sanitizeCell_(v);
   });
 }
 
@@ -441,84 +451,113 @@ function applyBatch_(ops) {
   return updated;
 }
 
+// GET is no longer used for anything — reads now go through doPost (see
+// 'getAll' below) so the bearer idToken never has to travel in a URL/query
+// string, where it'd be liable to end up in logs. Kept as a harmless no-op
+// rather than removed outright, since Apps Script always requires a doGet.
 function doGet(e) {
+  return jsonOut_({ error: 'Use POST.' });
+}
+
+// Whole-tab save for Projetos is access-scoped data (unlike Tipos/Unidades,
+// shared reference lists) — a user restricted to specific projects only ever
+// has THOSE rows in memory (getAll already filtered the rest out for them),
+// so a plain clear-and-replace would silently delete every project outside
+// their own view. Preserving whatever's currently in the sheet that they
+// can't see, and only replacing the portion they do have access to, keeps
+// their normal add/rename actions working without that blast radius.
+function saveProjetos_(user, rows) {
+  if (user.projects === '*') {
+    writeSheet_('projetos', rows);
+    return;
+  }
+  const existing = readSheet_('projetos');
+  const outOfScope = existing.filter(p => !hasProjectAccess_(user, p.id));
+  writeSheet_('projetos', outOfScope.concat(rows || []));
+}
+
+function doPost(e) {
+  let body;
   try {
-    const user = getCurrentUser_(e.parameter.idToken);
-    const action = (e.parameter.action || 'getAll');
+    body = JSON.parse(e.postData.contents);
+  } catch (err) {
+    return jsonOut_({ error: 'JSON inválido' });
+  }
+
+  try {
+    const user = getCurrentUser_(body.idToken);
+    const action = body.action;
+
+    // Pure read — no lock needed, same as this used to behave under doGet.
     if (action === 'getAll') {
       const out = { currentUser: user };
       Object.keys(SHEETS).forEach(key => { out[key] = readSheet_(key); });
       return jsonOut_(filterAllByAccess_(user, out));
     }
-    return jsonOut_({ error: 'Ação desconhecida: ' + action });
-  } catch (err) {
-    // err.message, NOT String(err) — String() on a real Error prepends "Error: ",
-    // which silently breaks every exact-string match the frontend does against
-    // these messages (auth vs permission vs generic).
-    return jsonOut_({ error: err.message || String(err) });
-  }
-}
 
-function doPost(e) {
-  const lock = LockService.getScriptLock();
-  try {
-    lock.waitLock(15000);
-  } catch (err) {
-    return jsonOut_({ error: 'Servidor ocupado, tente novamente.' });
-  }
+    requireWrite_(user); // every remaining action is a write — Partner is rejected here, before any of them
 
-  try {
-    let body;
+    const lock = LockService.getScriptLock();
     try {
-      body = JSON.parse(e.postData.contents);
+      lock.waitLock(15000);
     } catch (err) {
-      return jsonOut_({ error: 'JSON inválido' });
+      return jsonOut_({ error: 'Servidor ocupado, tente novamente.' });
     }
-    const user = getCurrentUser_(body.idToken);
-    requireWrite_(user); // every doPost action is a write — Partner is rejected here, before any of them
-    const action = body.action;
-
-    if (action === 'batchMulti') {
-      const ops = body.ops || [];
-      assertBatchProjectAccess_(user, ops); // rejects the WHOLE batch if any row is outside the user's projects
-      const conflicts = findConflicts_(ops);
-      if (conflicts.length > 0) {
-        return jsonOut_({ conflict: true, conflicts: conflicts });
+    try {
+      if (action === 'batchMulti') {
+        const ops = body.ops || [];
+        assertBatchProjectAccess_(user, ops); // rejects the WHOLE batch if any row is outside the user's projects
+        const conflicts = findConflicts_(ops);
+        if (conflicts.length > 0) {
+          return jsonOut_({ conflict: true, conflicts: conflicts });
+        }
+        const updated = applyBatch_(ops);
+        return jsonOut_({ ok: true, updated: updated });
       }
-      const updated = applyBatch_(ops);
-      return jsonOut_({ ok: true, updated: updated });
-    }
 
-    // Legacy whole-tab save — still used for Projetos/Tipos/Unidades. These
-    // are small shared reference lists, not project-scoped data, so beyond
-    // the write-role check above there's nothing further to authorize here.
-    if (action === 'saveSheet') {
-      writeSheet_(body.sheet, body.rows);
-      return jsonOut_({ ok: true });
-    }
+      // Legacy whole-tab save — still used for Projetos/Tipos/Unidades. Tipos/
+      // Unidades are small shared reference lists (no further authorization
+      // needed beyond the write-role check above); Projetos IS access-scoped,
+      // see saveProjetos_.
+      if (action === 'saveSheet') {
+        if (body.sheet === 'projetos') {
+          saveProjetos_(user, body.rows);
+        } else {
+          writeSheet_(body.sheet, body.rows);
+        }
+        return jsonOut_({ ok: true });
+      }
 
-    if (action === 'uploadFile') {
-      if (!hasProjectAccess_(user, body.projeto)) throw new Error('sem acesso a este projeto');
-      const folderId = PROJECT_FOLDERS[body.projeto] || FALLBACK_FOLDER_ID;
-      const folder = DriveApp.getFolderById(folderId);
-      const bytes = Utilities.base64Decode(body.base64);
-      const blob = Utilities.newBlob(bytes, body.mimeType, body.filename);
-      const file = folder.createFile(blob);
-      file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-      return jsonOut_({ ok: true, fileId: file.getId(), url: file.getUrl() });
-    }
+      if (action === 'uploadFile') {
+        if (!hasProjectAccess_(user, body.projeto)) throw new Error('sem acesso a este projeto');
+        const folderId = PROJECT_FOLDERS[body.projeto] || FALLBACK_FOLDER_ID;
+        const folder = DriveApp.getFolderById(folderId);
+        const bytes = Utilities.base64Decode(body.base64);
+        const blob = Utilities.newBlob(bytes, body.mimeType, body.filename);
+        const file = folder.createFile(blob);
+        file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+        return jsonOut_({ ok: true, fileId: file.getId(), url: file.getUrl() });
+      }
 
-    if (action === 'deleteFile') {
-      const file = DriveApp.getFileById(body.fileId);
-      file.setTrashed(true);
-      return jsonOut_({ ok: true });
-    }
+      if (action === 'deleteFile') {
+        // Only allow trashing a file this app actually knows about (a photo or
+        // document it uploaded) — otherwise, since the script runs as the
+        // deploying account, a raw fileId could reach ANY file that account
+        // can access, not just this app's own.
+        const isKnown = readSheet_('fotos').some(f => f.driveFileId === body.fileId) ||
+          readSheet_('documentos').some(d => d.driveFileId === body.fileId);
+        if (!isKnown) throw new Error('arquivo não encontrado');
+        const file = DriveApp.getFileById(body.fileId);
+        file.setTrashed(true);
+        return jsonOut_({ ok: true });
+      }
 
-    return jsonOut_({ error: 'Ação desconhecida: ' + action });
+      return jsonOut_({ error: 'Ação desconhecida: ' + action });
+    } finally {
+      lock.releaseLock();
+    }
   } catch (err) {
     return jsonOut_({ error: err.message || String(err) });
-  } finally {
-    lock.releaseLock();
   }
 }
 
