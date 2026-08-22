@@ -591,58 +591,29 @@
   }
 
   #authGate{
-    position:fixed; inset:0; z-index:400;
-    /* A soft warm glow near the logo, settling into the app's usual dark ink
-       toward the edges — warmer and more welcoming than a flat fill, while
-       staying just as neutral/professional once you're past the top third. */
-    background: radial-gradient(ellipse 90% 60% at 50% 30%, #3d2b1c 0%, #2a2119 42%, var(--ink) 78%);
+    position:fixed; inset:0; z-index:400; background:var(--ink);
     display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding:30px;
   }
+  #authGate .mark{
+    height:76px; display:flex; align-items:center; justify-content:center; margin-bottom:22px;
+  }
+  #authGate .mark picture, #authGate .mark img{height:76px; width:auto; display:block;}
   #authGate h1{color:#fff; font-family:'Oswald',sans-serif; font-size:19px; margin:0 0 6px; text-transform:uppercase; letter-spacing:0.03em;}
   #authGate p{color:#c9c2b4; font-size:13.5px; max-width:280px; line-height:1.5; margin:0 0 26px;}
   #authGate .g-signin-slot{min-height:44px;}
   #authGate .auth-error{color:#f5a794; font-size:13px; margin-top:16px; max-width:280px; line-height:1.5;}
   .auth-gate-version{position:absolute; bottom:calc(16px + var(--safe-bottom)); left:0; right:0; text-align:center; font-size:10.5px; color:rgba(255,255,255,0.28);}
   #authGate .auth-spinner{color:#c9c2b4; font-size:13px;}
-
-  /* Logo entrance: the mark's two natural halves (the "C"+building, and the
-     "M") settle in from opposite sides with a soft overshoot, echoing a
-     "pieces assembling" treatment, plus a warm glow that breathes gently
-     afterward — the one animated moment on the app's very first screen. */
-  .logo-hero{position:relative; height:76px; width:236px; margin:0 auto 22px;}
-  .logo-hero .glow{
-    position:absolute; inset:-34px; border-radius:50%;
-    background: radial-gradient(circle, rgba(224,101,31,0.38), transparent 70%);
-    opacity:0; animation: logoGlowIn 1.2s ease-out .55s forwards, logoGlowPulse 3.6s ease-in-out 1.9s infinite; z-index:0;
-  }
-  .logo-hero img{
-    position:absolute; top:0; left:50%; height:76px; width:auto; z-index:1;
-    -webkit-transform:translateX(-50%); transform:translateX(-50%);
-  }
-  .logo-hero .piece-a{ clip-path: inset(0 47% 0 0); opacity:0; animation: logoInLeft .75s cubic-bezier(.22,.9,.32,1.28) .08s forwards; }
-  .logo-hero .piece-b{ clip-path: inset(0 0 0 53%); opacity:0; animation: logoInRight .75s cubic-bezier(.22,.9,.32,1.28) .26s forwards; }
-  @keyframes logoInLeft{
-    from{ opacity:0; transform:translateX(calc(-50% - 22px)) scale(.86); }
-    to{ opacity:1; transform:translateX(-50%) scale(1); }
-  }
-  @keyframes logoInRight{
-    from{ opacity:0; transform:translateX(calc(-50% + 22px)) scale(.86); }
-    to{ opacity:1; transform:translateX(-50%) scale(1); }
-  }
-  @keyframes logoGlowIn{ to{ opacity:1; } }
-  @keyframes logoGlowPulse{ 0%,100%{ opacity:.5; } 50%{ opacity:.85; } }
-  @media (prefers-reduced-motion: reduce){
-    .logo-hero .glow, .logo-hero .piece-a, .logo-hero .piece-b{ animation:none; opacity:1; }
-  }
 </style>
 </head>
 <body>
 
 <div id="authGate">
-  <div class="logo-hero" aria-hidden="true">
-    <div class="glow"></div>
-    <img class="piece-a" src="assets/logo-white.png" alt="">
-    <img class="piece-b" src="assets/logo-white.png" alt="">
+  <div class="mark">
+    <picture>
+      <source srcset="assets/logo-white.webp" type="image/webp">
+      <img src="assets/logo-white.png" alt="Construtora Moreira">
+    </picture>
   </div>
   <h1>Construtora Moreira</h1>
   <p id="authGateMsg">Entre com sua conta Google para continuar.</p>
