@@ -20,6 +20,7 @@
  * ------------------------------------------------------------
  */
 
+// CI/CD deployment test
 // ==================================================================
 // AUTH BLOCK — reusable across future apps. Only the two constants
 // below (GOOGLE_CLIENT_ID, AUTH_SHEET_ID) need to change per app; the
