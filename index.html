@@ -295,6 +295,21 @@
   }
   .searchbar svg{width:17px;height:17px; stroke:var(--ink-soft); fill:none; stroke-width:2; flex:0 0 auto;}
   .searchbar input{border:none; outline:none; width:100%; font-size:14.5px; background:transparent; font-family:'Inter',sans-serif;}
+  .search-clear{
+    display:none; align-items:center; justify-content:center; width:22px; height:22px; border-radius:50%;
+    background:var(--paper-2); border:none; cursor:pointer; flex:0 0 auto; padding:0;
+  }
+  .search-clear.show{display:inline-flex;}
+  .search-clear svg{width:11px; height:11px; stroke:var(--ink-soft); fill:none; stroke-width:2.6;}
+
+  /* Autocomplete */
+  .ac-wrap{position:relative;}
+  .ac-dropdown{
+    position:absolute; left:0; right:0; top:calc(100% + 5px); background:#fff; border:1.5px solid var(--line);
+    border-radius:11px; box-shadow:var(--shadow-hover); z-index:40; max-height:220px; overflow-y:auto; padding:5px;
+  }
+  .ac-item{padding:10px 11px; font-size:14px; border-radius:8px; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--ink);}
+  .ac-item.active, .ac-item:hover{background:var(--paper-2);}
   .total-strip{
     display:flex; justify-content:space-between; align-items:center;
     background:var(--paper-2); border:1px solid var(--line); border-radius:11px;
@@ -687,15 +702,22 @@
       <button data-kind="caixa" class="active">Caixa da obra</button>
       <button data-kind="emp">Empreiteiro</button>
     </div>
-    <div class="searchbar">
-      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-      <input type="text" id="searchInput" placeholder="Buscar por nome ou fornecedor...">
+    <div class="ac-wrap">
+      <div class="searchbar">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        <input type="text" id="searchInput" placeholder="Buscar por nome ou fornecedor..." autocomplete="off">
+        <button type="button" class="search-clear" id="searchClearBtn" aria-label="Limpar busca" tabindex="-1">
+          <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+      <div class="ac-dropdown" id="searchAcDropdown" style="display:none;"></div>
     </div>
     <div class="filter-toggle-row">
       <button class="btn btn-ghost btn-sm" id="filterToggleBtn">Filtros</button>
       <select id="sortSelect" class="btn btn-ghost btn-sm sort-select" aria-label="Ordenar lançamentos">
         <option value="recent">Mais recentes</option>
         <option value="oldest">Mais antigos</option>
+        <option value="planilha">Ordem da planilha</option>
         <option value="valor-desc">Maior valor</option>
         <option value="valor-asc">Menor valor</option>
         <option value="nome">Nome A-Z</option>
@@ -768,9 +790,10 @@
     <div class="form-context">Salvando em: <b id="addProjLabel">—</b></div>
     <div class="form-card">
       <form id="entryForm">
-        <div class="field">
+        <div class="field ac-wrap">
           <label>Nome / descrição <span class="req">*</span></label>
-          <input type="text" id="f_nome" placeholder="Ex: Cimento, Pedreiro João, Aluguel de betoneira" required>
+          <input type="text" id="f_nome" placeholder="Ex: Cimento, Pedreiro João, Aluguel de betoneira" required autocomplete="off">
+          <div class="ac-dropdown" id="f_nome_ac" style="display:none;"></div>
         </div>
 
         <div class="field" id="tipoField">
@@ -806,9 +829,10 @@
             <input type="number" id="f_valor" placeholder="0,00" step="0.01" inputmode="decimal" required>
           </div>
         </div>
-        <div class="field">
+        <div class="field ac-wrap">
           <label>Fornecedor / trabalhador</label>
-          <input type="text" id="f_fornecedor" placeholder="Quem prestou o serviço">
+          <input type="text" id="f_fornecedor" placeholder="Quem prestou o serviço" autocomplete="off">
+          <div class="ac-dropdown" id="f_fornecedor_ac" style="display:none;"></div>
         </div>
         <div class="field">
           <label>Pago por sócio</label>
@@ -1289,8 +1313,16 @@
     return s.split(' ').map(w => w ? w.charAt(0).toUpperCase() + w.slice(1) : w).join(' ');
   }
   function caseInsensitiveMatch(list, value){
-    const lower = (value||'').trim().toLowerCase();
-    return list.find(x => x.toLowerCase() === lower);
+    const lower = normSearch(value);
+    return list.find(x => normSearch(x) === lower);
+  }
+  // Accent-insensitive matching used throughout search/filter/autocomplete so
+  // "José" and "Jose" (or accents typed with/without a dead-key keyboard) match.
+  function normAccent(s){
+    return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  }
+  function normSearch(s){
+    return normAccent(s).trim().toLowerCase();
   }
   function projName(id){
     const p = projects.find(x=>x.id===id);
@@ -2116,7 +2148,10 @@
     // __sheetIdx (ascending) is the tiebreaker throughout — it reflects the
     // Google Sheet's own row order, which is a far more meaningful "which of
     // these came first" signal than criadoEm for rows typed in by hand.
-    if(entrySortMode === 'oldest'){
+    if(entrySortMode === 'planilha'){
+      // Mirrors the Google Sheet's own row order exactly, ignoring date entirely.
+      list.sort((a,b)=> a.__sheetIdx - b.__sheetIdx);
+    } else if(entrySortMode === 'oldest'){
       list.sort((a,b)=> a.data.localeCompare(b.data) || a.__sheetIdx - b.__sheetIdx);
     } else if(entrySortMode === 'valor-desc'){
       list.sort((a,b)=> (b.valor||0) - (a.valor||0) || a.__sheetIdx - b.__sheetIdx);
@@ -2163,14 +2198,27 @@
 
   let searchTerm = '';
   let searchDebounceTimer;
+  function updateSearchClearVisibility(){
+    $('#searchClearBtn').classList.toggle('show', !!$('#searchInput').value);
+  }
   $('#searchInput').addEventListener('input', (e)=>{
+    updateSearchClearVisibility();
     clearTimeout(searchDebounceTimer);
     const val = e.target.value;
     searchDebounceTimer = setTimeout(()=>{
-      searchTerm = val.trim().toLowerCase();
+      searchTerm = normSearch(val);
       entriesPage = 1;
       renderEntries();
     }, 200);
+  });
+  $('#searchClearBtn').addEventListener('click', ()=>{
+    $('#searchInput').value = '';
+    searchTerm = '';
+    entriesPage = 1;
+    updateSearchClearVisibility();
+    hideAutocomplete($('#searchAcDropdown'));
+    renderEntries();
+    $('#searchInput').focus();
   });
 
   $('#filterToggleBtn').addEventListener('click', ()=>{
@@ -2240,8 +2288,8 @@
     applyEntrySort(list);
     if(searchTerm){
       list = list.filter(e =>
-        (e.nome||'').toLowerCase().includes(searchTerm) ||
-        (e.fornecedor||'').toLowerCase().includes(searchTerm)
+        normSearch(e.nome).includes(searchTerm) ||
+        normSearch(e.fornecedor).includes(searchTerm)
       );
     }
     if(filters.fornecedor) list = list.filter(e => e.fornecedor === filters.fornecedor);
@@ -2282,6 +2330,105 @@
       });
     }
   }
+
+  // ---------- Autocomplete ----------
+  // Returns up to `limit` distinct, display-cased values from `values` whose
+  // accent/case-insensitive form contains `query`, values starting with the
+  // query ranked first, then alphabetically.
+  function suggestFrom(values, query, limit){
+    const q = normSearch(query);
+    if(!q) return [];
+    const seen = new Set();
+    const out = [];
+    values.forEach(v=>{
+      if(!v) return;
+      const disp = toDisplayCase(v);
+      const key = normSearch(disp);
+      if(seen.has(key) || !key.includes(q)) return;
+      seen.add(key);
+      out.push(disp);
+    });
+    out.sort((a,b)=>{
+      const aStarts = normSearch(a).startsWith(q) ? 0 : 1;
+      const bStarts = normSearch(b).startsWith(q) ? 0 : 1;
+      return aStarts - bStarts || a.localeCompare(b, 'pt-BR');
+    });
+    return out.slice(0, limit || 8);
+  }
+  function entrySearchSuggestions(query){
+    const src = entriesKind === 'caixa' ? caixaObra : empreiteiro;
+    const values = [];
+    projEntries(src).forEach(e=>{ values.push(e.nome); values.push(e.fornecedor); });
+    return suggestFrom(values, query);
+  }
+  function nomeSuggestions(query){
+    const values = [];
+    [...caixaObra, ...empreiteiro].forEach(e=> values.push(e.nome));
+    return suggestFrom(values, query);
+  }
+  function fornecedorSuggestions(query){
+    const values = [];
+    [...caixaObra, ...empreiteiro].forEach(e=> values.push(e.fornecedor));
+    return suggestFrom(values, query);
+  }
+  function hideAutocomplete(dropdownEl){
+    dropdownEl.style.display = 'none';
+    dropdownEl.innerHTML = '';
+  }
+  // Generic autocomplete: shows a styled dropdown of suggestions under `inputEl`
+  // as the user types, with mouse/keyboard selection. `onSelect` is responsible
+  // for reacting to the chosen value (updating derived state, re-rendering, etc.)
+  // since a plain input never observes a fill made programmatically.
+  function attachAutocomplete(inputEl, dropdownEl, getSuggestions, onSelect){
+    let items = [];
+    let activeIndex = -1;
+    function highlight(){
+      dropdownEl.querySelectorAll('.ac-item').forEach((el,i)=>{
+        el.classList.toggle('active', i === activeIndex);
+        if(i === activeIndex) el.scrollIntoView({block:'nearest'});
+      });
+    }
+    function render(){
+      items = getSuggestions(inputEl.value);
+      activeIndex = -1;
+      if(items.length === 0){ hideAutocomplete(dropdownEl); return; }
+      dropdownEl.innerHTML = items.map((it,i)=>`<div class="ac-item" data-i="${i}">${escapeHTML(it)}</div>`).join('');
+      dropdownEl.style.display = 'block';
+      dropdownEl.querySelectorAll('.ac-item').forEach(el=>{
+        // mousedown (not click) fires before the input's blur, so selection
+        // survives the dropdown being torn down by the blur handler below.
+        el.addEventListener('mousedown', (e)=>{
+          e.preventDefault();
+          select(parseInt(el.dataset.i, 10));
+        });
+      });
+    }
+    function select(i){
+      const val = items[i];
+      if(val === undefined) return;
+      inputEl.value = val;
+      hideAutocomplete(dropdownEl);
+      onSelect(val);
+    }
+    inputEl.addEventListener('input', render);
+    inputEl.addEventListener('focus', render);
+    inputEl.addEventListener('keydown', (e)=>{
+      if(dropdownEl.style.display !== 'block' || items.length === 0) return;
+      if(e.key === 'ArrowDown'){ e.preventDefault(); activeIndex = Math.min(activeIndex+1, items.length-1); highlight(); }
+      else if(e.key === 'ArrowUp'){ e.preventDefault(); activeIndex = Math.max(activeIndex-1, 0); highlight(); }
+      else if(e.key === 'Enter'){ if(activeIndex >= 0){ e.preventDefault(); select(activeIndex); } }
+      else if(e.key === 'Escape'){ hideAutocomplete(dropdownEl); }
+    });
+    inputEl.addEventListener('blur', ()=> setTimeout(()=>hideAutocomplete(dropdownEl), 120));
+  }
+  attachAutocomplete($('#searchInput'), $('#searchAcDropdown'), entrySearchSuggestions, (val)=>{
+    searchTerm = normSearch(val);
+    entriesPage = 1;
+    updateSearchClearVisibility();
+    renderEntries();
+  });
+  attachAutocomplete($('#f_nome'), $('#f_nome_ac'), nomeSuggestions, ()=>{});
+  attachAutocomplete($('#f_fornecedor'), $('#f_fornecedor_ac'), fornecedorSuggestions, ()=>{});
 
   // ---------- Add form ----------
   $all('.segmented button[data-addkind]').forEach(btn=>{
