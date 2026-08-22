@@ -852,6 +852,18 @@ function backupSpreadsheet_() {
 // installPapeisSheet in the function dropdown, click Run) — same pattern as
 // installDailyBackupTrigger. Safe to re-run: it only seeds rows when the tab
 // is completely empty, never overwrites rows you've already edited by hand.
+//
+// The seed below deliberately writes EVERY (role, section) combination this
+// app knows about, including the denied ones, spelled out as explicit NAO —
+// never a blank cell. This is a human-readability choice, not a security
+// one: the sheet being complete makes "what can Partner do" answerable by
+// reading one screen, without hunting for an absent row. It changes nothing
+// about how the backend actually decides access — buildPermissionMatrixFromSheet_
+// / sectionsForRole_ / can_ already treat a missing row, a blank cell, an
+// unrecognized role, and a missing Papeis tab entirely as equally denied
+// (see the AUTHORIZATION BLOCK above). Do NOT "simplify" that code to rely
+// on this sheet always being complete — absence must keep meaning denied,
+// on its own, with no assumption that every combination is listed.
 // ------------------------------------------------------------
 function installPapeisSheet() {
   const ss = SpreadsheetApp.openById(AUTH_SHEET_ID);
@@ -863,28 +875,30 @@ function installPapeisSheet() {
 
   const seed = [
     header,
-    ['admin', 'painel', 'SIM', '', '', '', '', ''],
-    ['admin', 'painel.tarefas', 'SIM', '', '', '', '', ''],
+    ['admin', 'painel', 'SIM', 'NAO', 'NAO', 'NAO', 'NAO', 'NAO'],
+    ['admin', 'painel.tarefas', 'SIM', 'NAO', 'NAO', 'NAO', 'NAO', 'NAO'],
     ['admin', 'lancamentos', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM'],
-    ['admin', 'tarefas', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM', ''],
-    ['admin', 'notas', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM', ''],
+    ['admin', 'tarefas', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM', 'NAO'],
+    ['admin', 'notas', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM', 'NAO'],
     ['admin', 'docs', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM'],
-    ['admin', 'config', 'SIM', 'SIM', 'SIM', 'SIM', '', ''],
-    ['admin', 'usuarios', 'SIM', 'SIM', 'SIM', 'SIM', '', ''],
-    ['owner', 'painel', 'SIM', '', '', '', '', ''],
-    ['owner', 'painel.tarefas', 'SIM', '', '', '', '', ''],
+    ['admin', 'config', 'SIM', 'SIM', 'SIM', 'SIM', 'NAO', 'NAO'],
+    ['admin', 'usuarios', 'SIM', 'SIM', 'SIM', 'SIM', 'NAO', 'NAO'],
+    ['owner', 'painel', 'SIM', 'NAO', 'NAO', 'NAO', 'NAO', 'NAO'],
+    ['owner', 'painel.tarefas', 'SIM', 'NAO', 'NAO', 'NAO', 'NAO', 'NAO'],
     ['owner', 'lancamentos', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM'],
-    ['owner', 'tarefas', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM', ''],
-    ['owner', 'notas', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM', ''],
+    ['owner', 'tarefas', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM', 'NAO'],
+    ['owner', 'notas', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM', 'NAO'],
     ['owner', 'docs', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM'],
-    ['owner', 'config', 'SIM', 'SIM', 'SIM', 'SIM', '', ''],
-    // owner has no 'usuarios' row — cannot manage users, same as the old manageUsers:false.
-    ['partner', 'painel', 'SIM', '', '', '', '', ''],
-    ['partner', 'lancamentos', 'SIM', '', '', '', '', ''],
-    ['partner', 'docs', 'SIM', '', '', '', '', ''],
-    // partner has no 'painel.tarefas', 'tarefas', or 'notas' row — the dashboard
-    // Tarefas widget, the standalone Tarefas page, and all Notas data (including
-    // notes attached to a Lançamento) are all denied — nav hidden AND data withheld.
+    ['owner', 'config', 'SIM', 'SIM', 'SIM', 'SIM', 'NAO', 'NAO'],
+    ['owner', 'usuarios', 'NAO', 'NAO', 'NAO', 'NAO', 'NAO', 'NAO'], // cannot manage users, same as the old manageUsers:false
+    ['partner', 'painel', 'SIM', 'NAO', 'NAO', 'NAO', 'NAO', 'NAO'],
+    ['partner', 'painel.tarefas', 'NAO', 'NAO', 'NAO', 'NAO', 'NAO', 'NAO'],
+    ['partner', 'lancamentos', 'SIM', 'NAO', 'NAO', 'NAO', 'NAO', 'NAO'],
+    ['partner', 'tarefas', 'NAO', 'NAO', 'NAO', 'NAO', 'NAO', 'NAO'],
+    ['partner', 'notas', 'NAO', 'NAO', 'NAO', 'NAO', 'NAO', 'NAO'],
+    ['partner', 'docs', 'SIM', 'NAO', 'NAO', 'NAO', 'NAO', 'NAO'],
+    ['partner', 'config', 'NAO', 'NAO', 'NAO', 'NAO', 'NAO', 'NAO'],
+    ['partner', 'usuarios', 'NAO', 'NAO', 'NAO', 'NAO', 'NAO', 'NAO'],
   ];
   sheet.getRange(1, 1, seed.length, header.length).setValues(seed);
   sheet.setFrozenRows(1);
