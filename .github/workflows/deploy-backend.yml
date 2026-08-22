@@ -24,7 +24,9 @@ jobs:
           node-version: 20
 
       - name: Install clasp
-        run: npm install -g @google/clasp
+        # Pinned (not "@latest") so this workflow's exact command/output
+        # assumptions below don't silently break on some future clasp release.
+        run: npm install -g @google/clasp@3.4.0
 
       - name: Configure clasp
         env:
@@ -51,3 +53,39 @@ jobs:
       - name: Push to Apps Script
         working-directory: backend
         run: clasp push
+
+      # `clasp push` only updates the script project's source — it does NOT
+      # move the live Web App URL (the stable /exec endpoint the frontend
+      # calls) onto the new code. That only happens when the deployment tied
+      # to that URL is updated to a new version, which previously had to be
+      # done by hand (Deploy > Manage deployments > Edit > New version) and
+      # was a real, repeated cause of "pushed but nothing changed" bugs. This
+      # step does that redeploy automatically, targeting the SAME existing
+      # deployment (never creating a new one, which would change the URL).
+      - name: Deploy new version to the existing Web App deployment
+        working-directory: backend
+        run: |
+          clasp list-deployments --json > deployments.json
+          cat deployments.json
+          DEPLOYMENT_ID=$(python3 - deployments.json <<'PYEOF'
+          import json, sys
+          with open(sys.argv[1]) as f:
+              deployments = json.load(f)
+          # The special "@HEAD" dev deployment has no versionNumber; the real
+          # Web App deployment is the one that does. If there's ever more than
+          # one versioned deployment, refuse to guess which is the live one.
+          versioned = [d for d in deployments if d.get('versionNumber') is not None]
+          if len(versioned) != 1:
+              sys.stderr.write(
+                  f"Expected exactly one versioned (non-HEAD) deployment, found {len(versioned)}.\n"
+              )
+              sys.exit(1)
+          print(versioned[0]['deploymentId'])
+          PYEOF
+          )
+          if [ -z "$DEPLOYMENT_ID" ]; then
+            echo "::error::Could not determine which Apps Script deployment is the live Web App — refusing to guess. See the deployment list above; if there's genuinely more than one, redeploy manually or update this workflow to pin the correct deployment ID."
+            exit 1
+          fi
+          echo "Updating deployment $DEPLOYMENT_ID to a new version"
+          clasp update-deployment "$DEPLOYMENT_ID" -d "Auto-deploy $GITHUB_SHA"

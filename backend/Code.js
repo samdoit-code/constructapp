@@ -4,7 +4,8 @@
  * This script turns the Google Sheet into a small API the app can talk to,
  * and handles saving photos/documents into the right Google Drive folder.
  *
- * SETUP:
+ * SETUP (one-time, only if pasting this in by hand rather than via the CI
+ * deploy below):
  * 1. Paste this whole file into Extensions > Apps Script (opened FROM the
  *    Google Sheet itself) — that makes it "container-bound", so it already
  *    knows which Sheet to use. You do not need to set a Sheet ID.
@@ -17,6 +18,10 @@
  *    Notas, Fotos, Documentos) needs a "lastModified" column added as the
  *    LAST column, after whatever is already there. Projetos/Tipos/Unidades
  *    do not need this column.
+ *
+ * NORMAL DEPLOYS: push to `main` under backend/** and
+ * .github/workflows/deploy-backend.yml pushes AND redeploys the live Web App
+ * automatically — step 2 above is only needed for a from-scratch manual setup.
  * ------------------------------------------------------------
  */
 
