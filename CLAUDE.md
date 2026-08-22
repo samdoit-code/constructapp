@@ -1,6 +1,16 @@
 # CLAUDE.md — Construtora Moreira App
 
-## 1. Project Overview
+## 1. Versioning
+
+Every time you make a code update or modification to the app, you MUST increment version.json by 1 before considering the task complete.
+
+Update example Format: {"version": 35} → {"version": 36}
+
+Do this automatically for every code update. Never skip it.
+
+--
+
+## 1A. Project Overview
 
 **What it is:** A mobile-first business management app for a Brazilian construction company (Construtora Moreira), covering expense tracking (Caixa da Obra), contractor/labor payments (Empreiteiro), tasks, notes, photos, and documents — organized per construction project (e.g., "Obra Gavião", "Obra Boreal").
 
