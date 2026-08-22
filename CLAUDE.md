@@ -2,13 +2,17 @@
 
 ## 1. Versioning
 
+Versioning
+
 Every time you make a code update or modification to the app, you MUST increment version.json by 1 before considering the task complete.
 
-Update example Format: {"version": 35} → {"version": 36}
+Format: {"version": 35} → {"version": 36}
 
 Do this automatically for every code update. Never skip it.
 
---
+Exception: Do NOT increment the version when the only file being changed is CLAUDE.md.
+
+---
 
 ## 1A. Project Overview
 
