@@ -2138,7 +2138,7 @@
         <div class="nome">${escapeHTML(toDisplayCase(e.nome))}${e.kind==='caixa' && e.tipo ? `<span class="tag">${escapeHTML(e.tipo)}</span>` : ''}</div>
         <div class="meta">${escapeHTML(metaParts.join(' · ') || '—')} ${noteCount ? `<span class="notedot"><svg viewBox="0 0 24 24"><path d="M4 4h16v13H8l-4 4V4z"/></svg>${noteCount}</span>` : ''} ${photoCount ? `<span class="notedot"><svg viewBox="0 0 24 24"><path d="M4 8a2 2 0 012-2h1.2a1 1 0 00.9-.55L8.7 4.1A1 1 0 019.6 3.5h4.8a1 1 0 01.9.6l.6 1.35a1 1 0 00.9.55H18a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V8z"/><circle cx="12" cy="13" r="3.3"/></svg>${photoCount}</span>` : ''}</div>
       </div>
-      <div class="valor">${fmtBRL(e.valor)}<span class="who">${e.socio||''}</span></div>
+      <div class="valor">${fmtBRL(e.valor)}<span class="who">${escapeHTML(toDisplayCase(e.socio))||''}</span></div>
     </div>`;
   }
 
@@ -2316,7 +2316,7 @@
     }
     if(filters.fornecedor) list = list.filter(e => e.fornecedor === filters.fornecedor);
     if(entriesKind === 'caixa' && filters.tipo) list = list.filter(e => e.tipo === filters.tipo);
-    if(filters.socio) list = list.filter(e => e.socio === filters.socio);
+    if(filters.socio) list = list.filter(e => normSearch(e.socio) === normSearch(filters.socio));
     if(filters.de) list = list.filter(e => e.data >= filters.de);
     if(filters.ate) list = list.filter(e => e.data <= filters.ate);
 
@@ -2533,8 +2533,12 @@
   const refreshFilterAte = wireFakeDate('filterDataAte', 'filterDataAte_display', {placeholder:'dd/mm/aaaa'});
 
   function setSocio(name){
-    selectedSocio = name;
-    $all('#socioToggle button').forEach(b => b.classList.toggle('active', b.dataset.socio === name));
+    // Accent/case-insensitive match: rows entered directly into the sheet
+    // may have "pedro"/"dalmir" in any casing. Canonicalize to the button's
+    // own dataset value so selectedSocio is always stored consistently.
+    const btn = Array.from($all('#socioToggle button')).find(b => normSearch(b.dataset.socio) === normSearch(name));
+    selectedSocio = btn ? btn.dataset.socio : name;
+    $all('#socioToggle button').forEach(b => b.classList.toggle('active', b === btn));
   }
   $all('#socioToggle button').forEach(btn=>{
     btn.addEventListener('click', ()=> setSocio(btn.dataset.socio));
@@ -2639,7 +2643,7 @@
     if(kind === 'caixa') rows.push(['Tipo', e.tipo || '—']);
     rows.push(['Quantidade', e.qtd ? (e.qtd + (e.unidade ? ' ' + e.unidade : '')) : '—']);
     rows.push(['Fornecedor', toDisplayCase(e.fornecedor) || '—']);
-    rows.push(['Pago por sócio', e.socio || '—']);
+    rows.push(['Pago por sócio', toDisplayCase(e.socio) || '—']);
 
     $('#modalBody').innerHTML = `<h3 style="margin:0 0 12px; font-size:16px; text-transform:none; font-family:'Inter',sans-serif; font-weight:700;">${escapeHTML(toDisplayCase(e.nome))}</h3>` +
       rows.map(r => `<div class="detail-row"><span class="k">${r[0]}</span><span class="v">${escapeHTML(r[1])}</span></div>`).join('');
