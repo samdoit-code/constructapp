@@ -1,0 +1,51 @@
+name: Deploy Apps Script Backend
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "backend/**"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install clasp
+        run: npm install -g @google/clasp
+
+      - name: Configure clasp credentials
+        env:
+          CLASP_CLIENT_ID: ${{ secrets.CLASP_CLIENT_ID }}
+          CLASP_CLIENT_SECRET: ${{ secrets.CLASP_CLIENT_SECRET }}
+          CLASP_REFRESH_TOKEN: ${{ secrets.CLASP_REFRESH_TOKEN }}
+        run: |
+          mkdir -p ~/.config/.clasp
+          cat > ~/.clasprc.json <<EOF
+          {
+            "token": {
+              "access_token": "",
+              "refresh_token": "${CLASP_REFRESH_TOKEN}",
+              "scope": "https://www.googleapis.com/auth/script.projects",
+              "token_type": "Bearer"
+            },
+            "oauth2ClientSettings": {
+              "clientId": "${CLASP_CLIENT_ID}",
+              "clientSecret": "${CLASP_CLIENT_SECRET}",
+              "redirectUri": "http://localhost"
+            }
+          }
+          EOF
+
+      - name: Push to Apps Script
+        working-directory: backend
+        run: clasp push
