@@ -207,7 +207,7 @@
   .entry-card .datechip .d{font-family:'Oswald',sans-serif; font-size:15px; font-weight:700; line-height:1;}
   .entry-card .datechip .m{font-size:8.3px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.02em; margin-top:2px; white-space:nowrap;}
   .entry-card .info{flex:1; min-width:0;}
-  .entry-card .nome{font-weight:600; font-size:15px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; gap:6px;}
+  .entry-card .nome{font-weight:600; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; gap:6px;}
   .entry-card .tag{font-size:9.5px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--blue); background:rgba(44,92,115,0.09); padding:2px 6px; border-radius:5px; flex:0 0 auto;}
   .entry-card .meta{font-size:11.5px; color:var(--ink-soft); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; gap:5px;}
   .notedot{display:inline-flex; align-items:center; gap:2px; color:var(--amber); font-weight:700; flex-shrink:0;}
@@ -360,7 +360,7 @@
     background:#fffbe9; border:1px solid #ecdfa8; border-left:4px solid var(--orange);
     border-radius:10px; padding:12px 14px; margin-bottom:9px; box-shadow:var(--shadow);
   }
-  .note-card .txt{font-size:15px; white-space:pre-wrap; line-height:1.45;}
+  .note-card .txt{font-size:14px; white-space:pre-wrap; line-height:1.45;}
   .note-card .meta-row{display:flex; justify-content:space-between; align-items:center; margin-top:9px; gap:8px;}
   .note-card .ts{font-size:11px; color:var(--ink-soft);}
   .note-card .origin{font-size:10.5px; font-weight:700; color:var(--blue); background:rgba(44,92,115,0.09); padding:2px 7px; border-radius:6px; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:150px;}
@@ -409,7 +409,7 @@
   .task-row.done .task-check svg{display:block;}
   .task-row.done .t-txt{text-decoration:line-through; color:var(--ink-soft);}
   .task-body{flex:1; min-width:0;}
-  .t-txt{font-size:15px; font-weight:600; line-height:1.35;}
+  .t-txt{font-size:14px; font-weight:600; line-height:1.35;}
   .t-meta{display:flex; align-items:center; gap:7px; margin-top:5px; flex-wrap:wrap;}
   .prio-dot{width:8px;height:8px;border-radius:50%; flex:0 0 auto;}
   .prio-alta{background:var(--red);}
@@ -591,23 +591,19 @@
   }
 
   #authGate{
-    position:fixed; inset:0; z-index:400;
-    background:
-      radial-gradient(120% 85% at 50% 0%, rgba(224,101,31,0.16), transparent 60%),
-      var(--ink);
+    position:fixed; inset:0; z-index:400; background:var(--ink);
     display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding:30px;
   }
   #authGate .mark{
-    height:80px; display:flex; align-items:center; justify-content:center; margin-bottom:20px;
+    height:76px; display:flex; align-items:center; justify-content:center; margin-bottom:22px;
   }
-  #authGate .mark picture, #authGate .mark img{height:80px; width:auto; display:block;}
-  #authGate .welcome{color:#e0651f; font-family:'Oswald',sans-serif; font-weight:500; font-size:15px; text-transform:uppercase; letter-spacing:0.16em; margin:0 0 10px;}
-  #authGate h1{color:#fff; font-family:'Oswald',sans-serif; font-size:23px; margin:0 0 10px; text-transform:uppercase; letter-spacing:0.03em;}
-  #authGate p{color:#c9c2b4; font-size:15px; max-width:300px; line-height:1.55; margin:0 0 28px;}
+  #authGate .mark picture, #authGate .mark img{height:76px; width:auto; display:block;}
+  #authGate h1{color:#fff; font-family:'Oswald',sans-serif; font-size:19px; margin:0 0 6px; text-transform:uppercase; letter-spacing:0.03em;}
+  #authGate p{color:#c9c2b4; font-size:13.5px; max-width:280px; line-height:1.5; margin:0 0 26px;}
   #authGate .g-signin-slot{min-height:44px;}
-  #authGate .auth-error{color:#f5a794; font-size:13.5px; margin-top:16px; max-width:280px; line-height:1.5;}
+  #authGate .auth-error{color:#f5a794; font-size:13px; margin-top:16px; max-width:280px; line-height:1.5;}
   .auth-gate-version{position:absolute; bottom:calc(16px + var(--safe-bottom)); left:0; right:0; text-align:center; font-size:10.5px; color:rgba(255,255,255,0.28);}
-  #authGate .auth-spinner{color:#c9c2b4; font-size:13.5px;}
+  #authGate .auth-spinner{color:#c9c2b4; font-size:13px;}
 </style>
 </head>
 <body>
@@ -619,9 +615,8 @@
       <img src="assets/logo-white.png" alt="Construtora Moreira">
     </picture>
   </div>
-  <p class="welcome">Bem-vindo</p>
   <h1>Construtora Moreira</h1>
-  <p id="authGateMsg">Acompanhe suas obras, equipes e pagamentos em um só lugar. Entre com sua conta Google para continuar.</p>
+  <p id="authGateMsg">Entre com sua conta Google para continuar.</p>
   <div id="googleSignInSlot" class="g-signin-slot"></div>
   <div id="authGateError" class="auth-error" style="display:none;"></div>
   <div id="authGateVersion" class="auth-gate-version"></div>
