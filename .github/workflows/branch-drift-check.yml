@@ -1,0 +1,47 @@
+name: Branch Drift Check
+
+# Catches exactly the failure this exists to prevent: finished work committed
+# to a branch that never got merged into main, so it silently never ships
+# (see CLAUDE.md §2A). Runs weekly and fails visibly in the Actions tab —
+# intentionally noisy rather than silent, since a silent gap is the whole
+# problem. No external notification wiring; a red check here is the signal.
+
+on:
+  schedule:
+    - cron: "0 13 * * 1" # Mondays, 13:00 UTC
+  workflow_dispatch: {}
+
+jobs:
+  check-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Find branches with commits not on main
+        run: |
+          set -e
+          STALE_DAYS=3
+          found=0
+          for ref in $(git for-each-ref --format='%(refname:short)' refs/remotes/origin | grep -v 'origin/main$' | grep -v 'origin/HEAD$'); do
+            ahead=$(git rev-list --count origin/main.."$ref")
+            if [ "$ahead" -eq 0 ]; then
+              continue # fully merged (or empty) — not drift
+            fi
+            last_commit_epoch=$(git log -1 --format=%ct "$ref")
+            now_epoch=$(date +%s)
+            age_days=$(( (now_epoch - last_commit_epoch) / 86400 ))
+            if [ "$age_days" -ge "$STALE_DAYS" ]; then
+              echo "::error::Branch '$ref' has $ahead commit(s) not on main, last touched ${age_days}d ago. Merge it into main or delete it — see CLAUDE.md §2A."
+              found=1
+            else
+              echo "Branch '$ref' has $ahead commit(s) not on main but is only ${age_days}d old — not yet stale, skipping."
+            fi
+          done
+          if [ "$found" -eq 1 ]; then
+            echo "::error::One or more branches are drifting from main. This project's default is to work directly on main (CLAUDE.md §2A) — a lingering branch here means finished work risks never shipping."
+            exit 1
+          fi
+          echo "No stale branch drift found."
