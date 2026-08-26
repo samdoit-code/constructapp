@@ -488,12 +488,34 @@ function assertBatchAccess_(user, ops) {
 // END AUTHORIZATION BLOCK
 // ==================================================================
 
-// Drive folder IDs — one per project, plus a fallback "unfiled" folder.
+// Drive folder IDs for the two projects that existed before folder lookup was
+// name-based (kept only so their existing folders keep being found by ID —
+// not required for any project created or renamed since).
 const PROJECT_FOLDERS = {
   'Obra Gavião': '1NZ-JdKm7_dATmYDPDgEDJMGJLoXGv6Uu',
   'Obra Boreal': '1WPZnzIzDeBc2x57OArVInOACDIzgUh8F',
 };
 const FALLBACK_FOLDER_ID = '1BN2no3X5zHks6F94X6elC7j1kMROH7yT'; // "Construtora Moreira" parent
+
+// Resolves a project's Drive folder BY NAME rather than relying only on the
+// hardcoded map above — a project added or renamed through the app's own
+// Settings screen has no entry there, and previously fell through to the
+// shared FALLBACK_FOLDER_ID silently, forever. findProjectFolder_ looks for
+// an existing same-named subfolder under the parent; resolveOrCreateProjectFolder_
+// (used by uploadFile) creates one on first use if none exists yet.
+function findProjectFolder_(projectName) {
+  if (!projectName) return null;
+  if (PROJECT_FOLDERS[projectName]) return DriveApp.getFolderById(PROJECT_FOLDERS[projectName]);
+  const parent = DriveApp.getFolderById(FALLBACK_FOLDER_ID);
+  const existing = parent.getFoldersByName(projectName);
+  return existing.hasNext() ? existing.next() : null;
+}
+function resolveOrCreateProjectFolder_(projectName) {
+  if (!projectName) return DriveApp.getFolderById(FALLBACK_FOLDER_ID);
+  const found = findProjectFolder_(projectName);
+  if (found) return found;
+  return DriveApp.getFolderById(FALLBACK_FOLDER_ID).createFolder(projectName);
+}
 
 // Which sheet tabs are exposed, and their column order (must match the header
 // row exactly). Tabs with "rowLevel:true" support the new upsert/delete/conflict
@@ -682,7 +704,9 @@ function doGet(e) {
 // so a plain clear-and-replace would silently delete every project outside
 // their own view. Preserving whatever's currently in the sheet that they
 // can't see, and only replacing the portion they do have access to, keeps
-// their normal add/rename actions working without that blast radius.
+// adding a new project working without that blast radius. Renaming an
+// EXISTING project no longer goes through this path at all — see
+// renameProject_ below.
 function saveProjetos_(user, rows) {
   if (user.projects === '*') {
     writeSheet_('projetos', rows);
@@ -691,6 +715,66 @@ function saveProjetos_(user, rows) {
   const existing = readSheet_('projetos');
   const outOfScope = existing.filter(p => !hasProjectAccess_(user, p.id));
   writeSheet_('projetos', outOfScope.concat(rows || []));
+}
+
+// Renames a project as ONE atomic, bulk operation — a fixed handful of
+// Sheets service calls regardless of how many rows reference the project —
+// instead of the frontend rewriting every referencing row's `projeto` field
+// and routing that as a batchMulti of potentially thousands of individual
+// upserts. That old path went through assertBatchAccess_/findConflicts_/
+// applyBatch_ once PER ROW: for a project with real history it could exceed
+// Apps Script's execution time limit and fail with some rows renamed and
+// others not, orphaning them (see CLAUDE.md — this is the fix for that).
+// Runs inside doPost's existing script lock, same as every other write.
+function renameProject_(oldName, newName) {
+  oldName = String(oldName || '').trim();
+  newName = String(newName || '').trim();
+  if (!oldName || !newName) throw new Error('nome de projeto inválido');
+  if (oldName === newName) return;
+
+  const existingProjects = readSheet_('projetos');
+  const collision = existingProjects.some(function (p) {
+    return p.id !== oldName && String(p.id).toLowerCase() === newName.toLowerCase();
+  });
+  if (collision) throw new Error('já existe um projeto com esse nome');
+
+  const projetosSheet = ss_().getSheetByName(SHEETS.projetos.name);
+  if (!projetosSheet) throw new Error('Aba não encontrada: ' + SHEETS.projetos.name);
+  const rowIdx = findRowIndexById_(projetosSheet, oldName);
+  if (rowIdx === -1) throw new Error('projeto não encontrado');
+  projetosSheet.getRange(rowIdx, 1).setValue(sanitizeCell_(newName));
+
+  ['caixaObra', 'empreiteiro', 'tarefas', 'documentos', 'notas'].forEach(function (key) {
+    renameProjectColumnBulk_(key, oldName, newName);
+  });
+
+  // Best-effort cosmetic rename of the Drive folder too, so it keeps matching
+  // the project by name (see findProjectFolder_/resolveOrCreateProjectFolder_
+  // above) — Drive is never the source of truth for the project name, so a
+  // failure here must not fail (or partially undo) the rename itself.
+  try {
+    const folder = findProjectFolder_(oldName);
+    if (folder) folder.setName(newName);
+  } catch (e) { /* cosmetic only */ }
+}
+
+// One column read + (at most) one column write per sheet, regardless of row
+// count — the whole point of doing this in bulk instead of per row.
+function renameProjectColumnBulk_(sheetKey, oldName, newName) {
+  const cfg = SHEETS[sheetKey];
+  const sheet = ss_().getSheetByName(cfg.name);
+  if (!sheet) return;
+  const col = cfg.cols.indexOf('projeto') + 1;
+  if (col < 1) return;
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  const range = sheet.getRange(2, col, lastRow - 1, 1);
+  const values = range.getValues();
+  let changed = false;
+  for (let i = 0; i < values.length; i++) {
+    if (values[i][0] === oldName) { values[i][0] = sanitizeCell_(newName); changed = true; }
+  }
+  if (changed) range.setValues(values);
 }
 
 function doPost(e) {
@@ -745,6 +829,15 @@ function doPost(e) {
         return jsonOut_({ ok: true });
       }
 
+      // Renaming an EXISTING project — see renameProject_ for why this is a
+      // dedicated bulk action rather than a batchMulti of every referencing
+      // row's `projeto` field.
+      if (action === 'renameProject') {
+        if (!can_(user, 'config', 'edit')) throw new Error('sem permissão para editar');
+        renameProject_(body.oldName, body.newName);
+        return jsonOut_({ ok: true });
+      }
+
       if (action === 'uploadFile') {
         // uploadFile alone can't leak anything — the file it creates isn't
         // visible anywhere in the app until a subsequent batchMulti attaches
@@ -758,8 +851,7 @@ function doPost(e) {
         const uploadSection = String(body.section || '').toLowerCase().trim();
         if (!can_(user, uploadSection, 'upload')) throw new Error('sem permissão para enviar arquivos');
         if (!hasProjectAccess_(user, body.projeto)) throw new Error('sem acesso a este projeto');
-        const folderId = PROJECT_FOLDERS[body.projeto] || FALLBACK_FOLDER_ID;
-        const folder = DriveApp.getFolderById(folderId);
+        const folder = resolveOrCreateProjectFolder_(body.projeto);
         const bytes = Utilities.base64Decode(body.base64);
         const blob = Utilities.newBlob(bytes, body.mimeType, body.filename);
         const file = folder.createFile(blob);

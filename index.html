@@ -1532,7 +1532,7 @@
     try{
       const resp = await sheetsPost({action:'batchMulti', ops});
       if(resp.conflict){
-        showToast('Alguns dados foram alterados por outra pessoa. Recarregue a página antes de salvar de novo.');
+        showToast('Alguns dados foram alterados por outra pessoa. Recarregue a página antes de salvar de novo.', false, 4500);
         return false;
       }
       ops.forEach(op=>{
@@ -1546,7 +1546,7 @@
       return true;
     }catch(e){
       console.error('sync error', e);
-      showToast(saveErrorMessage(e));
+      showToast(saveErrorMessage(e), false, 4500);
       return false;
     }
   }
@@ -1572,7 +1572,42 @@
     return 'Erro ao salvar no Google Sheets. Tente novamente.';
   }
 
-  async function saveKey(key, value){
+  // Deep clone via JSON — safe here because every state array holds only
+  // plain data (ids, strings, numbers, nested arrays of plain objects), the
+  // exact same shape that already round-trips through JSON on every sync.
+  function cloneState_(v){ return v === undefined ? v : JSON.parse(JSON.stringify(v)); }
+
+  // Reassigns the module-level array a given saveKey() key actually writes to.
+  // Needed because saveKey() only ever receives a VALUE, not a settable
+  // reference to the outer `let` variable — this is the one place that knows
+  // the mapping, so a failed save can put the in-memory state back exactly
+  // where it was before the optimistic mutation, instead of leaving a
+  // phantom record on screen that was never actually persisted.
+  function restoreStateArray_(key, previousValue){
+    if(key === 'caixaObra') caixaObra = previousValue;
+    else if(key === 'empreiteiro') empreiteiro = previousValue;
+    else if(key === 'tasks') tasks = previousValue;
+    else if(key === 'notes') notes = previousValue;
+    else if(key === 'documentos') documentos = previousValue;
+    else if(key === 'projects') projects = previousValue;
+  }
+
+  // Every write in this app is optimistic: the caller mutates in-memory state
+  // and renders immediately, THEN calls saveKey to persist. If the save
+  // fails, leaving that mutation in place is what makes a failed save look
+  // identical to a successful one — the exact bug a financial ledger can't
+  // have. Callers that mutate a top-level state array pass the pre-mutation
+  // value as `previousValue` (a cheap JSON clone taken before mutating); on
+  // failure this restores it before returning, so the caller's own
+  // (unconditional) renderAll() afterward redraws the REAL, unsaved state
+  // rather than the phantom one.
+  async function saveKey(key, value, previousValue){
+    const ok = await saveKeyInner_(key, value);
+    if(!ok && previousValue !== undefined) restoreStateArray_(key, previousValue);
+    return ok;
+  }
+
+  async function saveKeyInner_(key, value){
     if(key === 'activeProjectId'){
       // Purely a personal "last viewed" preference — not shared data, so it
       // stays local rather than round-tripping through the spreadsheet.
@@ -1585,7 +1620,7 @@
         return true;
       }catch(e){
         console.error('sheets save error', key, e);
-        showToast(saveErrorMessage(e));
+        showToast(saveErrorMessage(e), false, 4500);
         return false;
       }
     }
@@ -1960,13 +1995,29 @@
 
   // ---------- Toast ----------
   let toastTimer;
-  function showToast(msg, persistent){
+  // Wraps an async click/submit handler so a second tap while the first is
+  // still in flight (a normal thing to do on a slow connection) is a no-op
+  // instead of re-running the whole handler and creating a duplicate write —
+  // e.g. two lançamentos from one double-tap of Salvar. The re-entry flag is
+  // set synchronously before the first `await`, so it also catches two
+  // clicks dispatched a few ms apart, not just literally simultaneous ones.
+  function withGuard(fn){
+    let busy = false;
+    return async function(...args){
+      if(busy) return;
+      busy = true;
+      try{ return await fn.apply(this, args); }
+      finally{ busy = false; }
+    };
+  }
+
+  function showToast(msg, persistent, durationMs){
     const t = $('#toast');
     $('#toastMsg').textContent = msg;
     t.classList.add('show');
     clearTimeout(toastTimer);
     if(!persistent){
-      toastTimer = setTimeout(()=> t.classList.remove('show'), 2200);
+      toastTimer = setTimeout(()=> t.classList.remove('show'), durationMs || 2200);
     }
   }
 
@@ -2633,8 +2684,7 @@
     renderFormPhotoThumbs();
   }
 
-  form.addEventListener('submit', async (e)=>{
-    e.preventDefault();
+  const submitEntryGuarded = withGuard(async ()=>{
     const nome = normStore($('#f_nome').value);
     const data = $('#f_data').value;
     const valor = $('#f_valor').value;
@@ -2655,23 +2705,43 @@
     if(addKind === 'caixa') payload.tipo = $('#f_tipo').value === '__novo__' ? '' : $('#f_tipo').value;
 
     const list = addKind === 'caixa' ? caixaObra : empreiteiro;
+    const prevList = cloneState_(list);
     const btn = $('#saveEntryBtn');
+    const prevBtnText = btn.textContent;
+    btn.disabled = true;
     btn.textContent = 'Salvando...';
 
+    let ok;
     if(editingId){
       const idx = list.findIndex(x=>x.id === editingId);
       if(idx > -1){
         list[idx] = {...list[idx], ...payload};
         if(notaTxt) list[idx].notas = [...(list[idx].notas||[]), {id: uid('n'), texto: notaTxt, criadoEm: Date.now()}];
       }
-      const ok = await saveKey(addKind === 'caixa' ? 'caixaObra' : 'empreiteiro', list);
+      ok = await saveKey(addKind === 'caixa' ? 'caixaObra' : 'empreiteiro', list, prevList);
       if(ok) showToast('Lançamento atualizado.');
     } else {
-      const newEntry = {id: uid('e'), projectId: activeProjectId, criadoEm: Date.now(), notas: notaTxt ? [{id: uid('n'), texto: notaTxt, criadoEm: Date.now()}] : [], fotos: draftFotos.slice(), ...payload};
+      const pendingFotos = draftFotos.slice();
+      const newEntry = {id: uid('e'), projectId: activeProjectId, criadoEm: Date.now(), notas: notaTxt ? [{id: uid('n'), texto: notaTxt, criadoEm: Date.now()}] : [], fotos: pendingFotos, ...payload};
       list.push(newEntry);
-      const ok = await saveKey(addKind === 'caixa' ? 'caixaObra' : 'empreiteiro', list);
-      draftFotos = []; // now owned by the saved entry — clear without deleting their blobs
-      if(ok) showToast('Lançamento salvo.');
+      ok = await saveKey(addKind === 'caixa' ? 'caixaObra' : 'empreiteiro', list, prevList);
+      if(ok){
+        draftFotos = []; // now owned by the saved entry — clear without deleting their blobs
+        showToast('Lançamento salvo.');
+      }
+      // On failure the entry (and its draft photos) never actually got
+      // persisted — leave draftFotos as-is so the thumbnails and a retry
+      // still work, instead of orphaning already-uploaded Drive files.
+    }
+
+    btn.disabled = false;
+    btn.textContent = prevBtnText;
+    if(!ok){
+      // Keep the form exactly as the user left it — nothing was actually
+      // saved, so there is nothing safe to reset or navigate away from.
+      renderFormPhotoThumbs();
+      renderAll();
+      return;
     }
     resetForm();
     renderAll();
@@ -2680,6 +2750,14 @@
     entriesPage = 1;
     $all('.segmented button[data-kind]').forEach(b=>b.classList.toggle('active', b.dataset.kind===addKind));
     renderEntries();
+  });
+  form.addEventListener('submit', (e)=>{
+    // preventDefault must run on every submit event unconditionally — if a
+    // double-tap fires two submit events, withGuard's re-entry check inside
+    // submitEntryGuarded would otherwise skip the SECOND call to
+    // preventDefault entirely and let the browser navigate/reload on it.
+    e.preventDefault();
+    submitEntryGuarded();
   });
 
   $('#cancelEditBtn').addEventListener('click', ()=>{
@@ -2874,12 +2952,13 @@
     let saveOk = true;
     if(editingId){
       const list = getList(addKind);
+      const prevList = cloneState_(list);
       const entry = list.find(x=>x.id===editingId);
       if(entry){
         const target = (entry.fotos||[]).find(f=>f.id===id);
         driveFileId = target && target.driveFileId;
         entry.fotos = (entry.fotos||[]).filter(f=>f.id!==id);
-        saveOk = await saveKey(addKind==='caixa' ? 'caixaObra' : 'empreiteiro', list);
+        saveOk = await saveKey(addKind==='caixa' ? 'caixaObra' : 'empreiteiro', list, prevList);
       }
     } else {
       const target = draftFotos.find(f=>f.id===id);
@@ -2941,10 +3020,11 @@
     let saveOk = true;
     if(editingId){
       const list = getList(addKind);
+      const prevList = cloneState_(list);
       const entry = list.find(x=>x.id===editingId);
       if(entry){
         entry.fotos = [...(entry.fotos||[]), ...metas];
-        saveOk = await saveKey(addKind==='caixa' ? 'caixaObra' : 'empreiteiro', list);
+        saveOk = await saveKey(addKind==='caixa' ? 'caixaObra' : 'empreiteiro', list, prevList);
       }
     } else {
       draftFotos.push(...metas);
@@ -2952,6 +3032,7 @@
     renderFormPhotoThumbs();
     renderAll();
     if(saveOk) showToast(anyFail ? `${metas.length} foto(s) adicionada(s), algumas falharam.` : (metas.length > 1 ? `${metas.length} fotos adicionadas.` : 'Foto adicionada.'));
+    else showToast('Não consegui salvar essas fotos. Tente novamente.', false, 4500);
   });
 
   // --- Detail modal photo context ---
@@ -2966,13 +3047,19 @@
   async function deleteModalPhotoNow(id){
     if(!activeModal) return;
     const list = getList(activeModal.kind);
+    const prevList = cloneState_(list);
     const entry = list.find(x=>x.id===activeModal.id);
     if(!entry) return;
     const target = (entry.fotos||[]).find(f=>f.id===id);
     entry.fotos = (entry.fotos||[]).filter(f=>f.id!==id);
-    const saveOk0 = await saveKey(activeModal.kind==='caixa' ? 'caixaObra' : 'empreiteiro', list);
-    await deleteFromDrive(target && target.driveFileId);
-    renderModalPhotoThumbs(entry.fotos);
+    const saveOk0 = await saveKey(activeModal.kind==='caixa' ? 'caixaObra' : 'empreiteiro', list, prevList);
+    if(saveOk0) await deleteFromDrive(target && target.driveFileId);
+    // Re-read from the module array rather than the local `entry`/`list`
+    // references above — on failure those still point at the now-stale,
+    // already-mutated objects, while saveKey() has since reassigned the
+    // module array back to its pre-mutation state.
+    const current = getList(activeModal.kind).find(x=>x.id===activeModal.id);
+    renderModalPhotoThumbs(current ? current.fotos : []);
     renderAll();
     if(saveOk0) showToast('Foto excluída.');
   }
@@ -3001,11 +3088,16 @@
       showToast('Não consegui processar essas imagens.');
       return;
     }
+    const prevList = cloneState_(list);
     entry.fotos = [...(entry.fotos||[]), ...metas];
-    const saveOk1 = await saveKey(activeModal.kind==='caixa' ? 'caixaObra' : 'empreiteiro', list);
-    renderModalPhotoThumbs(entry.fotos);
+    const saveOk1 = await saveKey(activeModal.kind==='caixa' ? 'caixaObra' : 'empreiteiro', list, prevList);
+    // Re-read rather than reuse the local `entry` — on failure it still
+    // points at the stale, already-mutated object (see deleteModalPhotoNow).
+    const current = getList(activeModal.kind).find(x=>x.id===activeModal.id);
+    renderModalPhotoThumbs(current ? current.fotos : []);
     renderAll();
     if(saveOk1) showToast(anyFail ? `${metas.length} foto(s) adicionada(s), algumas falharam.` : (metas.length > 1 ? `${metas.length} fotos adicionadas.` : 'Foto adicionada.'));
+    else showToast('Não consegui salvar essas fotos. Tente novamente.', false, 4500);
   });
 
   // ---------- Task photos (new-task draft + existing-task modal, immediate) ----------
@@ -3061,11 +3153,13 @@
     if(!activeTaskId) return;
     const t = tasks.find(x=>x.id===activeTaskId);
     if(!t) return;
+    const prevTasks = cloneState_(tasks);
     const target = (t.fotos||[]).find(f=>f.id===id);
     t.fotos = (t.fotos||[]).filter(f=>f.id!==id);
-    const saveOk2 = await saveKey('tasks', tasks);
-    await deleteFromDrive(target && target.driveFileId);
-    renderTaskModalPhotoThumbs(t.fotos);
+    const saveOk2 = await saveKey('tasks', tasks, prevTasks);
+    if(saveOk2) await deleteFromDrive(target && target.driveFileId);
+    const current = tasks.find(x=>x.id===activeTaskId);
+    renderTaskModalPhotoThumbs(current ? current.fotos : []);
     renderAll();
     if(saveOk2) showToast('Foto excluída.');
   }
@@ -3093,11 +3187,14 @@
       showToast('Não consegui processar essas imagens.');
       return;
     }
+    const prevTasks = cloneState_(tasks);
     t.fotos = [...(t.fotos||[]), ...metas];
-    const saveOk3 = await saveKey('tasks', tasks);
-    renderTaskModalPhotoThumbs(t.fotos);
+    const saveOk3 = await saveKey('tasks', tasks, prevTasks);
+    const current = tasks.find(x=>x.id===activeTaskId);
+    renderTaskModalPhotoThumbs(current ? current.fotos : []);
     renderAll();
     if(saveOk3) showToast(anyFail ? `${metas.length} foto(s) adicionada(s), algumas falharam.` : (metas.length > 1 ? `${metas.length} fotos adicionadas.` : 'Foto adicionada.'));
+    else showToast('Não consegui salvar essas fotos. Tente novamente.', false, 4500);
   });
 
   // ---------- Note edit/delete (works for standalone notes and notes attached to entries) ----------
@@ -3119,7 +3216,11 @@
       const n = notes.find(x=>x.id===ref.id);
       if(!n) return;
       current = n.texto;
-      applyEdit = async (txt)=>{ n.texto = txt; return await saveKey('notes', notes); };
+      applyEdit = async (txt)=>{
+        const prevNotes = cloneState_(notes);
+        n.texto = txt;
+        return await saveKey('notes', notes, prevNotes);
+      };
     } else {
       const list = ref.origin === 'caixa' ? caixaObra : empreiteiro;
       const entry = list.find(x=>x.id===ref.entryId);
@@ -3128,8 +3229,9 @@
       if(!n) return;
       current = n.texto;
       applyEdit = async (txt)=>{
+        const prevList = cloneState_(list);
         n.texto = txt;
-        const ok = await saveKey(ref.origin === 'caixa' ? 'caixaObra' : 'empreiteiro', list);
+        const ok = await saveKey(ref.origin === 'caixa' ? 'caixaObra' : 'empreiteiro', list, prevList);
         refreshNoteViewsFor(ref.origin, ref.entryId);
         return ok;
       };
@@ -3139,6 +3241,7 @@
     const saveOk = await applyEdit(nt);
     renderAll();
     if(saveOk) showToast('Nota atualizada.');
+    else showToast('Não consegui salvar a nota. Tente novamente.', false, 4500);
   }
 
   async function deleteNoteRef(ref){
@@ -3146,37 +3249,45 @@
     if(!ok) return;
     let saveOk;
     if(ref.origin === 'standalone'){
+      const prevNotes = cloneState_(notes);
       const target = notes.find(x=>x.id===ref.id);
       notes = notes.filter(x=>x.id!==ref.id);
-      saveOk = await saveKey('notes', notes);
+      saveOk = await saveKey('notes', notes, prevNotes);
       if(saveOk && target) deletePhotoBlobs(target.fotos);
     } else {
       const list = ref.origin === 'caixa' ? caixaObra : empreiteiro;
+      const prevList = cloneState_(list);
       const entry = list.find(x=>x.id===ref.entryId);
       if(!entry) return;
       entry.notas = (entry.notas||[]).filter(x=>x.id!==ref.noteId);
-      saveOk = await saveKey(ref.origin === 'caixa' ? 'caixaObra' : 'empreiteiro', list);
+      saveOk = await saveKey(ref.origin === 'caixa' ? 'caixaObra' : 'empreiteiro', list, prevList);
       refreshNoteViewsFor(ref.origin, ref.entryId);
     }
     renderAll();
     if(saveOk) showToast('Nota excluída.');
+    else showToast('Não consegui excluir a nota. Tente novamente.', false, 4500);
   }
 
-  $('#modalAddNoteBtn').addEventListener('click', async ()=>{
+  $('#modalAddNoteBtn').addEventListener('click', withGuard(async ()=>{
     if(!activeModal) return;
     const input = $('#modalNoteInput');
     const txt = input.value.trim();
     if(!txt) return;
     const list = getList(activeModal.kind);
+    const prevList = cloneState_(list);
     const e = list.find(x=>x.id === activeModal.id);
     if(!e) return;
     e.notas = [...(e.notas||[]), {id: uid('n'), texto: txt, criadoEm: Date.now()}];
-    const saveOk4 = await saveKey(activeModal.kind === 'caixa' ? 'caixaObra' : 'empreiteiro', list);
-    input.value = '';
-    renderModalNotes(e.notas);
+    const saveOk4 = await saveKey(activeModal.kind === 'caixa' ? 'caixaObra' : 'empreiteiro', list, prevList);
+    // Only clear the input once the note is actually saved — on failure the
+    // user should still have their unsent text to retry with.
+    if(saveOk4) input.value = '';
+    const current = getList(activeModal.kind).find(x=>x.id === activeModal.id);
+    renderModalNotes(current ? current.notas : []);
     renderAll();
     if(saveOk4) showToast('Nota adicionada.');
-  });
+    else showToast('Não consegui salvar a nota. Tente novamente.', false, 4500);
+  }));
 
   $all('[data-close]').forEach(btn=>{
     btn.addEventListener('click', ()=>{
@@ -3230,21 +3341,28 @@
     switchView('add');
   });
 
-  $('#deleteEntryBtn').addEventListener('click', async ()=>{
+  $('#deleteEntryBtn').addEventListener('click', withGuard(async ()=>{
     if(!activeModal) return;
     const ok = await showConfirm('Excluir este lançamento? Essa ação não pode ser desfeita.', {title:'Excluir lançamento', okLabel:'Excluir'});
     if(!ok) return;
     const key = activeModal.kind === 'caixa' ? 'caixaObra' : 'empreiteiro';
-    const target = getList(activeModal.kind).find(x=>x.id === activeModal.id);
+    const list = getList(activeModal.kind);
+    const prevList = cloneState_(list);
+    const target = list.find(x=>x.id === activeModal.id);
     if(activeModal.kind === 'caixa') caixaObra = caixaObra.filter(x=>x.id !== activeModal.id);
     else empreiteiro = empreiteiro.filter(x=>x.id !== activeModal.id);
-    const saveOk5 = await saveKey(key, activeModal.kind === 'caixa' ? caixaObra : empreiteiro);
-    if(target) deletePhotoBlobs(target.fotos); // clean up any attached photo blobs too
-    $('#detailModal').classList.remove('open');
-    activeModal = null;
+    const saveOk5 = await saveKey(key, activeModal.kind === 'caixa' ? caixaObra : empreiteiro, prevList);
+    if(saveOk5){
+      // Only trash the Drive files once the row is confirmed gone from the
+      // sheet — otherwise a failed delete leaves the record intact but
+      // pointing at trashed files.
+      if(target) deletePhotoBlobs(target.fotos);
+      $('#detailModal').classList.remove('open');
+      activeModal = null;
+      showToast('Lançamento excluído.');
+    }
     renderAll();
-    if(saveOk5) showToast('Lançamento excluído.');
-  });
+  }));
 
   // ---------- Tasks ----------
   function populateTaskProjectSelect(){
@@ -3308,9 +3426,11 @@
   async function quickToggleTask(id){
     const t = tasks.find(x=>x.id===id);
     if(!t) return;
+    const prevTasks = cloneState_(tasks);
     t.feito = !t.feito;
-    await saveKey('tasks', tasks);
+    const ok = await saveKey('tasks', tasks, prevTasks);
     renderAll();
+    if(!ok) showToast('Não consegui atualizar a tarefa. Tente novamente.', false, 4500);
   }
 
   function renderTasks(){
@@ -3342,9 +3462,10 @@
     });
   }
 
-  $('#saveTaskBtn').addEventListener('click', async ()=>{
+  $('#saveTaskBtn').addEventListener('click', withGuard(async ()=>{
     const texto = $('#t_texto').value.trim();
     if(!texto){ showToast('Escreva a tarefa primeiro.'); return; }
+    const prevTasks = cloneState_(tasks);
     tasks.push({
       id: uid('t'), feito:false, criadoEm: Date.now(),
       texto,
@@ -3353,17 +3474,21 @@
       projectId: $('#t_projeto').value || null,
       fotos: draftTaskFotos.slice(),
     });
-    const saveOk = await saveKey('tasks', tasks);
-    draftTaskFotos = []; // now owned by the saved task — clear without deleting their blobs
-    $('#t_texto').value = '';
-    $('#t_prazo').value = '';
-    refreshTPrazo();
-    $('#t_prioridade').value = 'media';
-    $('#t_projeto').value = activeProjectId || '';
+    const saveOk = await saveKey('tasks', tasks, prevTasks);
+    if(saveOk){
+      draftTaskFotos = []; // now owned by the saved task — clear without deleting their blobs
+      $('#t_texto').value = '';
+      $('#t_prazo').value = '';
+      refreshTPrazo();
+      $('#t_prioridade').value = 'media';
+      $('#t_projeto').value = activeProjectId || '';
+      showToast('Tarefa adicionada.');
+    } else {
+      showToast('Não consegui salvar a tarefa. Tente novamente.', false, 4500);
+    }
     renderTaskFormPhotoThumbs();
     renderAll();
-    if(saveOk) showToast('Tarefa adicionada.');
-  });
+  }));
 
   function showTaskViewMode(){
     $('#taskViewMode').style.display = 'block';
@@ -3420,36 +3545,47 @@
     else showTaskViewMode();
   });
 
-  $('#taskEditSaveBtn').addEventListener('click', async ()=>{
+  $('#taskEditSaveBtn').addEventListener('click', withGuard(async ()=>{
     if(!activeTaskId) return;
     const texto = $('#te_texto').value.trim();
     if(!texto){ showToast('Escreva a tarefa primeiro.'); return; }
     const t = tasks.find(x=>x.id===activeTaskId);
     if(!t) return;
+    const prevTasks = cloneState_(tasks);
     t.texto = texto;
     t.prazo = $('#te_prazo').value || '';
     t.prioridade = $('#te_prioridade').value;
     t.projectId = $('#te_projeto').value || null;
-    const saveOk6 = await saveKey('tasks', tasks);
+    const saveOk6 = await saveKey('tasks', tasks, prevTasks);
+    if(!saveOk6){
+      showToast('Não consegui salvar a tarefa. Tente novamente.', false, 4500);
+      return; // leave the edit form open with the user's input intact
+    }
     $('#taskModal').classList.remove('open');
     activeTaskId = null;
     renderAll();
-    if(saveOk6) showToast('Tarefa atualizada.');
-  });
+    showToast('Tarefa atualizada.');
+  }));
 
-  $('#deleteTaskBtn').addEventListener('click', async ()=>{
+  $('#deleteTaskBtn').addEventListener('click', withGuard(async ()=>{
     if(!activeTaskId) return;
     const ok = await showConfirm('Excluir esta tarefa?', {title:'Excluir tarefa', okLabel:'Excluir'});
     if(!ok) return;
+    const prevTasks = cloneState_(tasks);
     const target = tasks.find(x=>x.id===activeTaskId);
     tasks = tasks.filter(x=>x.id !== activeTaskId);
-    const saveOk7 = await saveKey('tasks', tasks);
+    const saveOk7 = await saveKey('tasks', tasks, prevTasks);
+    if(!saveOk7){
+      showToast('Não consegui excluir a tarefa. Tente novamente.', false, 4500);
+      renderAll();
+      return;
+    }
     if(target) deletePhotoBlobs(target.fotos);
     $('#taskModal').classList.remove('open');
     activeTaskId = null;
     renderAll();
-    if(saveOk7) showToast('Tarefa excluída.');
-  });
+    showToast('Tarefa excluída.');
+  }));
 
   // ---------- Notes feed ----------
   // ---------- Note photos (new-note draft + existing standalone notes in the feed, immediate) ----------
@@ -3510,11 +3646,13 @@
   async function deleteExistingNotePhotoNow(noteId, photoId){
     const n = notes.find(x=>x.id===noteId);
     if(!n) return;
+    const prevNotes = cloneState_(notes);
     const target = (n.fotos||[]).find(f=>f.id===photoId);
     n.fotos = (n.fotos||[]).filter(f=>f.id!==photoId);
-    const saveOk8 = await saveKey('notes', notes);
-    await deleteFromDrive(target && target.driveFileId);
-    renderExistingNotePhotoThumbs(n);
+    const saveOk8 = await saveKey('notes', notes, prevNotes);
+    if(saveOk8) await deleteFromDrive(target && target.driveFileId);
+    const current = notes.find(x=>x.id===noteId);
+    if(current) renderExistingNotePhotoThumbs(current);
     renderAll();
     if(saveOk8) showToast('Foto excluída.');
   }
@@ -3544,25 +3682,36 @@
       showToast('Não consegui processar essas imagens.');
       return;
     }
+    const prevNotes = cloneState_(notes);
     n.fotos = [...(n.fotos||[]), ...metas];
-    const saveOk9 = await saveKey('notes', notes);
-    renderExistingNotePhotoThumbs(n);
+    const saveOk9 = await saveKey('notes', notes, prevNotes);
+    const current = notes.find(x=>x.id===noteId);
+    if(current) renderExistingNotePhotoThumbs(current);
     renderAll();
     if(saveOk9) showToast(anyFail ? `${metas.length} foto(s) adicionada(s), algumas falharam.` : (metas.length > 1 ? `${metas.length} fotos adicionadas.` : 'Foto adicionada.'));
+    else showToast('Não consegui salvar essas fotos. Tente novamente.', false, 4500);
   });
 
-  $('#saveNoteBtn').addEventListener('click', async ()=>{
+  $('#saveNoteBtn').addEventListener('click', withGuard(async ()=>{
     const txt = $('#noteInput').value.trim();
     if(!txt){ showToast('Escreva algo antes de salvar.'); return; }
-    notes.push({id: uid('sn'), projectId: activeProjectId, texto: txt, criadoEm: Date.now(), fotos: draftNoteFotos.slice()});
-    const saveOk10 = await saveKey('notes', notes);
-    draftNoteFotos = []; // now owned by the saved note — clear without deleting their blobs
-    $('#noteInput').value = '';
+    const prevNotes = cloneState_(notes);
+    const pendingFotos = draftNoteFotos.slice();
+    notes.push({id: uid('sn'), projectId: activeProjectId, texto: txt, criadoEm: Date.now(), fotos: pendingFotos});
+    const saveOk10 = await saveKey('notes', notes, prevNotes);
+    if(saveOk10){
+      draftNoteFotos = []; // now owned by the saved note — clear without deleting their blobs
+      $('#noteInput').value = '';
+      notesPage = 1;
+      showToast('Nota adicionada.');
+    } else {
+      // Nothing was actually saved — keep the text and draft photos so the
+      // user can retry instead of losing what they wrote.
+      showToast('Não consegui salvar a nota. Tente novamente.', false, 4500);
+    }
     renderNoteFormPhotoThumbs();
-    notesPage = 1;
     renderAll();
-    if(saveOk10) showToast('Nota adicionada.');
-  });
+  }));
 
   function dateGroupLabel(ts){
     const d = new Date(ts);
@@ -3726,7 +3875,7 @@
     const canEditConfig = canSection('config','edit');
     box.querySelectorAll('[data-rename]').forEach(btn=>{
       if(!canEditConfig){ btn.style.display = 'none'; return; }
-      btn.addEventListener('click', async ()=>{
+      btn.addEventListener('click', withGuard(async ()=>{
         const p = projects.find(x=>x.id===btn.dataset.rename);
         if(!p) return;
         const nn = await showPrompt(p.name, {title:'Renomear projeto'});
@@ -3735,44 +3884,60 @@
             showToast('Já existe um projeto com esse nome.');
             return;
           }
+          // A rename touches every row that references this project — at
+          // real data scale that is too much to express as a batchMulti of
+          // individual row upserts (it can exceed Apps Script's execution
+          // limit and fail with only some rows renamed). The backend does
+          // the whole thing as one atomic, bulk operation instead (see
+          // renameProject_ in Code.js); the frontend never mutates its own
+          // arrays for this — it just asks the server, then refetches the
+          // authoritative result.
           const oldId = p.id;
-          p.id = nn; p.name = nn; // Sheets uses the project name as its id — keep both in lockstep
-          // Cascade the rename everywhere that referenced the old name, so nothing
-          // gets silently orphaned in the spreadsheet.
-          caixaObra.forEach(e=>{ if(e.projectId===oldId) e.projectId = nn; });
-          empreiteiro.forEach(e=>{ if(e.projectId===oldId) e.projectId = nn; });
-          tasks.forEach(t=>{ if(t.projectId===oldId) t.projectId = nn; });
-          notes.forEach(n=>{ if(n.projectId===oldId) n.projectId = nn; });
-          documentos.forEach(d=>{ if(d.projectId===oldId) d.projectId = nn; });
-          if(activeProjectId === oldId) activeProjectId = nn;
-          const results = await Promise.all([
-            saveKey('projects', projects),
-            saveKey('caixaObra', caixaObra),
-            saveKey('empreiteiro', empreiteiro),
-            saveKey('tasks', tasks),
-            saveKey('notes', notes),
-            saveKey('documentos', documentos),
-            saveKey('activeProjectId', activeProjectId),
-          ]);
+          const btnEl = btn;
+          const prevLabel = btnEl.textContent;
+          btnEl.disabled = true;
+          btnEl.textContent = 'Renomeando...';
+          try{
+            await sheetsPost({action:'renameProject', oldName: oldId, newName: nn});
+            if(activeProjectId === oldId) activeProjectId = nn;
+            const ok = await fetchAndApplyFromServer();
+            if(!ok) throw new Error('sync-after-rename-failed');
+            finishLoadSetup();
+            renderAll();
+            showToast('Projeto atualizado.');
+          }catch(err){
+            console.error('rename project error', err);
+            // saveErrorMessage() already handles auth errors end-to-end
+            // (clears the token, shows the sign-in gate) — same as every
+            // other write path in this file.
+            showToast(saveErrorMessage(err), false, 4500);
+          }finally{
+            btnEl.disabled = false;
+            btnEl.textContent = prevLabel;
+          }
           renderSettingsProjects();
           renderProjectPills();
-          renderAll();
-          if(results.every(Boolean)) showToast('Projeto atualizado.');
-          else showToast('Projeto renomeado, mas nem tudo foi sincronizado — recarregue a página para conferir.');
         }
-      });
+      }));
     });
   }
-  $('#addProjectBtn').addEventListener('click', async ()=>{
+  $('#addProjectBtn').addEventListener('click', withGuard(async ()=>{
     const nn = await showPrompt('', {title:'Novo projeto', placeholder:'Ex: Obra Sítio Novo'});
     if(nn){
       if(projects.some(x => x.name.toLowerCase() === nn.toLowerCase())){
         showToast('Já existe um projeto com esse nome.');
         return;
       }
+      const prevProjects = cloneState_(projects);
       const np = {id: nn, name: nn}; // Sheets uses the project name as its id
       projects.push(np);
-      await saveKey('projects', projects);
+      const ok = await saveKey('projects', projects, prevProjects);
+      if(!ok){
+        showToast('Não consegui adicionar o projeto. Tente novamente.', false, 4500);
+        renderSettingsProjects();
+        renderProjectPills();
+        return;
+      }
       activeProjectId = np.id;
       await saveKey('activeProjectId', activeProjectId);
       renderSettingsProjects();
@@ -3781,7 +3946,7 @@
       renderAll();
       showToast('Projeto adicionado.');
     }
-  });
+  }));
 
   // ---------- Init render ----------
   // ---------- Documentos (project document hub) ----------
@@ -3869,29 +4034,32 @@
     let saveOk = true;
     if(catKey === 'caixa' || catKey === 'emp'){
       const list = catKey === 'caixa' ? caixaObra : empreiteiro;
+      const prevList = cloneState_(list);
       for(const e of list){
         if(e.fotos && e.fotos.some(f=>f.id===photoId)){
           driveFileId = (e.fotos.find(f=>f.id===photoId)||{}).driveFileId;
           e.fotos = e.fotos.filter(f=>f.id!==photoId);
-          saveOk = await saveKey(catKey==='caixa' ? 'caixaObra' : 'empreiteiro', list);
+          saveOk = await saveKey(catKey==='caixa' ? 'caixaObra' : 'empreiteiro', list, prevList);
           break;
         }
       }
     } else if(catKey === 'tasks'){
+      const prevTasks = cloneState_(tasks);
       for(const t of tasks){
         if(t.fotos && t.fotos.some(f=>f.id===photoId)){
           driveFileId = (t.fotos.find(f=>f.id===photoId)||{}).driveFileId;
           t.fotos = t.fotos.filter(f=>f.id!==photoId);
-          saveOk = await saveKey('tasks', tasks);
+          saveOk = await saveKey('tasks', tasks, prevTasks);
           break;
         }
       }
     } else if(catKey === 'notes'){
+      const prevNotes = cloneState_(notes);
       for(const n of notes){
         if(n.fotos && n.fotos.some(f=>f.id===photoId)){
           driveFileId = (n.fotos.find(f=>f.id===photoId)||{}).driveFileId;
           n.fotos = n.fotos.filter(f=>f.id!==photoId);
-          saveOk = await saveKey('notes', notes);
+          saveOk = await saveKey('notes', notes, prevNotes);
           break;
         }
       }
@@ -3899,6 +4067,7 @@
     if(saveOk) await deleteFromDrive(driveFileId);
     renderAll();
     if(saveOk) showToast('Foto excluída.');
+    else showToast('Não consegui excluir a foto. Tente novamente.', false, 4500);
   }
 
   function fileExtension(filename){
@@ -4017,12 +4186,14 @@
     openSafeUrl(d.driveUrl || ('https://drive.google.com/file/d/' + d.driveFileId + '/view'));
   }
   async function deleteDocumentNow(id){
+    const prevDocs = cloneState_(documentos);
     const target = documentos.find(d=>d.id===id);
     documentos = documentos.filter(d=>d.id!==id);
-    const saveOk11 = await saveKey('documentos', documentos);
-    await deleteFromDrive(target && target.driveFileId);
+    const saveOk11 = await saveKey('documentos', documentos, prevDocs);
+    if(saveOk11) await deleteFromDrive(target && target.driveFileId);
     renderDocsList();
     if(saveOk11) showToast('Documento excluído.');
+    else showToast('Não consegui excluir o documento. Tente novamente.', false, 4500);
   }
   async function deleteDocumentWithConfirm(id){
     const ok = await showConfirm('Excluir este documento? Essa ação não pode ser desfeita.', {title:'Excluir documento', okLabel:'Excluir'});
@@ -4064,10 +4235,17 @@
         return;
       }
       documentos.push(...newDocs);
+      // Deliberately NOT rolled back on failure like other saves: the Drive
+      // upload above already succeeded, so keeping the pending doc(s) in
+      // memory lets the next documentos save quietly pick them up as an
+      // already-computed diff, instead of forcing a wasteful full re-upload.
       const metaOk = await saveKey('documentos', documentos);
-      if(!metaOk){ showToast('Arquivo(s) salvo(s), mas houve um erro ao registrar. Tente novamente.'); return; }
       docsPage = 1;
       renderDocsList();
+      if(!metaOk){
+        showToast('Arquivo(s) enviado(s), mas não consegui registrar ainda — tentando novamente na próxima sincronização.', false, 5000);
+        return;
+      }
       showToast(anyFail ? `${newDocs.length} documento(s) adicionado(s), algum(ns) falharam.` : (newDocs.length > 1 ? `${newDocs.length} documentos adicionados.` : 'Documento adicionado.'));
     }catch(err){
       // Final safety net — guarantees the persistent "Enviando..." toast can never
