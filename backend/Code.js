@@ -541,7 +541,14 @@ function uid_(prefix) {
 
 function fmtDate_(val) {
   if (val instanceof Date) {
-    return Utilities.formatDate(val, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    // Deliberately the SPREADSHEET's timezone, not Session.getScriptTimeZone()
+    // (the script project's own timeZone in appsscript.json). Sheets builds a
+    // date-only cell's Date object in the spreadsheet's own timezone — if the
+    // script's timezone ever disagrees with it (they are two independent
+    // settings, easy to let drift apart), every date silently shifts by a
+    // day. Reading it from the spreadsheet itself makes the two settings
+    // agreeing a non-issue rather than a requirement to remember.
+    return Utilities.formatDate(val, ss_().getSpreadsheetTimeZone(), 'yyyy-MM-dd');
   }
   return val || '';
 }
@@ -790,13 +797,6 @@ function doPost(e) {
     user.sections = sectionsForRole_(user.role); // AUTHZ: effective permissions, resolved fresh every request
     const action = body.action;
 
-    // Pure read — no lock needed, same as this used to behave under doGet.
-    if (action === 'getAll') {
-      const out = { currentUser: user };
-      Object.keys(SHEETS).forEach(key => { out[key] = readSheet_(key); });
-      return jsonOut_(filterAllByAccess_(user, out));
-    }
-
     const lock = LockService.getScriptLock();
     try {
       lock.waitLock(15000);
@@ -804,6 +804,19 @@ function doPost(e) {
       return jsonOut_({ error: 'Servidor ocupado, tente novamente.' });
     }
     try {
+      // getAll is USUALLY a pure read, but readSheet_ can write: a row typed
+      // directly into the sheet with a blank id gets one assigned and saved
+      // back (so it stays stable across future reads). That write must not
+      // race a concurrent batchMulti's own writes to the same sheet — e.g. a
+      // deleted row's slot getting resurrected by a stale full-range write-
+      // back landing after the delete — hence taking the same lock as every
+      // other write here, even though this path only rarely needs it.
+      if (action === 'getAll') {
+        const out = { currentUser: user };
+        Object.keys(SHEETS).forEach(key => { out[key] = readSheet_(key); });
+        return jsonOut_(filterAllByAccess_(user, out));
+      }
+
       if (action === 'batchMulti') {
         const ops = body.ops || [];
         assertBatchAccess_(user, ops); // rejects the WHOLE batch if any op is outside the user's section/action or project access

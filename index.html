@@ -818,7 +818,7 @@
         <div class="row2">
           <div class="field">
             <label>Quantidade</label>
-            <input type="number" id="f_qtd" placeholder="0" step="0.01" inputmode="decimal">
+            <input type="text" id="f_qtd" placeholder="0" inputmode="decimal">
             <div class="mini-hint" id="qtdHint">Padrão: 1 — toque para alterar</div>
           </div>
           <div class="field">
@@ -838,7 +838,7 @@
           </div>
           <div class="field">
             <label>Valor (R$) <span class="req">*</span></label>
-            <input type="number" id="f_valor" placeholder="0,00" step="0.01" inputmode="decimal" required>
+            <input type="text" id="f_valor" placeholder="0,00" inputmode="decimal" required>
           </div>
         </div>
         <div class="field ac-wrap">
@@ -1257,6 +1257,25 @@
     v = Number(v)||0;
     return v.toLocaleString('pt-BR', {style:'currency', currency:'BRL'});
   }
+  // Parses a number typed with either convention — "150,50" (the Brazilian
+  // decimal comma an iPhone's pt-BR numeric keypad actually offers) or
+  // "150.50" — by treating whichever of ',' / '.' appears LAST in the string
+  // as the decimal point, and stripping the other as a thousands separator.
+  // Plain Number("150,50") is NaN, which used to make the entry form report
+  // "Preencha os campos obrigatórios." for a field the user had filled in.
+  function parseDecimalBR(str){
+    if(str === undefined || str === null) return NaN;
+    let s = String(str).trim();
+    if(!s) return NaN;
+    const lastComma = s.lastIndexOf(',');
+    const lastDot = s.lastIndexOf('.');
+    if(lastComma > lastDot){
+      s = s.replace(/\./g, '').replace(',', '.');
+    } else if(lastDot > lastComma){
+      s = s.replace(/,/g, '');
+    }
+    return Number(s);
+  }
   function parseDateLocal(str){
     if(!str) return new Date();
     const [y,m,d] = str.split('-').map(Number);
@@ -1422,18 +1441,43 @@
   // purpose: those mean "your session is invalid, sign in again," which would
   // be actively wrong here — signing in again changes nothing for a Partner
   // trying to write, since the backend will reject it again every time.
-  const PERMISSION_ERROR_MESSAGES = new Set(['sem permissão para escrever', 'sem acesso a este projeto']);
+  // Matched by PREFIX, not exact string — Code.js throws a handful of
+  // distinct messages for this ('sem permissão para create/edit/delete/
+  // upload/editar/excluir/excluir arquivos/enviar arquivos', 'sem acesso a
+  // este projeto', 'sem acesso a esta seção'), and an exact-string list here
+  // silently stops matching the moment the backend's wording changes — which
+  // already happened once (this used to check for a string, 'sem permissão
+  // para escrever', that no longer exists anywhere in Code.js since the
+  // section/action Papeis model replaced the old hardcoded roles). A denial
+  // that doesn't match falls through to a generic "try again" message, which
+  // is actively misleading for something that will be rejected every time.
   function isPermissionError(err){
-    return err && PERMISSION_ERROR_MESSAGES.has(String(err.message || err));
+    if(!err) return false;
+    const msg = String(err.message || err);
+    return msg.indexOf('sem permissão') === 0 || msg.indexOf('sem acesso') === 0;
   }
+  // Without a deadline, a connection that opens but never responds (a real
+  // thing on a job site — a phone handing off between towers, a captive
+  // portal) leaves the fetch promise pending forever: withRetry never sees a
+  // rejection to retry, and whatever button triggered this is stuck on
+  // "Salvando..." with no way out short of reloading the app. uploadFile
+  // gets a longer ceiling since it's genuinely slower (base64 upload).
   async function sheetsPostRaw(body){
-    const resp = await fetch(APPS_SCRIPT_URL, {
-      method: 'POST',
-      headers: {'Content-Type': 'text/plain;charset=utf-8'},
-      body: JSON.stringify(Object.assign({idToken: googleIdToken || ''}, body)),
-    });
-    if(!resp.ok) throw new Error('HTTP ' + resp.status);
-    return await resp.json();
+    const timeoutMs = (body && body.action === 'uploadFile') ? 60000 : 30000;
+    const controller = new AbortController();
+    const timer = setTimeout(()=> controller.abort(), timeoutMs);
+    try{
+      const resp = await fetch(APPS_SCRIPT_URL, {
+        method: 'POST',
+        headers: {'Content-Type': 'text/plain;charset=utf-8'},
+        body: JSON.stringify(Object.assign({idToken: googleIdToken || ''}, body)),
+        signal: controller.signal,
+      });
+      if(!resp.ok) throw new Error('HTTP ' + resp.status);
+      return await resp.json();
+    } finally {
+      clearTimeout(timer);
+    }
   }
   // Retries the network call itself (a dropped connection, a brief timeout) —
   // but NOT a deterministic rejection from the server (a real conflict, a bad
@@ -1499,6 +1543,22 @@
   // from one action (e.g. an entry + its photos + its notes) get bundled into
   // a single request instead of firing off separately.
   let sheetSnapshot = {};
+  // Derives sheetSnapshot from the current in-memory state — used after both
+  // a real server fetch and a localStorage cache load, so the snapshot never
+  // needs to be persisted itself (see saveCacheToLocalStorage): it's fully
+  // reconstructable from data the cache already stores, and persisting it
+  // too was roughly doubling the cache payload for ~3,000 entries, moving it
+  // closer to localStorage's ~5MB per-origin ceiling than it needed to be.
+  function rebuildSheetSnapshot_(){
+    sheetSnapshot = {
+      caixaObra: toSheetRows('caixaObra', caixaObra),
+      empreiteiro: toSheetRows('empreiteiro', empreiteiro),
+      tarefas: toSheetRows('tasks', tasks),
+      documentos: toSheetRows('documentos', documentos),
+      notas: computeNotasRows(),
+      fotos: computeFotosRows(),
+    };
+  }
   function stripLM_(r){ const c = Object.assign({}, r); delete c.lastModified; return c; }
   function diffRows_(sheetName, newRows){
     const oldRows = sheetSnapshot[sheetName] || [];
@@ -1518,17 +1578,18 @@
   // Syncs any number of tabs in ONE request (item 5/6: batching). Returns
   // false (with a toast already shown) on any failure, including conflicts.
   async function syncSheets(sheetRowsMap){
+    // Only send sheets that actually have an upsert or delete — every save
+    // touching caixaObra/empreiteiro/tasks also calls this with the (usually
+    // unchanged) fotos/notas payloads, and each op the backend receives is a
+    // full readSheet_() of that whole tab in assertBatchAccess_ just to
+    // authorize zero operations against it. An unchanged sheet's snapshot is
+    // already correct by definition, so it needs no update either.
     const ops = [];
-    let anyChanges = false;
     Object.keys(sheetRowsMap).forEach(sheetName=>{
       const {upserts, deletes} = diffRows_(sheetName, sheetRowsMap[sheetName]);
-      if(upserts.length || deletes.length) anyChanges = true;
-      ops.push({sheet: sheetName, upserts, deletes});
+      if(upserts.length || deletes.length) ops.push({sheet: sheetName, upserts, deletes});
     });
-    if(!anyChanges){
-      Object.keys(sheetRowsMap).forEach(k=>{ sheetSnapshot[k] = sheetRowsMap[k].map(r=>Object.assign({}, r)); });
-      return true;
-    }
+    if(!ops.length) return true;
     try{
       const resp = await sheetsPost({action:'batchMulti', ops});
       if(resp.conflict){
@@ -1554,8 +1615,9 @@
   function saveErrorMessage(err){
     if(isPermissionError(err)){
       const msg = String(err.message || err);
-      if(msg === 'sem permissão para escrever') return 'Sua conta tem acesso somente para visualização.';
       if(msg === 'sem acesso a este projeto') return 'Você não tem acesso a este projeto.';
+      if(msg === 'sem acesso a esta seção') return 'Sua conta não tem acesso a esta área do app.';
+      if(msg.indexOf('sem permissão') === 0) return 'Sua conta não tem permissão para esta ação.';
     }
     if(isAuthError(err)){
       // Their session was revoked or expired mid-use — retrying the save
@@ -1706,9 +1768,15 @@
     try{
       localStorage.setItem(CACHE_KEY, JSON.stringify({
         projects, caixaObra, empreiteiro, tasks, notes, documentos, tipos, unidades,
-        sheetSnapshot, savedAt: lastSyncTime,
+        savedAt: lastSyncTime,
       }));
-    }catch(e){ console.error('cache save error', e); }
+    }catch(e){
+      console.error('cache save error', e);
+      // A full localStorage quota fails silently otherwise — the app keeps
+      // working but boots from progressively staler data with no signal
+      // that the cache has effectively stopped updating.
+      showToast('Não consegui salvar os dados localmente neste aparelho (armazenamento cheio).', false, 4500);
+    }
   }
   function loadCacheFromLocalStorage(){
     try{
@@ -1724,13 +1792,14 @@
       documentos = payload.documentos || [];
       tipos = (payload.tipos && payload.tipos.length) ? payload.tipos : DEFAULT_TIPOS.slice();
       unidades = (payload.unidades && payload.unidades.length) ? payload.unidades : DEFAULT_UNIDADES.slice();
-      sheetSnapshot = payload.sheetSnapshot || {};
+      rebuildSheetSnapshot_();
       lastSyncTime = payload.savedAt || null;
       return true;
     }catch(e){ console.error('cache load error', e); return false; }
   }
 
   function isNetworkError(err){
+    if(err && err.name === 'AbortError') return true; // our own fetch timeout in sheetsPostRaw
     return (err instanceof TypeError) || (typeof navigator !== 'undefined' && navigator.onLine === false);
   }
   // Retries a flaky network call once or twice with a short pause before giving
@@ -1835,14 +1904,7 @@
       // Seed the diff snapshot from what we just loaded, so the very next save
       // only sends whatever actually changes from here — and so conflict checks
       // compare against the lastModified values we actually just saw.
-      sheetSnapshot = {
-        caixaObra: toSheetRows('caixaObra', caixaObra),
-        empreiteiro: toSheetRows('empreiteiro', empreiteiro),
-        tarefas: toSheetRows('tasks', tasks),
-        documentos: toSheetRows('documentos', documentos),
-        notas: computeNotasRows(),
-        fotos: computeFotosRows(),
-      };
+      rebuildSheetSnapshot_();
 
       lastSyncTime = Date.now();
       saveCacheToLocalStorage();
@@ -1948,7 +2010,15 @@
     populateTipoSelect();
     populateUnidadeSelect();
     populateTaskProjectSelect();
-    resetForm();
+    // Runs after every background data refresh (cache-first boot's second
+    // pass, manual sync, proactive token refresh) — not just on first load.
+    // Wiping the entry form here whenever the user happens to be on the Add
+    // screen mid-entry (a completely ordinary thing to be doing when a
+    // refresh lands) used to discard whatever they'd typed and delete any
+    // photos already attached to the draft. A data refresh has no business
+    // touching form state at all.
+    const onAddView = document.getElementById('view-add')?.classList.contains('active');
+    if(!onAddView) resetForm();
     applyPageAccessToNav(); // re-checked on every load — sync/refresh picks up permission changes automatically, same mechanism as project access
     applySectionUIAccess();
   }
@@ -2164,7 +2234,14 @@
     $('#view-' + name).classList.add('active');
     $all('.tab-btn').forEach(b => b.classList.remove('active'));
     $all('.tab-btn').forEach(b => { if (b.dataset.view === name) b.classList.add('active'); });
-    if(name !== 'add') resetForm();
+    // Don't wipe an in-progress entry (and its already-uploaded draft photos)
+    // just because the user tapped away to glance at another tab — that used
+    // to happen on every navigation away from Add. The tab-bar's own "+"
+    // handler and #cancelEditBtn already call resetForm() explicitly for the
+    // cases that should actually start fresh (re-entering Add, or an
+    // explicit Cancel); a save success does too. Simply switching views is
+    // not one of those cases.
+    if(name !== 'add' && previousView !== 'add') resetForm();
     renderAll();
     scrollTopNow();
   }
@@ -2687,18 +2764,21 @@
   const submitEntryGuarded = withGuard(async ()=>{
     const nome = normStore($('#f_nome').value);
     const data = $('#f_data').value;
-    const valor = $('#f_valor').value;
-    if(!nome || !data || valor === ''){
+    const valorRaw = $('#f_valor').value;
+    const valor = parseDecimalBR(valorRaw);
+    if(!nome || !data || valorRaw.trim() === '' || isNaN(valor)){
       showToast('Preencha os campos obrigatórios.');
       return;
     }
+    const qtdRaw = $('#f_qtd').value.trim();
+    const qtd = qtdRaw ? parseDecimalBR(qtdRaw) : '';
     const notaTxt = $('#f_nota').value.trim();
     const payload = {
       nome,
-      qtd: $('#f_qtd').value ? Number($('#f_qtd').value) : '',
+      qtd: (qtd === '' || isNaN(qtd)) ? '' : qtd,
       unidade: $('#f_unidade').value.trim(),
       data,
-      valor: Number(valor),
+      valor,
       fornecedor: normStore($('#f_fornecedor').value),
       socio: selectedSocio,
     };
@@ -4279,7 +4359,25 @@
     $('#authGate').style.display = 'none';
     $('#appScroll').style.display = '';
   }
+  // Set immediately before the ONE proactive-refresh prompt() call below, and
+  // cleared before every OTHER prompt() call (cold-launch restore, or a
+  // fresh manual sign-in) — this is what lets the single shared GIS callback
+  // (onGoogleSignIn) tell "just refresh the token" apart from "this is a real
+  // sign-in attempt," since Google's API only allows one registered callback.
+  let pendingTokenRefreshOnly = false;
+
   async function onGoogleSignIn(response){
+    if(pendingTokenRefreshOnly){
+      pendingTokenRefreshOnly = false;
+      // Background refresh only — must NEVER run the full sign-in flow
+      // below. loadAll(true) treats any failure as "session invalid" and
+      // signs the user out, and finishLoadSetup() resets the entry form —
+      // both actively wrong reactions to a routine background token renewal,
+      // and both used to fire here on nothing worse than a slow connection.
+      googleIdToken = response.credential;
+      googleIdTokenObtainedAt = Date.now();
+      return;
+    }
     googleIdToken = response.credential;
     googleIdTokenObtainedAt = Date.now();
     $('#googleSignInSlot').innerHTML = '<div class="auth-spinner">Entrando...</div>';
@@ -4349,6 +4447,7 @@
       // silently resume. onGoogleSignIn (unchanged) still runs the full real
       // flow: fresh token, then the backend independently verifies it.
       showAuthGate('Restaurando sua sessão...');
+      pendingTokenRefreshOnly = false; // this is a real sign-in restore, not a background refresh
       google.accounts.id.prompt((notification)=>{
         if(notification.isNotDisplayed() || notification.isSkippedMoment()){
           clearSessionHint(); // silent restore genuinely unavailable — don't keep retrying every load
@@ -4388,18 +4487,30 @@
     const age = Date.now() - googleIdTokenObtainedAt;
     if(age < TOKEN_REFRESH_THRESHOLD_MS) return; // still comfortably fresh
     if(!window.google || !google.accounts || !google.accounts.id) return;
-    // Silent attempt only — reuses onGoogleSignIn exactly as the cold-launch
-    // restore does. On success: fresh token via the callback already wired in
-    // initialize(), app carries on with no visible interruption. On failure,
-    // nothing happens here immediately (no gate popping up unprompted just
-    // from a background check) — the existing reactive fallback (isAuthError
-    // → sign-in gate) still correctly catches it on the user's next real
-    // action, exactly as it did before this change.
+    // Silent attempt only — reuses the same GIS callback as the cold-launch
+    // restore, but flagged as refresh-only (see pendingTokenRefreshOnly)
+    // so a failure or a slow network here can never sign the user out or
+    // touch anything they're mid-typing. On success: fresh token, app
+    // carries on with no visible interruption. On failure, nothing happens
+    // here immediately — the existing reactive fallback (isAuthError → sign-
+    // in gate) still correctly catches a genuinely dead session on the
+    // user's next real action.
+    pendingTokenRefreshOnly = true;
     google.accounts.id.prompt();
   });
 
   showAuthGate();
   initAuth();
+
+  // Registered lazily on load so it never competes with the initial page
+  // load's own critical requests. See sw.js — network-first, only a fallback
+  // for a genuinely offline launch, never something that can mask a real
+  // deploy by serving stale content to an online user.
+  if('serviceWorker' in navigator){
+    window.addEventListener('load', ()=>{
+      navigator.serviceWorker.register('./sw.js').catch(e=> console.error('service worker registration failed', e));
+    });
+  }
 })();
 </script>
 </body>
