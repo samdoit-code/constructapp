@@ -588,7 +588,6 @@ function readSheet_(key) {
   const range = sheet.getRange(2, 1, lastRow - 1, lastCol);
   const values = range.getValues();
   const hasId = cfg.cols[0] === 'id';
-  let idsWereAssigned = false;
 
   const rows = values.map((row) => {
     const obj = {};
@@ -599,17 +598,22 @@ function readSheet_(key) {
       if (col === 'feito' || col === 'ativo') v = (v === true || String(v).toUpperCase() === 'SIM' || String(v).toUpperCase() === 'TRUE');
       obj[col] = v;
     });
-    if (hasId && !obj.id) {
-      obj.id = uid_(key);
-      row[0] = obj.id;
-      idsWereAssigned = true;
-    }
+    // A blank id only happens for a row typed directly into the sheet by
+    // hand. Give it one for THIS response so the row is usable, but do not
+    // persist it here — backfillMissingIds_ (under the lock, at the top of
+    // getAll) is the single place that writes ids back. This used to
+    // setValues() the entire range, every column of every row, which is a
+    // read-modify-write over data a concurrent batchMulti may have changed
+    // in the meantime: a row deleted between this getValues() and that
+    // setValues() would be resurrected by the stale write-back. That was
+    // survivable only while the whole getAll sat inside the write lock;
+    // now that it deliberately doesn't, the write-back has to go. Worst
+    // case a hand-typed row carries an ephemeral id for one response and
+    // gets its stable one on the next getAll.
+    if (hasId && !obj.id) obj.id = uid_(key);
     return obj;
   });
 
-  if (idsWereAssigned) {
-    range.setValues(values); // write the newly-assigned IDs back to the sheet
-  }
   return rows;
 }
 
