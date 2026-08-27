@@ -394,6 +394,25 @@ function assertBatchAccess_(user, ops) {
     return idCache[sheetKey];
   }
 
+  // Deciding create-vs-edit only needs to know whether an id already exists,
+  // which is one narrow column — not every column of every row. Reading just
+  // column A here instead of the whole sheet is the difference between
+  // shipping ~12 columns × N rows and 1 × N to answer a yes/no question, on
+  // the hot path of every single write. Sheets that genuinely need full rows
+  // (notas/fotos section resolution, and the project-scope pass below) still
+  // go through existingRows_ and are unaffected.
+  const idSetCache = {};
+  function existingIdSet_(sheetKey) {
+    if (idCache[sheetKey]) return null; // full rows already loaded for this sheet — just use them
+    if (!idSetCache[sheetKey]) idSetCache[sheetKey] = readIdSet_(sheetKey);
+    return idSetCache[sheetKey];
+  }
+  function idExists_(sheetKey, id) {
+    const set = existingIdSet_(sheetKey);
+    if (set) return !!set[String(id)];
+    return !!existingRows_(sheetKey)[id];
+  }
+
   // notaSectionById: needed only to resolve a Fotos row attached to a Notas
   // row (refTipo === 'notes') — which section it belongs to depends on
   // whether THAT note is itself standalone or attached to a Lançamento. Built
@@ -422,11 +441,12 @@ function assertBatchAccess_(user, ops) {
   }
 
   ops.forEach(function (op) {
-    const existing = existingRows_(op.sheet);
     (op.upserts || []).forEach(function (u) {
       const section = sectionForOp_(op.sheet, u.id, u.row);
       if (!section) throw new Error('sem acesso a esta seção'); // unknown sheet, or a row that resolves to no known parent — fail closed
-      const action = existing[u.id] ? 'edit' : 'create';
+      // Still resolved from the sheet's OWN current state, never from
+      // anything the client claims — only the read backing it is narrower.
+      const action = idExists_(op.sheet, u.id) ? 'edit' : 'create';
       if (!can_(user, section, action)) throw new Error('sem permissão para ' + action);
     });
     (op.deletes || []).forEach(function (id) {
@@ -593,6 +613,28 @@ function readSheet_(key) {
   return rows;
 }
 
+// Companion to readSheet_'s own backfill logic above, but touching ONLY the
+// id column instead of the whole sheet — called once per sheet at the top
+// of the 'getAll' action, inside a short-lived lock, specifically so that by
+// the time readSheet_ itself runs (lock-free) there is nothing left for it
+// to write. A blank id is rare (only from a row typed directly into the
+// sheet by hand), so this pays its own small cost only on that rare case.
+function backfillMissingIds_(key) {
+  const cfg = SHEETS[key];
+  if (cfg.cols[0] !== 'id') return;
+  const sheet = ss_().getSheetByName(cfg.name);
+  if (!sheet) return;
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  const idRange = sheet.getRange(2, 1, lastRow - 1, 1);
+  const ids = idRange.getValues();
+  let changed = false;
+  for (let i = 0; i < ids.length; i++) {
+    if (!ids[i][0]) { ids[i][0] = uid_(key); changed = true; }
+  }
+  if (changed) idRange.setValues(ids);
+}
+
 // A cell value starting with =, +, -, or @ is live-formula syntax the moment
 // anyone opens the sheet directly (or exports it to CSV/Excel) — a leading
 // apostrophe forces Sheets to treat it as literal text instead. Only applies
@@ -635,6 +677,58 @@ function findRowIndexById_(sheet, id) {
   return -1;
 }
 
+// {id: true} for one sheet, reading ONLY column A. Used by assertBatchAccess_
+// to answer "does this id already exist" without pulling every column.
+function readIdSet_(key) {
+  const cfg = SHEETS[key];
+  const out = {};
+  if (!cfg || cfg.cols[0] !== 'id') return out;
+  const sheet = ss_().getSheetByName(cfg.name);
+  if (!sheet) return out;
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return out;
+  const ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+  for (let i = 0; i < ids.length; i++) {
+    const v = ids[i][0];
+    if (v !== '' && v !== null && v !== undefined) out[String(v)] = true;
+  }
+  return out;
+}
+
+// Builds, ONCE per batch, the id → sheet-row-number map plus the current
+// lastModified per row, for every row-level sheet the batch touches.
+// Previously findConflicts_ and applyBatch_ each re-scanned the whole id
+// column for EVERY row (findRowIndexById_ per upsert, twice over), and the
+// conflict check additionally issued one single-cell getValue() per upsert —
+// so a batch of N rows cost roughly 2N column scans plus N cell reads. This
+// makes it two narrow reads per sheet, total, regardless of N.
+function buildRowIndexes_(ops) {
+  const indexes = {};
+  ops.forEach(function (op) {
+    const cfg = SHEETS[op.sheet];
+    if (!cfg || !cfg.rowLevel || indexes[op.sheet]) return;
+    const sheet = ss_().getSheetByName(cfg.name);
+    if (!sheet) return;
+    const lastRow = sheet.getLastRow();
+    const map = {};
+    const lastModifiedByRow = {};
+    if (lastRow >= 2) {
+      const lmCol = cfg.cols.indexOf('lastModified') + 1;
+      const ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+      const lms = lmCol > 0 ? sheet.getRange(2, lmCol, lastRow - 1, 1).getValues() : null;
+      for (let i = 0; i < ids.length; i++) {
+        const v = ids[i][0];
+        if (v === '' || v === null || v === undefined) continue;
+        const rowNum = i + 2;
+        map[String(v)] = rowNum;
+        if (lms) lastModifiedByRow[rowNum] = lms[i][0];
+      }
+    }
+    indexes[op.sheet] = { sheet: sheet, map: map, lastModifiedByRow: lastModifiedByRow };
+  });
+  return indexes;
+}
+
 function rowValuesFromObj_(cfg, rowObj) {
   return cfg.cols.map(c => {
     const v = rowObj[c];
@@ -646,19 +740,18 @@ function rowValuesFromObj_(cfg, rowObj) {
 
 // Checks every upsert in a batch for a stale lastModified BEFORE writing
 // anything — avoids a half-applied batch when one row in it has a conflict.
-function findConflicts_(ops) {
+function findConflicts_(ops, indexes) {
   const conflicts = [];
   ops.forEach(op => {
     const cfg = SHEETS[op.sheet];
     if (!cfg || !cfg.rowLevel) return;
-    const sheet = ss_().getSheetByName(cfg.name);
-    if (!sheet) return;
-    const lmCol = cfg.cols.indexOf('lastModified') + 1;
+    const idx = indexes && indexes[op.sheet];
+    if (!idx) return;
     (op.upserts || []).forEach(u => {
       if (!u.expectedLastModified) return; // brand-new row, nothing to conflict with
-      const rowIdx = findRowIndexById_(sheet, u.id);
-      if (rowIdx === -1) return; // row vanished (deleted elsewhere) — treat as new
-      const current = sheet.getRange(rowIdx, lmCol).getValue();
+      const rowIdx = idx.map[String(u.id)];
+      if (!rowIdx) return; // row vanished (deleted elsewhere) — treat as new
+      const current = idx.lastModifiedByRow[rowIdx];
       if (String(current) !== String(u.expectedLastModified)) {
         conflicts.push({ sheet: op.sheet, id: u.id });
       }
@@ -667,32 +760,43 @@ function findConflicts_(ops) {
   return conflicts;
 }
 
-function applyBatch_(ops) {
+function applyBatch_(ops, indexes) {
   const updated = {};
   ops.forEach(op => {
     const cfg = SHEETS[op.sheet];
     if (!cfg || !cfg.rowLevel) return;
-    const sheet = ss_().getSheetByName(cfg.name);
+    const idx = indexes && indexes[op.sheet];
+    const sheet = (idx && idx.sheet) || ss_().getSheetByName(cfg.name);
     if (!sheet) return;
     updated[op.sheet] = [];
 
     (op.upserts || []).forEach(u => {
       const newLastModified = Date.now();
       const rowObj = Object.assign({}, u.row, { lastModified: newLastModified });
-      const rowIdx = findRowIndexById_(sheet, u.id);
+      // Safe to trust the prebuilt index here: setValues never shifts rows,
+      // and appendRow only adds past the end — so an index built before this
+      // loop stays valid throughout it, as long as appends are recorded.
+      const usableIdx = idx && !idx.stale ? idx : null;
+      const rowIdx = usableIdx ? usableIdx.map[String(u.id)] : findRowIndexById_(sheet, u.id);
       const values = rowValuesFromObj_(cfg, rowObj);
-      if (rowIdx > -1) {
+      if (rowIdx && rowIdx > -1) {
         sheet.getRange(rowIdx, 1, 1, cfg.cols.length).setValues([values]);
       } else {
         sheet.appendRow(values);
+        if (usableIdx) usableIdx.map[String(u.id)] = sheet.getLastRow(); // keep the index truthful for anything later in this batch
       }
       updated[op.sheet].push({ id: u.id, lastModified: newLastModified });
     });
 
+    // Deletes deliberately keep re-scanning: deleteRow SHIFTS every row below
+    // it, so any prebuilt index is stale the moment the first one lands.
     (op.deletes || []).forEach(id => {
       const rowIdx = findRowIndexById_(sheet, id);
       if (rowIdx > -1) sheet.deleteRow(rowIdx);
     });
+    // Mark (don't null) so a later op on this same sheet falls back to a
+    // fresh scan instead of trusting now-shifted row numbers.
+    if (idx && (op.deletes || []).length) idx.stale = true;
   });
   return updated;
 }
@@ -797,6 +901,43 @@ function doPost(e) {
     user.sections = sectionsForRole_(user.role); // AUTHZ: effective permissions, resolved fresh every request
     const action = body.action;
 
+    // Identity/permissions only, no sheet data, no lock — the cheapest
+    // possible confirmation that a token is genuinely valid. Lets the
+    // frontend open the app (render from local cache) the moment identity
+    // is proven, instead of waiting on the full getAll to even open the
+    // gate. See onGoogleSignIn/loadAll in index.html.
+    if (action === 'verify') {
+      return jsonOut_({ currentUser: user });
+    }
+
+    if (action === 'getAll') {
+      // readSheet_ can write: a row typed directly into the sheet with a
+      // blank id gets one assigned and saved back, so it stays stable
+      // across future reads. That write must not race a concurrent
+      // batchMulti's own writes to the same sheet. Rather than holding the
+      // lock across the whole (expensive) multi-sheet read below, backfill
+      // ids first in their own short-lived lock — a cheap, id-column-only
+      // pass — so the actual reads that follow never need to write, and
+      // therefore never need the lock either. This is what lets a
+      // background getAll stop blocking a small user-initiated write
+      // behind it.
+      const idLock = LockService.getScriptLock();
+      try {
+        idLock.waitLock(15000);
+      } catch (err) {
+        return jsonOut_({ error: 'Servidor ocupado, tente novamente.' });
+      }
+      try {
+        Object.keys(SHEETS).forEach(function (key) { backfillMissingIds_(key); });
+      } finally {
+        idLock.releaseLock();
+      }
+
+      const out = { currentUser: user };
+      Object.keys(SHEETS).forEach(key => { out[key] = readSheet_(key); });
+      return jsonOut_(filterAllByAccess_(user, out));
+    }
+
     const lock = LockService.getScriptLock();
     try {
       lock.waitLock(15000);
@@ -804,27 +945,17 @@ function doPost(e) {
       return jsonOut_({ error: 'Servidor ocupado, tente novamente.' });
     }
     try {
-      // getAll is USUALLY a pure read, but readSheet_ can write: a row typed
-      // directly into the sheet with a blank id gets one assigned and saved
-      // back (so it stays stable across future reads). That write must not
-      // race a concurrent batchMulti's own writes to the same sheet — e.g. a
-      // deleted row's slot getting resurrected by a stale full-range write-
-      // back landing after the delete — hence taking the same lock as every
-      // other write here, even though this path only rarely needs it.
-      if (action === 'getAll') {
-        const out = { currentUser: user };
-        Object.keys(SHEETS).forEach(key => { out[key] = readSheet_(key); });
-        return jsonOut_(filterAllByAccess_(user, out));
-      }
-
       if (action === 'batchMulti') {
         const ops = body.ops || [];
         assertBatchAccess_(user, ops); // rejects the WHOLE batch if any op is outside the user's section/action or project access
-        const conflicts = findConflicts_(ops);
+        // One id+lastModified read per touched sheet, shared by both the
+        // conflict check and the write below — see buildRowIndexes_.
+        const rowIndexes = buildRowIndexes_(ops);
+        const conflicts = findConflicts_(ops, rowIndexes);
         if (conflicts.length > 0) {
           return jsonOut_({ conflict: true, conflicts: conflicts });
         }
-        const updated = applyBatch_(ops);
+        const updated = applyBatch_(ops, rowIndexes);
         return jsonOut_({ ok: true, updated: updated });
       }
 

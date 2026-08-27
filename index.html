@@ -1763,19 +1763,34 @@
   const CACHE_KEY = 'cmoreira_cache_v1';
   let lastSyncTime = null;
 
+  // Serialising the whole dataset and writing it to localStorage is a
+  // synchronous, main-thread-blocking operation measured in hundreds of
+  // milliseconds at a few thousand rows — and nothing on screen depends on
+  // it having finished. Deferring it past the next paint means the user sees
+  // (and can use) their data first, and the cache is written in the idle gap
+  // afterwards. requestIdleCallback where available, a macrotask otherwise
+  // (notably iOS Safari, which is the primary target and has no rIC).
+  let cacheWriteScheduled = false;
   function saveCacheToLocalStorage(){
-    try{
-      localStorage.setItem(CACHE_KEY, JSON.stringify({
-        projects, caixaObra, empreiteiro, tasks, notes, documentos, tipos, unidades,
-        savedAt: lastSyncTime,
-      }));
-    }catch(e){
-      console.error('cache save error', e);
-      // A full localStorage quota fails silently otherwise — the app keeps
-      // working but boots from progressively staler data with no signal
-      // that the cache has effectively stopped updating.
-      showToast('Não consegui salvar os dados localmente neste aparelho (armazenamento cheio).', false, 4500);
-    }
+    if(cacheWriteScheduled) return; // one pending write is enough; it'll serialise whatever is current when it runs
+    cacheWriteScheduled = true;
+    const write = ()=>{
+      cacheWriteScheduled = false;
+      try{
+        localStorage.setItem(CACHE_KEY, JSON.stringify({
+          projects, caixaObra, empreiteiro, tasks, notes, documentos, tipos, unidades,
+          savedAt: lastSyncTime,
+        }));
+      }catch(e){
+        console.error('cache save error', e);
+        // A full localStorage quota fails silently otherwise — the app keeps
+        // working but boots from progressively staler data with no signal
+        // that the cache has effectively stopped updating.
+        showToast('Não consegui salvar os dados localmente neste aparelho (armazenamento cheio).', false, 4500);
+      }
+    };
+    if(typeof requestIdleCallback === 'function') requestIdleCallback(write, {timeout: 2000});
+    else setTimeout(write, 0);
   }
   function loadCacheFromLocalStorage(){
     try{
@@ -2022,13 +2037,54 @@
     applySectionUIAccess();
   }
 
-  async function loadAll(isInitialSignIn){
+  // A cache render happens ONLY after the token has already been
+  // independently verified server-side (see onGoogleSignIn's separate
+  // 'verify' call, always made before loadAll runs) — so trusting the cache
+  // for this first paint is safe as far as IDENTITY goes. But the cache was
+  // written under whatever permissions were in effect at the time, and
+  // role/project access can narrow between then and now. This drops
+  // anything the CURRENT (just-verified) permissions no longer allow before
+  // a single pixel of it is drawn, so a stale cache can never show more than
+  // the server just said this user may see. The authoritative fetch that
+  // follows re-applies the same rule server-side regardless.
+  function filterCacheAgainstCurrentPermissions(){
+    if(!currentUser || !currentUser.sections) return;
+    const sections = currentUser.sections;
+    const allowedProjects = currentUser.projects; // '*' or an array of allowed project ids
+    const projOk = (pid) => allowedProjects === '*' || !pid || allowedProjects.indexOf(pid) > -1;
+    const canView = (section) => !!(sections[section] && sections[section].view);
+
+    if(!canView('lancamentos')){ caixaObra = []; empreiteiro = []; }
+    else if(allowedProjects !== '*'){
+      caixaObra = caixaObra.filter(e => projOk(e.projectId));
+      empreiteiro = empreiteiro.filter(e => projOk(e.projectId));
+    }
+    if(!canView('tarefas')){ tasks = []; }
+    else if(allowedProjects !== '*'){ tasks = tasks.filter(t => projOk(t.projectId)); }
+    // Standalone notes only — notes attached to a lançamento live nested
+    // inside caixaObra/empreiteiro entries above and are already covered by
+    // that filtering (wiping/filtering the parent entry takes its nested
+    // .notas/.fotos with it).
+    if(!canView('notas')){ notes = []; }
+    else if(allowedProjects !== '*'){ notes = notes.filter(n => projOk(n.projectId)); }
+    if(!canView('docs')){ documentos = []; }
+    else if(allowedProjects !== '*'){ documentos = documentos.filter(d => projOk(d.projectId)); }
+    if(allowedProjects !== '*'){ projects = projects.filter(p => projOk(p.id)); }
+  }
+
+  // Called once, from onGoogleSignIn, AFTER verify() has already proven the
+  // session server-side. Renders from the local cache immediately if one
+  // exists — "time until useful," not "time until fully loaded" — then
+  // hydrates the real, authoritative data in the background. Only a
+  // brand-new device with no cache at all waits on the real fetch before
+  // anything is shown, same as before this existed.
+  async function loadAll(){
     const hadCache = loadCacheFromLocalStorage();
-    if(hadCache && !isInitialSignIn){
-      // Instant render from what we had last time — no waiting on the network
-      // just to see the app. Then quietly refresh in the background. This
-      // tolerant fallback is ONLY safe for a background refresh of an
-      // ALREADY-proven session — never for the initial sign-in itself, see below.
+    if(hadCache){
+      filterCacheAgainstCurrentPermissions();
+      hideAuthGate();
+      saveSessionHint(currentUser.email); // written only after the backend has independently verified the token
+      showToast('Bem-vindo, ' + (currentUser.nome || currentUser.email) + '.');
       finishLoadSetup();
       renderAll();
       updateSyncStatusText();
@@ -2043,20 +2099,14 @@
       return;
     }
 
-    // Either no cache exists, OR this is the initial sign-in — in both cases
-    // a failed fetch must be a hard failure, not silently smoothed over by
-    // old local data. Trusting stale cache during sign-in specifically would
-    // let a rejected/unauthorized request look like a successful login.
+    // No cache on this device — nothing safe to render early, so this
+    // still waits on the real fetch, and a failure is still a hard failure
+    // (never silently smoothed over by made-up defaults during sign-in).
     const ok = await fetchAndApplyFromServer();
-    if(!ok){
-      if(isInitialSignIn) throw new Error('Não foi possível confirmar sua sessão.');
-      showToast(navigator.onLine
-        ? 'Não consegui conectar ao Google Sheets. Verifique sua internet e tente novamente.'
-        : 'Sem internet. Conecte-se e toque em sincronizar.');
-      projects = [{id:'Obra Gavião', name:'Obra Gavião'}, {id:'Obra Boreal', name:'Obra Boreal'}];
-      caixaObra = []; empreiteiro = []; tasks = []; notes = []; documentos = [];
-      tipos = DEFAULT_TIPOS.slice(); unidades = DEFAULT_UNIDADES.slice();
-    }
+    if(!ok) throw new Error('Não foi possível confirmar sua sessão.');
+    hideAuthGate();
+    saveSessionHint(currentUser.email);
+    showToast('Bem-vindo, ' + (currentUser.nome || currentUser.email) + '.');
     finishLoadSetup();
     renderAll();
     updateSyncStatusText();
@@ -3503,9 +3553,16 @@
     if(!t) return;
     const prevTasks = cloneState_(tasks);
     t.feito = !t.feito;
-    const ok = await saveKey('tasks', tasks, prevTasks);
+    // Optimistic: the checkbox must move the instant it's tapped — the save
+    // itself happens in the background. Render BEFORE awaiting, not after;
+    // saveKey already rolls `tasks` back to prevTasks on failure, so the
+    // only reason to render a second time is to reflect that correction.
     renderAll();
-    if(!ok) showToast('Não consegui atualizar a tarefa. Tente novamente.', false, 4500);
+    const ok = await saveKey('tasks', tasks, prevTasks);
+    if(!ok){
+      renderAll();
+      showToast('Não consegui atualizar a tarefa. Tente novamente.', false, 4500);
+    }
   }
 
   function renderTasks(){
@@ -3543,28 +3600,40 @@
     const texto = $('#t_texto').value.trim();
     if(!texto){ showToast('Escreva a tarefa primeiro.'); return; }
     const prevTasks = cloneState_(tasks);
-    tasks.push({
-      id: uid('t'), feito:false, criadoEm: Date.now(),
-      texto,
-      prazo: $('#t_prazo').value || '',
-      prioridade: $('#t_prioridade').value,
-      projectId: $('#t_projeto').value || null,
-      fotos: draftTaskFotos.slice(),
-    });
-    const saveOk = await saveKey('tasks', tasks, prevTasks);
-    if(saveOk){
-      draftTaskFotos = []; // now owned by the saved task — clear without deleting their blobs
-      $('#t_texto').value = '';
-      $('#t_prazo').value = '';
-      refreshTPrazo();
-      $('#t_prioridade').value = 'media';
-      $('#t_projeto').value = activeProjectId || '';
-      showToast('Tarefa adicionada.');
-    } else {
-      showToast('Não consegui salvar a tarefa. Tente novamente.', false, 4500);
-    }
+    const prazo = $('#t_prazo').value || '';
+    const prioridade = $('#t_prioridade').value;
+    const projectId = $('#t_projeto').value || null;
+    const fotos = draftTaskFotos.slice();
+    tasks.push({ id: uid('t'), feito:false, criadoEm: Date.now(), texto, prazo, prioridade, projectId, fotos });
+
+    // Optimistic: clear the form and show the new task immediately — the
+    // save happens in the background. Only the (rare) failure path below
+    // pays for a second render, to revert and restore what was typed.
+    draftTaskFotos = [];
+    $('#t_texto').value = '';
+    $('#t_prazo').value = '';
+    refreshTPrazo();
+    $('#t_prioridade').value = 'media';
+    $('#t_projeto').value = activeProjectId || '';
     renderTaskFormPhotoThumbs();
     renderAll();
+
+    const saveOk = await saveKey('tasks', tasks, prevTasks);
+    if(saveOk){
+      showToast('Tarefa adicionada.');
+    } else {
+      // saveKey already rolled `tasks` back to prevTasks — restore the form
+      // too, so nothing the user typed is lost, matching the same rule.
+      $('#t_texto').value = texto;
+      $('#t_prazo').value = prazo;
+      refreshTPrazo();
+      $('#t_prioridade').value = prioridade;
+      $('#t_projeto').value = projectId || '';
+      draftTaskFotos = fotos;
+      renderTaskFormPhotoThumbs();
+      renderAll();
+      showToast('Não consegui salvar a tarefa. Tente novamente.', false, 4500);
+    }
   }));
 
   function showTaskViewMode(){
@@ -4377,8 +4446,8 @@
     if(pendingTokenRefreshOnly){
       pendingTokenRefreshOnly = false;
       // Background refresh only — must NEVER run the full sign-in flow
-      // below. loadAll(true) treats any failure as "session invalid" and
-      // signs the user out, and finishLoadSetup() resets the entry form —
+      // below. loadAll() treats a failed first fetch as "session invalid"
+      // and signs the user out, and finishLoadSetup() resets the entry form —
       // both actively wrong reactions to a routine background token renewal,
       // and both used to fire here on nothing worse than a slow connection.
       googleIdToken = response.credential;
@@ -4389,10 +4458,14 @@
     googleIdTokenObtainedAt = Date.now();
     $('#googleSignInSlot').innerHTML = '<div class="auth-spinner">Entrando...</div>';
     try{
-      await loadAll(true);
-      hideAuthGate();
-      if(currentUser) saveSessionHint(currentUser.email); // written only after the backend has independently verified the token
-      if(currentUser) showToast('Bem-vindo, ' + (currentUser.nome || currentUser.email) + '.');
+      // Prove the session FIRST, on its own tiny request — no sheet data at
+      // all. This is what the gate waits for, instead of the full getAll:
+      // identity is the only thing that actually gates entry, and it can be
+      // answered in a fraction of the time. loadAll() below then renders
+      // from local cache immediately and hydrates the real data behind it.
+      const verified = await sheetsPost({action:'verify'});
+      currentUser = verified.currentUser;
+      await loadAll();
     }catch(err){
       googleIdToken = null;
       clearSessionHint();
@@ -4404,9 +4477,36 @@
       renderGoogleButton();
     }
   }
+  // Apps Script cold-starts its container on the first request after a period
+  // of idleness, and that boot is a real part of the wait. Firing a throwaway
+  // request the moment the user TAPS the sign-in button overlaps that boot
+  // with the time they spend in Google's account chooser — by the time a
+  // credential comes back, the backend is usually already warm. Deliberately
+  // fire-and-forget and unauthenticated: it carries no token, so the backend
+  // rejects it at getCurrentUser_ and returns an error, which is fine — the
+  // point is purely to have made the container exist. Nothing reads the
+  // result, and a failure here must never surface to the user.
+  let warmupFired = false;
+  function warmUpBackend(){
+    if(warmupFired) return;
+    warmupFired = true;
+    try{
+      fetch(APPS_SCRIPT_URL, {
+        method: 'POST',
+        headers: {'Content-Type': 'text/plain;charset=utf-8'},
+        body: JSON.stringify({action: 'verify'}),
+      }).catch(()=>{});
+    }catch(e){ /* warm-up is best-effort by definition */ }
+  }
+
   function renderGoogleButton(){
     if(!window.google || !google.accounts || !google.accounts.id) return;
     google.accounts.id.renderButton($('#googleSignInSlot'), { theme:'filled_black', size:'large', shape:'pill', text:'signin_with' });
+    // GIS renders its button inside an iframe, so the click itself isn't
+    // observable from here — but a pointerdown anywhere in the slot is a
+    // reliable proxy for "the user is about to sign in".
+    const slot = $('#googleSignInSlot');
+    if(slot) slot.addEventListener('pointerdown', warmUpBackend, {once:true});
   }
   // Session-restoration marker — email + timestamp ONLY, never the token
   // itself. This is a UI hint for whether to try a silent re-auth before
