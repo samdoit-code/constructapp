@@ -291,6 +291,13 @@ Any new or changed permission-controlled section needs a focused authorization t
 - Per-user (rather than per-role) permission customization — not built, no current requirement for it.
 - A user-management UI (the `usuarios` section in `Papeis`/`SECTIONS` is reserved for this but nothing reads/writes it yet).
 
+**Deliberately not done (from the pre-production audit) — each a real trade-off, not an oversight, and not currently planned:**
+- **`oauthScopes` left implicit in `appsscript.json`** (relies on Apps Script's auto-detection). Declaring it explicitly means enumerating every scope actually in use and could force the deploying account to re-consent — risking the exact "backend half of a change goes live, breaks something for everyone" failure this project has already hit once. Needs a deliberate, verified pass, not a guess.
+- **A per-request backend read cache** (dedupe `readSheet_` calls within one `doPost`). Mostly moot after `syncSheets` stopped sending empty-diff ops — that removed the two full-sheet reads this would have targeted. Caching further inside the transactional write path (`findConflicts_`/`applyBatch_`) risks a subtler correctness bug for whatever's left to gain.
+- **Concurrent (2–3 at a time) photo uploads.** `uploadFile` already runs inside the same script lock as every write, so parallelizing the client side mostly shifts lock contention around rather than removing work, and it complicates per-file success/failure bookkeeping across five call sites for a modest gain.
+- **One unified `{ok, code, message}` response envelope** across every backend action (today each action's response shape is bespoke and every frontend caller already knows its own). Real value as a foundation for future apps, but reshaping every action and every caller on a live financial app isn't justified by today's problem — the permission-error prefix-match fix already solves the actual bug this would have prevented.
+- **Caching Google's `tokeninfo` verification result** to cut the one outbound HTTPS call every request makes. Trades a small latency win for a real, if small, revocation-detection delay — needs an explicit decision, not a default.
+
 ---
 
 ## 11. CLAUDE.md Maintenance
