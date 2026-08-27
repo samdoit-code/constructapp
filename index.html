@@ -2051,7 +2051,14 @@
     if(!currentUser || !currentUser.sections) return;
     const sections = currentUser.sections;
     const allowedProjects = currentUser.projects; // '*' or an array of allowed project ids
-    const projOk = (pid) => allowedProjects === '*' || !pid || allowedProjects.indexOf(pid) > -1;
+    // Mirrors the backend's hasProjectAccess_ EXACTLY, including the part
+    // that's easy to get backwards: for a project-scoped user, a row with no
+    // resolvable project is DENIED, not allowed. Treating a blank project as
+    // "no restriction applies" makes this filter more permissive than the
+    // server it's supposed to be shadowing, which would let a cached
+    // project-less row render for the seconds before getAll (which would
+    // never have sent it) lands and replaces it.
+    const projOk = (pid) => allowedProjects === '*' || (!!pid && allowedProjects.indexOf(pid) > -1);
     const canView = (section) => !!(sections[section] && sections[section].view);
 
     if(!canView('lancamentos')){ caixaObra = []; empreiteiro = []; }
