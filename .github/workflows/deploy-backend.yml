@@ -6,6 +6,14 @@ on:
       - main
     paths:
       - "backend/**"
+      # A change to this workflow must re-run it. Without this, a fix to the
+      # deploy pipeline itself never gets exercised until the next unrelated
+      # backend commit happens to come along — which is exactly how a broken
+      # push step stayed broken across three "successful" deploys.
+      - ".github/workflows/deploy-backend.yml"
+  # Manual re-run, for recovering from a bad or skipped deploy without having
+  # to invent a backend commit to trigger one.
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -50,9 +58,45 @@ jobs:
           }
           EOF
 
+      # --force is REQUIRED in CI, not an optimization. When appsscript.json is
+      # among the changed files, `clasp push` asks "Manifest file has been
+      # updated. Do you want to push and overwrite?" — and its
+      # confirmManifestUpdate() returns false immediately when
+      # process.stdout.isTTY is false, which it always is on a runner. It then
+      # prints "Skipping push." and exits 0, so the step goes green having
+      # uploaded nothing. This is self-perpetuating: once the local manifest
+      # differs from the remote one, EVERY later push is skipped the same way.
+      #
+      # That is not hypothetical — it happened here. A manifest timeZone change
+      # froze the backend source for three consecutive "successful" deploys
+      # while clasp update-deployment kept cutting new versions (21, 22, 23)
+      # from the unchanged remote code. Login broke for everyone the moment the
+      # frontend started calling a backend action that only existed in the
+      # source that never landed.
       - name: Push to Apps Script
         working-directory: backend
-        run: clasp push
+        run: |
+          set -o pipefail
+          clasp push --force 2>&1 | tee push.log
+
+          # `clasp push` exits 0 whether or not it actually uploaded anything,
+          # so its exit code proves nothing — the log is the only evidence.
+          # Fail loudly on anything that is not a proven push or a proven no-op,
+          # rather than letting the deploy step below publish stale code.
+          if grep -q "Skipping push" push.log; then
+            echo "::error::clasp refused to push (declined the manifest overwrite). NOTHING was uploaded and the live backend is unchanged."
+            exit 1
+          fi
+          if grep -q "Script is already up to date" push.log; then
+            echo "Remote source already matches this commit — nothing to upload."
+            exit 0
+          fi
+          if grep -qE "^Pushed (one file|[0-9]+ files) at " push.log; then
+            echo "Source upload confirmed."
+            exit 0
+          fi
+          echo "::error::clasp push produced no recognizable success line — refusing to deploy code that may not have uploaded. Full output above."
+          exit 1
 
       # `clasp push` only updates the script project's source — it does NOT
       # move the live Web App URL (the stable /exec endpoint the frontend
