@@ -4346,7 +4346,22 @@
   // AUTH: Google Sign-In — reusable as-is in future apps built on this
   // same template; only GOOGLE_CLIENT_ID above needs to change per app.
   // ==================================================================
+  // Set immediately before the ONE proactive-refresh prompt() call below —
+  // this is what lets the single shared GIS callback (onGoogleSignIn) tell
+  // "just refresh the token" apart from "this is a real sign-in attempt,"
+  // since Google's API only allows one registered callback.
+  let pendingTokenRefreshOnly = false;
+
   function showAuthGate(message, isError){
+    // Whenever the sign-in gate goes in front of the user, any pending
+    // refresh-only intent is void by definition: the next credential that
+    // arrives is a real sign-in, not a background renewal. This matters
+    // because the proactive prompt() below has no callback — when it
+    // silently yields no credential (the EXPECTED case in a standalone iOS
+    // PWA, which has no Google session to resume) nothing else would ever
+    // clear the flag, and the user's next genuine sign-in tap would be
+    // swallowed by the refresh-only branch of onGoogleSignIn.
+    pendingTokenRefreshOnly = false;
     $('#appScroll').style.display = 'none';
     $('#authGate').style.display = 'flex';
     $('#authGateMsg').textContent = message || 'Entre com sua conta Google para continuar.';
@@ -4358,13 +4373,6 @@
     $('#authGate').style.display = 'none';
     $('#appScroll').style.display = '';
   }
-  // Set immediately before the ONE proactive-refresh prompt() call below, and
-  // cleared before every OTHER prompt() call (cold-launch restore, or a
-  // fresh manual sign-in) — this is what lets the single shared GIS callback
-  // (onGoogleSignIn) tell "just refresh the token" apart from "this is a real
-  // sign-in attempt," since Google's API only allows one registered callback.
-  let pendingTokenRefreshOnly = false;
-
   async function onGoogleSignIn(response){
     if(pendingTokenRefreshOnly){
       pendingTokenRefreshOnly = false;
