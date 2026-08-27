@@ -1221,7 +1221,6 @@
   let activeProjectId = null;
 
   let editingId = null;
-  let editingKind = 'caixa'; // 'caixa' | 'emp'
   let selectedSocio = 'Pedro';
   let entriesKind = 'caixa';
   let addKind = 'caixa';
@@ -2162,7 +2161,7 @@
       const style = isActive
         ? `border-color:var(--orange); background:rgba(224,101,31,0.07);`
         : '';
-      return `<div class="project-select-row ${isActive?'active':''}" data-pid="${p.id}" style="${style}">
+      return `<div class="project-select-row ${isActive?'active':''}" data-pid="${escapeHTML(p.id)}" style="${style}">
         <span class="proj-monogram">${escapeHTML(projInitial(p.name))}</span>
         <span class="pname">${escapeHTML(p.name)}</span>
         <span class="current-tag">Atual</span>
@@ -2271,6 +2270,8 @@
   }
 
   function renderDashboard(){
+    const view = document.getElementById('view-dashboard');
+    if(!view || !view.classList.contains('active')) return; // switchView() re-renders fresh on entry, same guard as renderEntries()/renderDocsView()
     const caixaP = projEntries(caixaObra);
     const empP = projEntries(empreiteiro);
     const totalCaixa = totalOf(caixaP);
@@ -2945,18 +2946,12 @@
 
   // ---------- Zoom controller (scoped to one element via CSS transform — never
   // touches the page's own viewport, so it can't ever zoom the whole app) ----------
-  function makeZoomable(el, opts){
-    opts = opts || {};
-    const min = opts.min || 1, max = opts.max || 3, step = opts.step || 0.5;
-    const state = {scale: 1};
-    function apply(){ el.style.transform = 'scale(' + state.scale + ')'; }
-    function zoomIn(){ state.scale = Math.min(max, +(state.scale + step).toFixed(2)); apply(); }
-    function zoomOut(){ state.scale = Math.max(min, +(state.scale - step).toFixed(2)); apply(); }
-    function reset(){ state.scale = 1; apply(); }
-    return {state, zoomIn, zoomOut, reset};
-  }
-  const photoZoom = makeZoomable($('#photoViewImg'), {min:1, max:4, step:0.5});
-  const pdfZoom = makeZoomable($('#pdfViewFrame'), {min:1, max:2.5, step:0.5});
+  // The zoom in/out controls this once supported were removed from the UI
+  // (see CLAUDE.md — "No manual zoom buttons on photo/PDF viewers"), leaving
+  // only the reset-on-open behavior actually in use. Kept as a named
+  // function rather than inlined at each of the two call sites since "reset
+  // this element's zoom" is a real, self-explanatory concept worth naming.
+  function resetZoom(el){ el.style.transform = 'scale(1)'; }
 
   let photoViewDeleteHandler = null;
   let photoGroupNav = null; // {items, index, catKey} — only set when opened from a navigable group
@@ -2971,7 +2966,7 @@
     const img = $('#photoViewImg');
     img.src = dataUrl;
     $('#photoZoomViewport').style.display = 'block';
-    photoZoom.reset();
+    resetZoom($('#photoViewImg'));
     photoViewDeleteHandler = onDelete;
     // Courtesy only — hide the button when the caller didn't give us a
     // delete handler (either nothing to delete, or the caller withheld it
@@ -3447,7 +3442,7 @@
   // ---------- Tasks ----------
   function populateTaskProjectSelect(){
     const sel = $('#t_projeto');
-    sel.innerHTML = '<option value="">Geral (todos os projetos)</option>' + projects.map(p=>`<option value="${p.id}" ${p.id===activeProjectId?'selected':''}>${escapeHTML(p.name)}</option>`).join('');
+    sel.innerHTML = '<option value="">Geral (todos os projetos)</option>' + projects.map(p=>`<option value="${escapeHTML(p.id)}" ${p.id===activeProjectId?'selected':''}>${escapeHTML(p.name)}</option>`).join('');
   }
 
   function taskSort(a,b){
@@ -3514,6 +3509,8 @@
   }
 
   function renderTasks(){
+    const view = document.getElementById('view-tasks');
+    if(!view || !view.classList.contains('active')) return; // switchView() re-renders fresh on entry, same guard as renderEntries()/renderDocsView()
     const visible = tasks.filter(t => t.projectId === activeProjectId || !t.projectId);
     const overdue = visible.filter(t => isOverdue(t)).sort(taskSort);
     const today = visible.filter(t => !t.feito && !isOverdue(t) && isToday(t)).sort(taskSort);
@@ -3603,7 +3600,7 @@
 
   function populateTaskEditProjectSelect(selectedId){
     const sel = $('#te_projeto');
-    sel.innerHTML = '<option value="">Geral (todos os projetos)</option>' + projects.map(p=>`<option value="${p.id}" ${p.id===selectedId?'selected':''}>${escapeHTML(p.name)}</option>`).join('');
+    sel.innerHTML = '<option value="">Geral (todos os projetos)</option>' + projects.map(p=>`<option value="${escapeHTML(p.id)}" ${p.id===selectedId?'selected':''}>${escapeHTML(p.name)}</option>`).join('');
   }
 
   $('#editTaskBtn').addEventListener('click', ()=>{
@@ -3809,6 +3806,8 @@
   let notesPage = 1;
 
   function renderNotesFeed(){
+    const view = document.getElementById('view-notes');
+    if(!view || !view.classList.contains('active')) return; // switchView() re-renders fresh on entry, same guard as renderEntries()/renderDocsView()
     const items = [];
     projEntries(notes).forEach(n => items.push({texto:n.texto, criadoEm:n.criadoEm, origin:'Nota geral', entryRef:null, ref:{origin:'standalone', id:n.id}, noteObj:n}));
     projEntries(caixaObra).forEach(e => (e.notas||[]).forEach(n => items.push({texto:n.texto, criadoEm:n.criadoEm, origin:'Caixa da obra: ' + e.nome, entryRef:{kind:'caixa', id:e.id}, ref:{origin:'caixa', entryId:e.id, noteId:n.id}})));
@@ -3951,7 +3950,7 @@
   });
   function renderSettingsProjects(){
     const box = $('#settingsProjects');
-    box.innerHTML = projects.map(p => `<div class="proj-row"><span class="pname"><span class="proj-dot-inline"></span>${escapeHTML(p.name)}</span><button data-rename="${p.id}">Renomear</button></div>`).join('');
+    box.innerHTML = projects.map(p => `<div class="proj-row"><span class="pname"><span class="proj-dot-inline"></span>${escapeHTML(p.name)}</span><button data-rename="${escapeHTML(p.id)}">Renomear</button></div>`).join('');
     const canEditConfig = canSection('config','edit');
     box.querySelectorAll('[data-rename]').forEach(btn=>{
       if(!canEditConfig){ btn.style.display = 'none'; return; }
@@ -4228,7 +4227,7 @@
     pdfViewCurrentDriveUrl = driveUrl || ('https://drive.google.com/uc?export=download&id=' + driveFileId);
     $('#pdfViewTitle').textContent = filename || 'Documento';
     $('#pdfViewFrame').src = pdfEmbedUrl(driveFileId);
-    pdfZoom.reset();
+    resetZoom($('#pdfViewFrame'));
     $('#pdfViewModal').classList.add('open');
   }
   function closePdfPreview(){
