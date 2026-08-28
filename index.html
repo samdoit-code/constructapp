@@ -1576,7 +1576,36 @@
   }
   // Syncs any number of tabs in ONE request (item 5/6: batching). Returns
   // false (with a toast already shown) on any failure, including conflicts.
-  async function syncSheets(sheetRowsMap){
+  //
+  // Serialized globally via syncQueue (below) — diffRows_ reads sheetSnapshot
+  // at call time, and the snapshot is only updated once a request's response
+  // lands. Two overlapping calls (e.g. checking two tasks in quick
+  // succession) would otherwise both diff against the SAME stale snapshot:
+  // the first call's upsert lands and bumps that row's lastModified on the
+  // sheet, but the second call already captured the old lastModified as its
+  // expectedLastModified for that same row — a guaranteed conflict, which
+  // rejects the WHOLE batch (all-or-nothing), including any change in it
+  // that had nothing to do with the stale row. This was a real, reproducible
+  // bug: checking/unchecking several tasks back-to-back failed with "Não
+  // consegui atualizar a tarefa" as soon as an earlier toggle's response
+  // landed mid-flight of a later one.
+  //
+  // Queuing the actual send (not the caller, not the optimistic mutation —
+  // those still happen instantly) fixes this for free: by the time a queued
+  // call's turn arrives, every earlier call has already resolved and updated
+  // sheetSnapshot, so the diff naturally reduces to just the genuinely
+  // unsaved delta. The sheetRowsMap argument itself is a value snapshot
+  // taken by the caller at invocation time (toSheetRows() maps into new
+  // objects), so a later call always carries the FULL current desired state
+  // — nothing is lost by waiting its turn.
+  let syncQueue = Promise.resolve();
+  function syncSheets(sheetRowsMap){
+    const run = () => syncSheetsNow_(sheetRowsMap);
+    const result = syncQueue.then(run, run);
+    syncQueue = result.catch(()=>{}); // keep the chain alive past a failed/rejected call
+    return result;
+  }
+  async function syncSheetsNow_(sheetRowsMap){
     // Only send sheets that actually have an upsert or delete — every save
     // touching caixaObra/empreiteiro/tasks also calls this with the (usually
     // unchanged) fotos/notas payloads, and each op the backend receives is a
@@ -2438,6 +2467,11 @@
   const DOCS_PAGE_SIZE = 30;
   let docsPage = 1;
   const TASKS_PAGE_SIZE = 40;
+  // Concluídas gets its own, smaller page size: at scale most of a user's
+  // history is old finished tasks nobody wants to scroll through by default,
+  // unlike the other three categories (overdue/today/open) which are the
+  // small, actionable set someone actually needs to see in full.
+  const TASKS_DONE_PAGE_SIZE = 10;
   let tasksPagePerCat = {overdue:1, today:1, open:1, done:1};
 
   $('#entriesViewToggle').querySelectorAll('button[data-mode]').forEach(btn=>{
@@ -3579,14 +3613,19 @@
     const overdue = visible.filter(t => isOverdue(t)).sort(taskSort);
     const today = visible.filter(t => !t.feito && !isOverdue(t) && isToday(t)).sort(taskSort);
     const open = visible.filter(t => !t.feito && !isOverdue(t) && !isToday(t)).sort(taskSort);
-    const done = visible.filter(t => t.feito).sort((a,b)=> b.criadoEm - a.criadoEm);
+    // Sorted by lastModified, not criadoEm: lastModified is bumped the
+    // moment a task is checked off, so this is "most recently completed
+    // first" — criadoEm would instead surface old tasks that just happen to
+    // have been CREATED recently, regardless of when they were finished.
+    const done = visible.filter(t => t.feito).sort((a,b)=> (b.lastModified||0) - (a.lastModified||0));
 
     const map = [['tasksOverdue', overdue, 'Nenhuma tarefa atrasada.', 'overdue'], ['tasksToday', today, 'Nada previsto para hoje.', 'today'], ['tasksOpen', open, 'Nenhuma tarefa em aberto.', 'open'], ['tasksDone', done, 'Nenhuma tarefa concluída ainda.', 'done']];
     map.forEach(([selId, list, emptyMsg, catKey])=>{
       const box = $('#'+selId);
       if(list.length === 0){ box.innerHTML = `<div class="empty-state" style="padding:16px;"><p class="hint">${emptyMsg}</p></div>`; return; }
       const page = tasksPagePerCat[catKey] || 1;
-      const visibleCount = Math.min(page * TASKS_PAGE_SIZE, list.length);
+      const pageSize = catKey === 'done' ? TASKS_DONE_PAGE_SIZE : TASKS_PAGE_SIZE;
+      const visibleCount = Math.min(page * pageSize, list.length);
       let html = list.slice(0, visibleCount).map(t=>taskRowHTML(t,false)).join('');
       if(visibleCount < list.length){
         html += `<button class="btn btn-ghost btn-block" data-load-more-tasks="${catKey}" style="margin-top:6px;">Carregar mais (${list.length - visibleCount} restantes)</button>`;
