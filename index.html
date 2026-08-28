@@ -398,11 +398,24 @@
   .task-row{
     background:var(--card); border:1px solid var(--line); border-radius:12px;
     padding:12px 13px; display:flex; align-items:flex-start; gap:11px; margin-bottom:8px;
-    box-shadow:var(--shadow); cursor:pointer;
+    box-shadow:var(--shadow); cursor:pointer; touch-action:manipulation;
   }
   .task-check{
     flex:0 0 auto; width:23px; height:23px; border-radius:7px; border:2px solid var(--line);
     display:flex; align-items:center; justify-content:center; margin-top:1px; background:#fff;
+    position:relative; z-index:1; touch-action:manipulation;
+  }
+  /* The visible box stays 23px, but the real touch target is 44x44 (the iOS
+     minimum) via an absolutely-positioned overlay that contributes nothing to
+     layout. A pseudo-element is never a hit-test target of its own — a tap
+     anywhere inside it resolves to .task-check — so a near-miss toggles the
+     task instead of falling through to .task-row's "open the card" handler,
+     which is what made the checkbox feel unreliable. position/z-index on
+     .task-check are load-bearing: without them this overlay would paint (and
+     therefore hit-test) underneath the in-flow .task-body next to it. */
+  .task-check::before{
+    content:''; position:absolute; top:50%; left:50%; width:44px; height:44px;
+    transform:translate(-50%,-50%);
   }
   .task-check svg{width:14px;height:14px; stroke:#fff; fill:none; stroke-width:3; display:none;}
   .task-row.done .task-check{background:var(--green); border-color:var(--green);}
@@ -1599,11 +1612,18 @@
   // objects), so a later call always carries the FULL current desired state
   // — nothing is lost by waiting its turn.
   let syncQueue = Promise.resolve();
-  function syncSheets(sheetRowsMap){
-    const run = () => syncSheetsNow_(sheetRowsMap);
+  // Runs fn() as the next link in the global sync chain. Used by syncSheets
+  // for writes AND by fetchAndApplyFromServer for the moment it swaps server
+  // data into memory — a hydration that landed between a write's request and
+  // its response would rewrite sheetSnapshot underneath that write.
+  function enqueueSync_(fn){
+    const run = () => fn();
     const result = syncQueue.then(run, run);
     syncQueue = result.catch(()=>{}); // keep the chain alive past a failed/rejected call
     return result;
+  }
+  function syncSheets(sheetRowsMap){
+    return enqueueSync_(() => syncSheetsNow_(sheetRowsMap));
   }
   async function syncSheetsNow_(sheetRowsMap){
     // Only send sheets that actually have an upsert or delete — every save
@@ -1638,6 +1658,138 @@
       showToast(saveErrorMessage(e), false, 4500);
       return false;
     }
+  }
+
+  // ---------- Pending task mutations (checkbox toggles) ----------
+  // Rapid checkbox taps are INDEPENDENT user intentions, not repeated saves of
+  // the whole Tarefas tab. Three invariants keep them correct regardless of
+  // tap speed, network timing, failures, background hydration, DOM re-renders,
+  // or a task card being opened mid-burst:
+  //
+  //  1. A failed mutation reverts ONLY its own task. No write may roll a whole
+  //     state array back to a pre-mutation clone while other mutations on that
+  //     same array are still pending — the clone predates them, so restoring
+  //     it silently erases intentions the user already saw applied, and which
+  //     may already have been persisted. This was the actual bug behind
+  //     "I check 5 tarefas and 4 quietly revert."
+  //  2. The newest intention always wins. Every flush records the exact
+  //     desired value it sent; the response is applied to a task ONLY if the
+  //     user has not toggled it again in the meantime, so a late response from
+  //     an older request can never overwrite a newer local intention.
+  //  3. Correctness never depends on the user stopping. TASK_FLUSH_WINDOW_MS
+  //     only decides how many taps share ONE request — a send always starts
+  //     within that window of the first unsaved change however long tapping
+  //     continues, and anything still pending when a flush finishes schedules
+  //     the next one immediately.
+  //
+  // Keyed by task id: {desired, baseline}. `desired` is the current intention
+  // (already reflected in `tasks` and on screen); `baseline` is the last
+  // server-confirmed value, captured when the task FIRST becomes pending and
+  // refreshed by getAll. A failure reverts to `baseline`, so A✓→A✗→A✓ that
+  // ultimately fails returns to the real server value rather than to some
+  // intermediate tap.
+  const pendingTaskChanges = new Map();
+  const TASK_FLUSH_WINDOW_MS = 120;
+  const TASK_SETTLE_MS = 600;
+  let taskFlushTimer = null;
+  let taskFlushInFlight = false;
+  let taskSettleTimer = null;
+
+  // Repaints one task's checkbox state in place, everywhere it is currently on
+  // screen (the Tarefas page and the Painel widget both render
+  // .task-row[data-id]). Deliberately NOT renderAll(): a full re-render
+  // rebuilds the list and re-buckets the row into a different container, so
+  // the row moves out from under the user's finger mid-burst and the next tap
+  // lands on a different row — or on the card body, opening the detail modal.
+  // Re-bucketing is deferred to scheduleTaskSettle_() instead.
+  function patchTaskRowClass_(id, feito){
+    document.querySelectorAll('.task-row').forEach(row=>{
+      if(row.dataset.id === id) row.classList.toggle('done', !!feito);
+    });
+  }
+  // Keeps an open task card's toggle button honest without touching anything
+  // else about the modal — navigation state and persistence state stay
+  // independent, so opening or closing a card can neither cancel nor be
+  // cancelled by an in-flight checkbox save.
+  function syncTaskModalToggleLabel_(id){
+    if(activeTaskId !== id) return;
+    const btn = document.getElementById('toggleTaskBtn');
+    const t = tasks.find(x=>x.id===id);
+    if(btn && t) btn.textContent = t.feito ? 'Reabrir tarefa' : 'Marcar como concluída';
+  }
+  // Re-sorts/re-buckets once the burst has settled. 600ms: taps down a list
+  // land roughly 200-350ms apart on a phone, so this never reshuffles
+  // mid-burst, yet a single deliberate tap still visibly lands in Concluídas a
+  // moment later instead of looking stuck. Trailing-edge on purpose — unlike
+  // the flush window, postponing a purely cosmetic re-sort for as long as the
+  // user keeps tapping is exactly the desired behaviour.
+  function scheduleTaskSettle_(){
+    if(taskSettleTimer) clearTimeout(taskSettleTimer);
+    taskSettleTimer = setTimeout(()=>{ taskSettleTimer = null; renderAll(); }, TASK_SETTLE_MS);
+  }
+  // Leading window, NOT a trailing debounce: the first unsaved change starts
+  // the clock and nothing pushes it back, so continuous tapping can never
+  // postpone persistence indefinitely. While a flush is in flight nothing is
+  // scheduled — that flush's own completion handler reschedules if needed.
+  function scheduleTaskFlush_(){
+    if(taskFlushTimer || taskFlushInFlight) return;
+    taskFlushTimer = setTimeout(()=>{ taskFlushTimer = null; flushTaskChanges_(); }, TASK_FLUSH_WINDOW_MS);
+  }
+  async function flushTaskChanges_(){
+    if(taskFlushInFlight || !pendingTaskChanges.size) return;
+    taskFlushInFlight = true;
+    // Record WHICH intention each pending task had at send time. The payload
+    // itself is built from live `tasks` inside saveKey, so a tap landing
+    // microseconds before the request goes out rides along instead of costing
+    // another round trip.
+    const sent = new Map();
+    pendingTaskChanges.forEach((v, id)=> sent.set(id, v.desired));
+    let ok = false;
+    try{
+      ok = await saveKey('tasks', tasks); // no previousValue — rollback is per-task, below
+    } finally {
+      taskFlushInFlight = false;
+    }
+    let reverted = 0;
+    sent.forEach((desiredAtSend, id)=>{
+      const cur = pendingTaskChanges.get(id);
+      if(!cur) return;                          // already resolved by another flush
+      if(cur.desired !== desiredAtSend) return; // newer intention exists — this response is stale for this task; leave it pending
+      if(ok){
+        pendingTaskChanges.delete(id);          // confirmed: the sent value is now the baseline
+        return;
+      }
+      const t = tasks.find(x=>x.id===id);
+      if(t && t.feito !== cur.baseline){
+        t.feito = cur.baseline;
+        patchTaskRowClass_(id, cur.baseline);
+        syncTaskModalToggleLabel_(id);
+        reverted++;
+      }
+      pendingTaskChanges.delete(id);
+    });
+    if(reverted){
+      showToast(reverted === 1
+        ? 'Não consegui atualizar a tarefa. Tente novamente.'
+        : 'Não consegui atualizar ' + reverted + ' tarefas. Tente novamente.', false, 4500);
+      scheduleTaskSettle_();
+    }
+    if(pendingTaskChanges.size) scheduleTaskFlush_(); // intentions that arrived mid-flight
+  }
+  // A background getAll must never discard an optimistic change the user can
+  // already see:  displayed state = server snapshot + pending local mutations.
+  // Order matters — this runs AFTER rebuildSheetSnapshot_(), so the snapshot
+  // holds the server's value and diffRows_ still sees each pending toggle as a
+  // genuine unsaved delta. Re-applying before the rebuild would bake the
+  // pending change into the baseline and it would never be sent at all.
+  function reapplyPendingTaskChanges_(){
+    if(!pendingTaskChanges.size) return;
+    pendingTaskChanges.forEach((p, id)=>{
+      const t = tasks.find(x=>x.id===id);
+      if(!t){ pendingTaskChanges.delete(id); return; } // deleted server-side; nothing left to reconcile
+      p.baseline = t.feito; // the server's value is the new confirmed baseline for any future rollback
+      t.feito = p.desired;  // the user's unsaved intention still wins on screen
+    });
   }
 
   function saveErrorMessage(err){
@@ -1897,7 +2049,18 @@
   async function fetchAndApplyFromServer(){
     try{
       const data = await sheetsPost({action:'getAll'});
-
+      // The fetch stays OUTSIDE the sync queue — a slow background refresh
+      // must never delay a user's checkbox save. Only the apply is queued, so
+      // it can never land between a write's request and its response and
+      // rewrite sheetSnapshot underneath it.
+      return await enqueueSync_(()=>{ applyServerData_(data); return true; });
+    }catch(err){
+      console.error('Erro ao carregar do Google Sheets', err);
+      if(isAuthError(err)) throw err; // let the sign-in flow handle this specifically, not the generic offline path
+      return false;
+    }
+  }
+  function applyServerData_(data){
       projects = (data.projetos||[]).filter(p => p.ativo !== false).map(p => ({id: p.id, name: p.id}));
       if(projects.length === 0) projects = [{id:'Obra Gavião', name:'Obra Gavião'}, {id:'Obra Boreal', name:'Obra Boreal'}];
 
@@ -1948,16 +2111,13 @@
       // only sends whatever actually changes from here — and so conflict checks
       // compare against the lastModified values we actually just saw.
       rebuildSheetSnapshot_();
+      // Server snapshot is now the confirmed baseline; the user's still-unsaved
+      // checkbox intentions go back on top of it (see reapplyPendingTaskChanges_).
+      reapplyPendingTaskChanges_();
 
       lastSyncTime = Date.now();
       saveCacheToLocalStorage();
       currentUser = data.currentUser || currentUser;
-      return true;
-    }catch(err){
-      console.error('Erro ao carregar do Google Sheets', err);
-      if(isAuthError(err)) throw err; // let the sign-in flow handle this specifically, not the generic offline path
-      return false;
-    }
   }
 
   // Generic (section, action) permission check against whatever the backend
@@ -3319,10 +3479,13 @@
     if(!activeTaskId) return;
     const t = tasks.find(x=>x.id===activeTaskId);
     if(!t) return;
-    const prevTasks = cloneState_(tasks);
+    // Per-task revert (just this task's photo list), never a whole-array clone
+    // — that would also undo any checkbox toggle still in flight.
+    const prevFotos = (t.fotos||[]).slice();
     const target = (t.fotos||[]).find(f=>f.id===id);
     t.fotos = (t.fotos||[]).filter(f=>f.id!==id);
-    const saveOk2 = await saveKey('tasks', tasks, prevTasks);
+    const saveOk2 = await saveKey('tasks', tasks);
+    if(!saveOk2) t.fotos = prevFotos;
     if(saveOk2) await deleteFromDrive(target && target.driveFileId);
     const current = tasks.find(x=>x.id===activeTaskId);
     renderTaskModalPhotoThumbs(current ? current.fotos : []);
@@ -3353,9 +3516,10 @@
       showToast('Não consegui processar essas imagens.');
       return;
     }
-    const prevTasks = cloneState_(tasks);
+    const prevFotos3 = (t.fotos||[]).slice(); // per-task revert, see deleteTaskModalPhotoNow
     t.fotos = [...(t.fotos||[]), ...metas];
-    const saveOk3 = await saveKey('tasks', tasks, prevTasks);
+    const saveOk3 = await saveKey('tasks', tasks);
+    if(!saveOk3) t.fotos = prevFotos3;
     const current = tasks.find(x=>x.id===activeTaskId);
     renderTaskModalPhotoThumbs(current ? current.fotos : []);
     renderAll();
@@ -3580,7 +3744,11 @@
   function attachTaskHandlers(container){
     container.querySelectorAll('[data-toggle]').forEach(el=>{
       el.addEventListener('click', (ev)=>{
+        // Both are load-bearing: stopPropagation keeps the tap out of
+        // .task-row's "open the card" handler, and preventDefault stops iOS
+        // from synthesising a second, delayed click on the row underneath.
         ev.stopPropagation();
+        ev.preventDefault();
         quickToggleTask(el.dataset.toggle);
       });
     });
@@ -3589,21 +3757,27 @@
     });
   }
 
-  async function quickToggleTask(id){
+  // Records one independent user intention and paints it immediately. Never
+  // awaits anything and never calls renderAll(), so tapping stays instant and
+  // spatially stable no matter what the network is doing; persistence is
+  // handled entirely by the pending-mutation model above.
+  function quickToggleTask(id){
     const t = tasks.find(x=>x.id===id);
     if(!t) return;
-    const prevTasks = cloneState_(tasks);
-    t.feito = !t.feito;
-    // Optimistic: the checkbox must move the instant it's tapped — the save
-    // itself happens in the background. Render BEFORE awaiting, not after;
-    // saveKey already rolls `tasks` back to prevTasks on failure, so the
-    // only reason to render a second time is to reflect that correction.
-    renderAll();
-    const ok = await saveKey('tasks', tasks, prevTasks);
-    if(!ok){
-      renderAll();
-      showToast('Não consegui atualizar a tarefa. Tente novamente.', false, 4500);
-    }
+    const desired = !t.feito;
+    const existing = pendingTaskChanges.get(id);
+    if(existing) existing.desired = desired;                  // keep the ORIGINAL baseline: it's the last server-confirmed value
+    else pendingTaskChanges.set(id, {desired, baseline: t.feito}); // t.feito is still the confirmed value at this point
+    t.feito = desired;
+    // Bumped locally so the settle re-render sorts a just-completed task to
+    // the top of Concluídas straight away. Safe: diffRows_ compares rows with
+    // lastModified stripped, and expectedLastModified is read from
+    // sheetSnapshot, so this can never manufacture a false conflict.
+    t.lastModified = Date.now();
+    patchTaskRowClass_(id, desired);
+    syncTaskModalToggleLabel_(id);
+    scheduleTaskFlush_();
+    scheduleTaskSettle_();
   }
 
   function renderTasks(){
@@ -3645,12 +3819,15 @@
   $('#saveTaskBtn').addEventListener('click', withGuard(async ()=>{
     const texto = $('#t_texto').value.trim();
     if(!texto){ showToast('Escreva a tarefa primeiro.'); return; }
-    const prevTasks = cloneState_(tasks);
     const prazo = $('#t_prazo').value || '';
     const prioridade = $('#t_prioridade').value;
     const projectId = $('#t_projeto').value || null;
     const fotos = draftTaskFotos.slice();
-    tasks.push({ id: uid('t'), feito:false, criadoEm: Date.now(), texto, prazo, prioridade, projectId, fotos });
+    // Rollback below removes THIS task by id, never restores a clone of the
+    // whole array — a clone taken here predates any checkbox toggle the user
+    // makes while this save is in flight, so restoring it would erase them.
+    const newTask = { id: uid('t'), feito:false, criadoEm: Date.now(), texto, prazo, prioridade, projectId, fotos };
+    tasks.push(newTask);
 
     // Optimistic: clear the form and show the new task immediately — the
     // save happens in the background. Only the (rare) failure path below
@@ -3664,12 +3841,13 @@
     renderTaskFormPhotoThumbs();
     renderAll();
 
-    const saveOk = await saveKey('tasks', tasks, prevTasks);
+    const saveOk = await saveKey('tasks', tasks);
     if(saveOk){
       showToast('Tarefa adicionada.');
     } else {
-      // saveKey already rolled `tasks` back to prevTasks — restore the form
-      // too, so nothing the user typed is lost, matching the same rule.
+      const i = tasks.findIndex(x=>x.id===newTask.id);
+      if(i >= 0) tasks.splice(i, 1);
+      // Restore the form too, so nothing the user typed is lost.
       $('#t_texto').value = texto;
       $('#t_prazo').value = prazo;
       refreshTPrazo();
@@ -3706,9 +3884,12 @@
     $('#taskModal').classList.add('open');
   }
 
-  $('#toggleTaskBtn').addEventListener('click', async ()=>{
+  // Closes immediately — the modal is navigation state and must never wait on,
+  // cancel, or be cancelled by persistence state. The toggle it registers is
+  // the same independent mutation a checkbox tap makes.
+  $('#toggleTaskBtn').addEventListener('click', ()=>{
     if(!activeTaskId) return;
-    await quickToggleTask(activeTaskId);
+    quickToggleTask(activeTaskId);
     $('#taskModal').classList.remove('open');
     activeTaskId = null;
   });
@@ -3743,13 +3924,16 @@
     if(!texto){ showToast('Escreva a tarefa primeiro.'); return; }
     const t = tasks.find(x=>x.id===activeTaskId);
     if(!t) return;
-    const prevTasks = cloneState_(tasks);
+    // Per-field revert, not a whole-array clone: this save can overlap a
+    // checkbox burst, and restoring an array snapshot would wipe those toggles.
+    const prevFields = {texto: t.texto, prazo: t.prazo, prioridade: t.prioridade, projectId: t.projectId};
     t.texto = texto;
     t.prazo = $('#te_prazo').value || '';
     t.prioridade = $('#te_prioridade').value;
     t.projectId = $('#te_projeto').value || null;
-    const saveOk6 = await saveKey('tasks', tasks, prevTasks);
+    const saveOk6 = await saveKey('tasks', tasks);
     if(!saveOk6){
+      Object.assign(t, prevFields);
       showToast('Não consegui salvar a tarefa. Tente novamente.', false, 4500);
       return; // leave the edit form open with the user's input intact
     }
@@ -3763,15 +3947,21 @@
     if(!activeTaskId) return;
     const ok = await showConfirm('Excluir esta tarefa?', {title:'Excluir tarefa', okLabel:'Excluir'});
     if(!ok) return;
-    const prevTasks = cloneState_(tasks);
-    const target = tasks.find(x=>x.id===activeTaskId);
-    tasks = tasks.filter(x=>x.id !== activeTaskId);
-    const saveOk7 = await saveKey('tasks', tasks, prevTasks);
+    // Splice out / splice back in at the same index, rather than replacing the
+    // array — an array-level restore would also undo any checkbox toggle made
+    // while this delete was in flight.
+    const removedIdx = tasks.findIndex(x=>x.id===activeTaskId);
+    if(removedIdx < 0) return;
+    const target = tasks[removedIdx];
+    tasks.splice(removedIdx, 1);
+    const saveOk7 = await saveKey('tasks', tasks);
     if(!saveOk7){
+      tasks.splice(removedIdx, 0, target);
       showToast('Não consegui excluir a tarefa. Tente novamente.', false, 4500);
       renderAll();
       return;
     }
+    pendingTaskChanges.delete(target.id); // nothing left to reconcile for a deleted task
     if(target) deletePhotoBlobs(target.fotos);
     $('#taskModal').classList.remove('open');
     activeTaskId = null;
@@ -4238,12 +4428,15 @@
         }
       }
     } else if(catKey === 'tasks'){
-      const prevTasks = cloneState_(tasks);
       for(const t of tasks){
         if(t.fotos && t.fotos.some(f=>f.id===photoId)){
           driveFileId = (t.fotos.find(f=>f.id===photoId)||{}).driveFileId;
+          // Per-task revert, never a whole-array clone — see quickToggleTask's
+          // invariants: a checkbox toggle may be in flight on another task.
+          const prevFotos4 = t.fotos.slice();
           t.fotos = t.fotos.filter(f=>f.id!==photoId);
-          saveOk = await saveKey('tasks', tasks, prevTasks);
+          saveOk = await saveKey('tasks', tasks);
+          if(!saveOk) t.fotos = prevFotos4;
           break;
         }
       }
