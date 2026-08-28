@@ -744,6 +744,11 @@ function rowValuesFromObj_(cfg, rowObj) {
 
 // Checks every upsert in a batch for a stale lastModified BEFORE writing
 // anything — avoids a half-applied batch when one row in it has a conflict.
+// Each conflict entry carries the row's CURRENT lastModified, not just its id
+// — this lets the frontend rebase its stale baseline and retry once without
+// a second round trip (see syncSheetsNow_'s retry-with-rebase in index.html).
+// Purely additive: a frontend that ignores the extra field behaves exactly
+// as before.
 function findConflicts_(ops, indexes) {
   const conflicts = [];
   ops.forEach(op => {
@@ -757,7 +762,7 @@ function findConflicts_(ops, indexes) {
       if (!rowIdx) return; // row vanished (deleted elsewhere) — treat as new
       const current = idx.lastModifiedByRow[rowIdx];
       if (String(current) !== String(u.expectedLastModified)) {
-        conflicts.push({ sheet: op.sheet, id: u.id });
+        conflicts.push({ sheet: op.sheet, id: u.id, currentLastModified: current });
       }
     });
   });

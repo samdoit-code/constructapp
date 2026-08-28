@@ -1625,7 +1625,69 @@
   function syncSheets(sheetRowsMap){
     return enqueueSync_(() => syncSheetsNow_(sheetRowsMap));
   }
-  async function syncSheetsNow_(sheetRowsMap){
+  // A conflict means at least one row's expectedLastModified no longer
+  // matches the sheet. Two very different situations produce that: (1) our
+  // OWN baseline was stale — most commonly because sheetSnapshot was seeded
+  // from a cache that predates our own last successful write to this exact
+  // row (see hydrateFromServerAtBoot_ and the cache-write note in
+  // syncSheetsNow_ below) — where retrying with the corrected baseline is
+  // exactly right and should succeed silently; or (2) someone else is
+  // actively editing the same row, where a retry may briefly overwrite their
+  // change (this app has no field-level merge anywhere — a row-level write
+  // has always been last-write-wins) but a SECOND conflict on the same row
+  // right after rebasing means real, ongoing contention worth surfacing
+  // rather than silently retrying forever. One retry can't distinguish these
+  // cases, but it doesn't need to: case (1) always succeeds on the first
+  // retry (nothing else is racing it), so anything still conflicting after
+  // that is case (2) by elimination.
+  //
+  // Rebases sheetSnapshot's lastModified for each conflicting row to the
+  // value the backend just reported as current — never touches the row's
+  // other fields, since a full-row upsert (built fresh from live state by
+  // the caller) already carries the user's real current intent. Returns
+  // false (nothing to rebase — e.g. an older, not-yet-redeployed backend
+  // that doesn't send currentLastModified) so the caller knows not to retry.
+  function rebaseConflictsAgainstServer_(conflicts){
+    let rebased = false;
+    (conflicts||[]).forEach(c=>{
+      if(c.currentLastModified === undefined) return;
+      const rows = sheetSnapshot[c.sheet];
+      const row = rows && rows.find(r=>String(r.id)===String(c.id));
+      if(row){ row.lastModified = c.currentLastModified; rebased = true; }
+    });
+    return rebased;
+  }
+  // Writes the backend's authoritative lastModified back onto the LIVE state
+  // objects (tasks/caixaObra/etc — not just sheetSnapshot's flat rows) after
+  // a successful sync, so a subsequent cache write persists the value the
+  // SERVER actually stored rather than whatever the client optimistically
+  // guessed at tap time (quickToggleTask, for instance, stamps a task with
+  // Date.now() purely so it sorts correctly before confirmation — that guess
+  // is never what the sheet ends up holding). Caching the client's guess
+  // instead of the server's truth would reintroduce this exact class of bug
+  // on the NEXT boot: the cached baseline would already be wrong before any
+  // write is even attempted.
+  //
+  // ids are generated as prefix_timestamp_random (uid()/uid_()) and are
+  // effectively unique across every sheet, not just within one — so a single
+  // flat id->lastModified map and one pass over every state array (including
+  // the nested .notas[]/.fotos[] that Notas/Fotos rows actually live in,
+  // per the cross-cutting-sheets model) is enough; no need to know which
+  // sheet/parent an id belongs to ahead of time.
+  function applyServerLastModified_(updatedBySheet){
+    const lmById = new Map();
+    Object.keys(updatedBySheet||{}).forEach(sheetName=>{
+      (updatedBySheet[sheetName]||[]).forEach(u=> lmById.set(String(u.id), u.lastModified));
+    });
+    if(!lmById.size) return;
+    const patch = (obj)=>{ if(obj && lmById.has(String(obj.id))) obj.lastModified = lmById.get(String(obj.id)); };
+    caixaObra.forEach(e=>{ patch(e); (e.notas||[]).forEach(patch); (e.fotos||[]).forEach(patch); });
+    empreiteiro.forEach(e=>{ patch(e); (e.notas||[]).forEach(patch); (e.fotos||[]).forEach(patch); });
+    tasks.forEach(t=>{ patch(t); (t.fotos||[]).forEach(patch); });
+    notes.forEach(n=>{ patch(n); (n.fotos||[]).forEach(patch); });
+    documentos.forEach(patch);
+  }
+  async function syncSheetsNow_(sheetRowsMap, isRetry){
     // Only send sheets that actually have an upsert or delete — every save
     // touching caixaObra/empreiteiro/tasks also calls this with the (usually
     // unchanged) fotos/notas payloads, and each op the backend receives is a
@@ -1641,6 +1703,12 @@
     try{
       const resp = await sheetsPost({action:'batchMulti', ops});
       if(resp.conflict){
+        // One automatic retry with a rebased baseline — see
+        // rebaseConflictsAgainstServer_ above for why this is safe and why
+        // once is the right number of attempts.
+        if(!isRetry && rebaseConflictsAgainstServer_(resp.conflicts)){
+          return await syncSheetsNow_(sheetRowsMap, true);
+        }
         showToast('Alguns dados foram alterados por outra pessoa. Recarregue a página antes de salvar de novo.', false, 4500);
         return false;
       }
@@ -1652,6 +1720,20 @@
           return lm ? Object.assign({}, r, {lastModified: lm}) : Object.assign({}, r);
         });
       });
+      // The cache is only otherwise refreshed after a getAll (applyServerData_)
+      // — a write that succeeds here without a getAll ever following it would
+      // leave the cache holding this row's PRE-write lastModified indefinitely.
+      // That exact gap was the production root cause: a later session booting
+      // from that stale cache would seed sheetSnapshot with it, and a checkbox
+      // tapped before that boot's own getAll landed would assert an
+      // expectedLastModified the server had already moved past — a false
+      // conflict, rejecting the whole batch (all writes in it, not just the
+      // stale one). Patching live state first is required, not optional: the
+      // cache serializes `tasks`/`caixaObra`/etc as they stand right now, so
+      // if those still carried the client's pre-write guess this write would
+      // just relocate the same bug to a smaller window instead of closing it.
+      applyServerLastModified_(resp.updated);
+      saveCacheToLocalStorage();
       return true;
     }catch(e){
       console.error('sync error', e);
@@ -2046,6 +2128,16 @@
   // Fetches fresh data from Apps Script and applies it to the in-memory state.
   // Returns true on success; on failure, existing state (cached or otherwise)
   // is left completely untouched, so a failed refresh never blanks the screen.
+  //
+  // Used for manual sync ("Sincronizar agora") and proactive background
+  // refresh — cases where the CURRENT in-memory snapshot is already
+  // trustworthy (built from a prior real getAll, or from writes that have
+  // each patched their own confirmed lastModified back in — see
+  // applyServerLastModified_), so only the moment new data is APPLIED needs
+  // to be serialized against sheetSnapshot. The network wait itself must not
+  // delay an already-safe pending write. See hydrateFromServerAtBoot_ below
+  // for the one case — a cache-first boot — where the fetch itself must also
+  // be gated, because the snapshot isn't trustworthy yet.
   async function fetchAndApplyFromServer(){
     try{
       const data = await sheetsPost({action:'getAll'});
@@ -2059,6 +2151,51 @@
       if(isAuthError(err)) throw err; // let the sign-in flow handle this specifically, not the generic offline path
       return false;
     }
+  }
+  // INVARIANT — a cache-first boot's in-memory snapshot is UNVERIFIED. It's
+  // seeded straight from localStorage (loadCacheFromLocalStorage), which is
+  // only ever refreshed opportunistically — after a getAll, or after a
+  // successful write (see the cache-write note in syncSheetsNow_) — and can
+  // be stale by any amount: by design, this app renders that cache
+  // immediately and hydrates from the server in the background (see
+  // "time until useful" in CLAUDE.md's Data flow section).
+  //
+  // A write that fires before THIS boot's own getAll lands would diff
+  // against that unverified baseline and can assert an expectedLastModified
+  // the server has already moved past — a false conflict, which rejects the
+  // WHOLE batch (every row in it, not just the stale one). This was the
+  // actual root cause of a real production bug: rapid checkbox taps landing
+  // in the few seconds between a cache-first boot and its getAll response
+  // failed with "Não consegui atualizar N tarefas" and dumped every tapped
+  // task back into Em aberto — even though every OTHER row in the batch had
+  // a perfectly valid baseline. Reproduced against the real (unmocked)
+  // backend/Code.js: a task saved in one session, closed before its next
+  // cache write, then tapped again within the boot window of the NEXT
+  // session, reliably produced exactly this failure.
+  //
+  // Unlike fetchAndApplyFromServer() above, the fetch and the apply are NOT
+  // split here — both live inside the ONE function handed to enqueueSync_,
+  // so this occupies the front of the sync queue for its entire duration,
+  // however long the fetch itself takes. enqueueSync_ is called
+  // synchronously, before any await, so any write enqueued afterward — a
+  // checkbox tapped a millisecond after this call — is guaranteed to be
+  // chained BEHIND it, never ahead of it. (Splitting fetch-outside/
+  // apply-inside here, the way fetchAndApplyFromServer does, would deadlock:
+  // the apply step wouldn't be enqueued until the fetch resolves, by which
+  // time a write's own enqueueSync_ call — made earlier, at tap time — would
+  // already occupy the front of the queue ahead of it.)
+  async function hydrateFromServerAtBoot_(){
+    return await enqueueSync_(async ()=>{
+      try{
+        const data = await sheetsPost({action:'getAll'});
+        applyServerData_(data);
+        return true;
+      }catch(err){
+        console.error('Erro ao carregar do Google Sheets (boot)', err);
+        if(isAuthError(err)) throw err;
+        return false;
+      }
+    });
   }
   function applyServerData_(data){
       projects = (data.projetos||[]).filter(p => p.ativo !== false).map(p => ({id: p.id, name: p.id}));
@@ -2284,7 +2421,10 @@
       finishLoadSetup();
       renderAll();
       updateSyncStatusText();
-      const ok = await fetchAndApplyFromServer();
+      // hydrateFromServerAtBoot_, not fetchAndApplyFromServer — see its
+      // comment above for why a cache-first boot needs the fetch itself
+      // gated, not just the apply.
+      const ok = await hydrateFromServerAtBoot_();
       if(ok){
         finishLoadSetup();
         renderAll();
