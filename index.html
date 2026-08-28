@@ -393,6 +393,14 @@
   .photo-thumb .photo-del{position:absolute; top:3px; right:3px; width:19px; height:19px; border-radius:50%; background:rgba(33,29,25,0.72); border:none; display:flex; align-items:center; justify-content:center; cursor:pointer; padding:0;}
   .photo-thumb .photo-del svg{width:10px;height:10px; stroke:#fff; stroke-width:3;}
   .photo-thumb .photo-spinner{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:9.5px; color:var(--ink-soft); background:var(--paper-2);}
+  /* Upload state lives on the thumbnail itself — the photo is the progress
+     indicator, the toast only summarises the batch. */
+  .photo-thumb.is-pending img{opacity:.45;}
+  .photo-thumb .photo-status{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none;}
+  .photo-thumb .photo-status.is-failed{background:rgba(33,29,25,0.5); color:#fff; font-size:19px; font-weight:600;}
+  .photo-thumb .photo-spin{width:17px; height:17px; border-radius:50%; border:2px solid rgba(255,255,255,0.55); border-top-color:#fff; box-shadow:0 0 0 1.5px rgba(33,29,25,0.28); animation:photoSpin .7s linear infinite;}
+  @keyframes photoSpin{to{transform:rotate(360deg);}}
+  .doc-row.is-pending .doc-name{opacity:.62;}
 
   /* Tasks */
   .task-row{
@@ -1245,6 +1253,18 @@
   let draftNoteFotos = []; // same, for a NEW (not yet saved) standalone note
   let notePhotoTargetId = null; // which existing standalone note the shared note-photo input targets
 
+  // Files whose bytes have NOT finished their round trip to Drive yet. Keyed
+  // by the record's own permanent id (uid('ph')/uid('doc')), which is minted
+  // client-side BEFORE the upload starts and never changes — so a completing
+  // upload always patches the right record no matter how much the arrays
+  // moved, re-sorted, re-rendered or re-hydrated meanwhile. Never an index.
+  // The local preview (an object URL) lives ONLY here, never in the state
+  // arrays, the cache, or a sheet row.
+  const pendingUploads = new Map();
+  const uploadQueue = [];               // ids, in the order they were picked
+  let uploadRunnerActive = false;
+  let uploadBatch = {total:0, done:0, failed:0, cancelled:0};
+
   const DEFAULT_TIPOS = ['Material de Construção','Ferramentas & Equipamento','Mão de obra avulsa','Transporte','Taxas & Documentação','Alimentação','Contas & Utilidades','Outros'];
   const DEFAULT_UNIDADES = ['und','barra','hora','lts','kg','m','m2','m3','pacote','ton','rl','bd','grama'];
   const MONTHS = ['JAN','FEV','MAR','ABR','MAI','JUN','JUL','AGO','SET','OUT','NOV','DEZ'];
@@ -1521,7 +1541,7 @@
     if(key === 'caixaObra') return value.map(e => ({id:e.id, projeto:e.projectId, data:e.data, nome:e.nome, tipo:e.tipo||'', qtd:e.qtd||'', unidade:e.unidade||'', valor:e.valor||0, fornecedor:e.fornecedor||'', socio:e.socio||'', criadoEm:e.criadoEm, lastModified:e.lastModified}));
     if(key === 'empreiteiro') return value.map(e => ({id:e.id, projeto:e.projectId, data:e.data, nome:e.nome, qtd:e.qtd||'', unidade:e.unidade||'', valor:e.valor||0, fornecedor:e.fornecedor||'', socio:e.socio||'', criadoEm:e.criadoEm, lastModified:e.lastModified}));
     if(key === 'tasks') return value.map(t => ({id:t.id, projeto:t.projectId||'', texto:t.texto, prazo:t.prazo||'', prioridade:t.prioridade||'media', feito: !!t.feito, criadoEm:t.criadoEm, lastModified:t.lastModified}));
-    if(key === 'documentos') return value.map(d => ({id:d.id, projeto:d.projectId||'', nome:d.nome, mimeType:d.mimeType||'', driveFileId:d.driveFileId||'', driveUrl:d.driveUrl||'', criadoEm:d.criadoEm, lastModified:d.lastModified}));
+    if(key === 'documentos') return value.filter(d => !NO_DRIVE_FILE_YET.has((pendingUploads.get(d.id)||{}).status)).map(d => ({id:d.id, projeto:d.projectId||'', nome:d.nome, mimeType:d.mimeType||'', driveFileId:d.driveFileId||'', driveUrl:d.driveUrl||'', criadoEm:d.criadoEm, lastModified:d.lastModified}));
     if(key === 'tipos') return value.map(t => ({tipo: t}));
     if(key === 'unidades') return value.map(u => ({unidade: u}));
     return [];
@@ -1529,12 +1549,30 @@
   // The "Fotos" tab is a flattened mirror of every .fotos[] array nested inside
   // lançamentos, tarefas and notas — recomputed fresh from current state and
   // diffed alongside whichever of those four just changed.
+  // A photo whose Drive upload hasn't landed yet must NOT reach the Fotos
+  // tab: the row would carry a blank driveFileId and point at nothing, and
+  // once written it looks — to this app and to anyone reading the sheet —
+  // exactly like a saved photo. Scoped deliberately to ids this session is
+  // still uploading rather than to "driveFileId is blank": diffRows_ turns an
+  // omitted row into a DELETE, so a broader predicate would silently delete
+  // any pre-existing blank-driveFileId row the sheet already happens to hold.
+  // 'saving'/'save-failed' DO pass — those already have a real Drive file and
+  // are a genuine unsaved delta the next sync should pick up.
+  const NO_DRIVE_FILE_YET = new Set(['pending', 'uploading', 'failed']);
+  function persistableFotos_(fotos){
+    if(!fotos || !fotos.length) return fotos || [];
+    if(!pendingUploads.size) return fotos;
+    return fotos.filter(f=>{
+      const rec = pendingUploads.get(f.id);
+      return !rec || !NO_DRIVE_FILE_YET.has(rec.status);
+    });
+  }
   function computeFotosRows(){
     const rows = [];
-    caixaObra.forEach(e => (e.fotos||[]).forEach(f => rows.push({id:f.id, refTipo:'caixa', refId:e.id, driveFileId:f.driveFileId||'', driveUrl:f.driveUrl||'', criadoEm:f.criadoEm, lastModified:f.lastModified})));
-    empreiteiro.forEach(e => (e.fotos||[]).forEach(f => rows.push({id:f.id, refTipo:'emp', refId:e.id, driveFileId:f.driveFileId||'', driveUrl:f.driveUrl||'', criadoEm:f.criadoEm, lastModified:f.lastModified})));
-    tasks.forEach(t => (t.fotos||[]).forEach(f => rows.push({id:f.id, refTipo:'tasks', refId:t.id, driveFileId:f.driveFileId||'', driveUrl:f.driveUrl||'', criadoEm:f.criadoEm, lastModified:f.lastModified})));
-    notes.forEach(n => (n.fotos||[]).forEach(f => rows.push({id:f.id, refTipo:'notes', refId:n.id, driveFileId:f.driveFileId||'', driveUrl:f.driveUrl||'', criadoEm:f.criadoEm, lastModified:f.lastModified})));
+    caixaObra.forEach(e => persistableFotos_(e.fotos).forEach(f => rows.push({id:f.id, refTipo:'caixa', refId:e.id, driveFileId:f.driveFileId||'', driveUrl:f.driveUrl||'', criadoEm:f.criadoEm, lastModified:f.lastModified})));
+    empreiteiro.forEach(e => persistableFotos_(e.fotos).forEach(f => rows.push({id:f.id, refTipo:'emp', refId:e.id, driveFileId:f.driveFileId||'', driveUrl:f.driveUrl||'', criadoEm:f.criadoEm, lastModified:f.lastModified})));
+    tasks.forEach(t => persistableFotos_(t.fotos).forEach(f => rows.push({id:f.id, refTipo:'tasks', refId:t.id, driveFileId:f.driveFileId||'', driveUrl:f.driveUrl||'', criadoEm:f.criadoEm, lastModified:f.lastModified})));
+    notes.forEach(n => persistableFotos_(n.fotos).forEach(f => rows.push({id:f.id, refTipo:'notes', refId:n.id, driveFileId:f.driveFileId||'', driveUrl:f.driveUrl||'', criadoEm:f.criadoEm, lastModified:f.lastModified})));
     return rows;
   }
   // The "Notas" tab is likewise a union: standalone notes (refTipo/refId blank,
@@ -2033,6 +2071,26 @@
   // (and can use) their data first, and the cache is written in the idle gap
   // afterwards. requestIdleCallback where available, a macrotask otherwise
   // (notably iOS Safari, which is the primary target and has no rIC).
+  // Strips every still-in-flight upload out of the cached copy. Caching one
+  // would be actively harmful in both directions: a photo with no Drive file
+  // yet comes back on the next boot as a permanently broken thumbnail with no
+  // pending record left to explain or retry it, and — worse — because
+  // loadCacheFromLocalStorage() seeds sheetSnapshot from this same state, a
+  // never-persisted row would appear in BOTH state and snapshot, so the diff
+  // would see no change and the photo would silently never be written at all.
+  // The cache is a performance store; anything not yet confirmed server-side
+  // has no business in it.
+  function cacheableState_(){
+    if(!pendingUploads.size) return {caixaObra, empreiteiro, tasks, notes, documentos};
+    const strip = list => list.map(rec => (rec.fotos && rec.fotos.some(f => pendingUploads.has(f.id)))
+      ? {...rec, fotos: rec.fotos.filter(f => !pendingUploads.has(f.id))}
+      : rec);
+    return {
+      caixaObra: strip(caixaObra), empreiteiro: strip(empreiteiro),
+      tasks: strip(tasks), notes: strip(notes),
+      documentos: documentos.filter(d => !pendingUploads.has(d.id)),
+    };
+  }
   let cacheWriteScheduled = false;
   function saveCacheToLocalStorage(){
     if(cacheWriteScheduled) return; // one pending write is enough; it'll serialise whatever is current when it runs
@@ -2040,8 +2098,10 @@
     const write = ()=>{
       cacheWriteScheduled = false;
       try{
+        const snap = cacheableState_();
         localStorage.setItem(CACHE_KEY, JSON.stringify({
-          projects, caixaObra, empreiteiro, tasks, notes, documentos, tipos, unidades,
+          projects, caixaObra: snap.caixaObra, empreiteiro: snap.empreiteiro, tasks: snap.tasks,
+          notes: snap.notes, documentos: snap.documentos, tipos, unidades,
           savedAt: lastSyncTime,
         }));
       }catch(e){
@@ -2466,6 +2526,10 @@
     };
   }
 
+  function hideToast(){
+    clearTimeout(toastTimer);
+    $('#toast').classList.remove('show');
+  }
   function showToast(msg, persistent, durationMs){
     const t = $('#toast');
     $('#toastMsg').textContent = msg;
@@ -2606,12 +2670,14 @@
     if(previousView === 'tasks' && name !== 'tasks' && draftTaskFotos.length){
       const orphans = draftTaskFotos;
       draftTaskFotos = [];
+      cancelUploads_(orphans);
       deletePhotoBlobs(orphans);
       renderTaskFormPhotoThumbs();
     }
     if(previousView === 'notes' && name !== 'notes' && draftNoteFotos.length){
       const orphans = draftNoteFotos;
       draftNoteFotos = [];
+      cancelUploads_(orphans);
       deletePhotoBlobs(orphans);
       renderNoteFormPhotoThumbs();
     }
@@ -3132,6 +3198,10 @@
     if(draftFotos.length){
       const orphans = draftFotos;
       draftFotos = [];
+      // Anything still uploading has no home to return to now; cancelling
+      // makes its completion handler delete the Drive file it just created
+      // instead of leaving it orphaned.
+      cancelUploads_(orphans);
       deletePhotoBlobs(orphans);
     }
     form.reset();
@@ -3311,14 +3381,30 @@
   }
 
   // ---------- Photo thumbnails (shared renderer for form + detail modal) ----------
+  // A photo still uploading draws from its local object URL, so the thumbnail
+  // is on screen the instant the file is picked — no Drive round trip in
+  // between — with an overlay carrying its own state. The thumbnails, not the
+  // toast, are the real progress indicator.
+  function uploadStatusOverlay_(rec){
+    if(!rec) return '';
+    if(rec.status === 'failed' || rec.status === 'save-failed'){
+      return `<div class="photo-status is-failed" title="Toque para reenviar"><span>&#8635;</span></div>`;
+    }
+    return `<div class="photo-status is-busy"><span class="photo-spin"></span></div>`;
+  }
   function renderPhotoThumbs(containerEl, fotos, ctx){
     if(!containerEl) return;
     if(!fotos || fotos.length === 0){ containerEl.innerHTML = ''; return; }
     containerEl.innerHTML = fotos.map(f=>{
+      const rec = pendingUploads.get(f.id);
       const url = f.driveFileId ? photoEmbedUrl(f.driveFileId) : '';
-      const img = url ? `<img src="${escapeHTML(url)}" alt="Recibo" loading="lazy">` : `<div class="photo-spinner">Erro</div>`;
+      const localSrc = rec && rec.previewUrl ? rec.previewUrl : '';
+      let img;
+      if(localSrc) img = `<img src="${escapeHTML(localSrc)}" alt="Recibo">`;
+      else if(url) img = `<img src="${escapeHTML(url)}" alt="Recibo" loading="lazy">`;
+      else img = `<div class="photo-spinner">Erro</div>`;
       const delBtn = ctx.deletable ? `<button type="button" class="photo-del" data-del="${escapeHTML(f.id)}"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>` : '';
-      return `<div class="photo-thumb" data-photo-id="${escapeHTML(f.id)}">${img}${delBtn}</div>`;
+      return `<div class="photo-thumb${rec ? ' is-pending' : ''}" data-photo-id="${escapeHTML(f.id)}">${img}${uploadStatusOverlay_(rec)}${delBtn}</div>`;
     }).join('');
     fotos.forEach(f=>{
       const el = containerEl.querySelector(`[data-photo-id="${CSS.escape(f.id)}"]`);
@@ -3326,6 +3412,13 @@
       const url = f.driveFileId ? photoEmbedUrl(f.driveFileId) : '';
       el.addEventListener('click', (ev)=>{
         if(ev.target.closest('.photo-del')) return;
+        const rec = pendingUploads.get(f.id);
+        if(rec){
+          // Still in flight, or failed: tapping retries rather than opening a
+          // lightbox on a file that isn't in Drive yet.
+          if(rec.status === 'failed' || rec.status === 'save-failed') retryUpload_(f.id);
+          return;
+        }
         ctx.onView(f.id, url);
       });
       const delBtn = el.querySelector('.photo-del');
@@ -3381,7 +3474,14 @@
     if(newIndex < 0 || newIndex >= photoGroupNav.items.length) return;
     photoGroupNav.index = newIndex;
     const item = photoGroupNav.items[newIndex];
-    if(!item.driveFileId){ showToast('Não consegui carregar essa foto.'); return; }
+    const pend = pendingUploads.get(item.id);
+    if(!item.driveFileId && !(pend && pend.previewUrl)){ showToast('Não consegui carregar essa foto.'); return; }
+    if(!item.driveFileId){
+      // Still uploading — show the local preview rather than a dead frame.
+      showPhotoInLightbox(pend.previewUrl, null);
+      updatePhotoNavUI();
+      return;
+    }
     showPhotoInLightbox(photoEmbedUrl(item.driveFileId), ()=> deleteAggregatedPhotoNow(photoGroupNav.catKey, item.id));
     updatePhotoNavUI();
   }
@@ -3414,6 +3514,7 @@
     });
   }
   async function deleteFormPhotoNow(id){
+    cancelUpload_(id);
     let driveFileId = null;
     let saveOk = true;
     if(editingId){
@@ -3441,64 +3542,338 @@
     if(!ok) return;
     await deleteFormPhotoNow(id);
   }
-  // Compress + upload a photo to the project's Drive folder, automatically
-  // retrying with much heavier compression if the first attempt fails (covers
-  // oversized source images — a computer photo or screenshot can be far
-  // bigger than what a phone camera capture produces).
-  async function processAndSavePhoto(file, projectName, section){
-    let dataUrl;
-    try{ dataUrl = await withTimeout(compressImageFile(file), 20000, 'photo-processing-timeout'); }
-    catch(err){ console.error('photo compress error', err); throw new Error('process-failed'); }
-    const photoId = uid('ph');
-    let uploaded;
-    try{
-      uploaded = await uploadToDrive(dataUrl, photoId + '.jpg', projectName || activeProjectId, section);
-    }catch(err){
-      if(isPermissionError(err)) throw err; // no point retrying with heavier compression — a smaller file won't change the answer
-      uploaded = null;
-    }
-    if(!uploaded){
-      try{
-        dataUrl = await withTimeout(compressImageFile(file, 800, 0.5), 20000, 'photo-processing-timeout');
-        uploaded = await uploadToDrive(dataUrl, photoId + '.jpg', projectName || activeProjectId, section);
-      }catch(err){ console.error('photo compress retry error', err); }
-    }
-    if(!uploaded) throw new Error('save-failed');
-    return {id: photoId, driveFileId: uploaded.driveFileId, driveUrl: uploaded.driveUrl};
+  // ==================================================================
+  // BACKGROUND UPLOAD PIPELINE (photos + documents)
+  // ==================================================================
+  // Uploads used to run inline in the file picker's change handler:
+  // compress -> upload -> await, one file at a time, and ONLY THEN was the
+  // state mutated and rendered. With a real batch (18 photos is the case that
+  // exposed this) nothing appears on screen until every single file has
+  // finished its round trip, behind a toast that is persistent — i.e. has no
+  // timer at all and can only be replaced by the line at the end of the loop.
+  //
+  // The stuck-forever case isn't hypothetical either: uploadToDrive wraps
+  // sheetsPost, which is withRetry(2, 900) around a 60s fetch deadline, and
+  // the old processAndSavePhoto then retried the WHOLE thing once more with
+  // heavier compression — a worst case of ~6 minutes for ONE file, with the
+  // other 17 and the toast frozen behind it.
+  //
+  // So the picker now does no network work at all: it mints records, drops
+  // placeholders into the normal state arrays, and renders. Every byte moves
+  // afterwards through this queue. Per-file lifecycle:
+  //
+  //   pending -> uploading -> saving -> (done; record dropped)
+  //                    |          `-> save-failed  (Drive file EXISTS, retry only re-persists)
+  //                    `-> failed                  (no Drive file, retry re-uploads)
+  //
+  // Three things make a permanently stuck batch structurally impossible:
+  // every loop iteration is individually try/caught (one file's exception can
+  // never escape into the loop), every file carries a hard wall-clock
+  // deadline (so a promise that never settles still ends), and the runner's
+  // own finally always finalizes the toast even if something unanticipated
+  // throws. There is deliberately no batch-level try/catch or Promise.all —
+  // 18 files must not share one fate.
+  const UPLOAD_DEADLINE_MS = 90000;   // per file, covering compression + every network retry inside it
+
+  function safeObjectURL_(file){
+    try{ return URL.createObjectURL(file); }catch(e){ return ''; }
   }
-  $('#formPhotoInput').addEventListener('change', async (e)=>{
+  function releasePreview_(rec){
+    if(rec && rec.previewUrl){
+      try{ URL.revokeObjectURL(rec.previewUrl); }catch(e){}
+      rec.previewUrl = '';
+    }
+  }
+  function forgetUpload_(rec){
+    releasePreview_(rec);
+    rec.file = null;              // let the browser reclaim the picked file
+    pendingUploads.delete(rec.id);
+  }
+
+  // Re-resolves, by id, where a record actually lives RIGHT NOW — never by
+  // the array or index it was created against. Between enqueue and
+  // completion the user may have saved the draft (moving the photo into a
+  // real lançamento/tarefa/nota), deleted it, added others, or had the whole
+  // array replaced by a background getAll. Returning null means "this no
+  // longer belongs anywhere", which is what lets a cancelled upload clean up
+  // its own Drive file instead of orphaning it.
+  function findUploadHome_(id){
+    const doc = documentos.find(d => d.id === id);
+    if(doc) return {target: doc, key: 'documentos', value: documentos};
+    for(const arr of [draftFotos, draftTaskFotos, draftNoteFotos]){
+      const f = arr.find(x => x.id === id);
+      if(f) return {target: f, key: null, value: null};   // unsaved draft: nothing to persist yet
+    }
+    const owners = [['caixaObra', caixaObra], ['empreiteiro', empreiteiro], ['tasks', tasks], ['notes', notes]];
+    for(const [key, list] of owners){
+      for(const rec of list){
+        const f = (rec.fotos || []).find(x => x.id === id);
+        if(f) return {target: f, key: key, value: list};
+      }
+    }
+    return null;
+  }
+
+  // Redraws every surface that can show a thumbnail. Cheap: each renderer
+  // no-ops when its container isn't in the DOM. Called per completed file so
+  // photos flip to "done" one at a time rather than all at the end.
+  function refreshPhotoSurfaces_(){
+    renderFormPhotoThumbs();
+    renderTaskFormPhotoThumbs();
+    renderNoteFormPhotoThumbs();
+    if(activeModal){
+      const e = getList(activeModal.kind).find(x => x.id === activeModal.id);
+      if(e) renderModalPhotoThumbs(e.fotos || []);
+    }
+    if(activeTaskId){
+      const t = tasks.find(x => x.id === activeTaskId);
+      if(t) renderTaskModalPhotoThumbs(t.fotos || []);
+    }
+    notes.forEach(n => { if(document.getElementById('notephotos-' + n.id)) renderExistingNotePhotoThumbs(n); });
+    renderDocsView();
+  }
+
+  function updateUploadProgressToast_(){
+    if(!uploadBatch.total) return;
+    const settled = uploadBatch.done + uploadBatch.failed + uploadBatch.cancelled;
+    const current = Math.min(settled + 1, uploadBatch.total);
+    if(uploadBatch.total === 1) showToast('Enviando...', true);
+    else showToast(`Enviando ${current} de ${uploadBatch.total}...`, true);
+  }
+  function finalizeUploadBatch_(){
+    const {total, done, failed} = uploadBatch;
+    uploadBatch = {total:0, done:0, failed:0, cancelled:0};
+    if(!total) return;
+    refreshPhotoSurfaces_();
+    renderAll();
+    if(failed && done) showToast(`${done} de ${total} enviados — ${failed} falhou(aram). Toque na miniatura para reenviar.`, false, 5200);
+    else if(failed) showToast(failed > 1 ? `${failed} envios falharam. Toque na miniatura para reenviar.` : 'O envio falhou. Toque na miniatura para reenviar.', false, 5200);
+    else if(done) showToast(done > 1 ? `${done} arquivos enviados.` : 'Envio concluído.');
+    else hideToast();   // everything in the batch was cancelled — don't leave a persistent toast up
+  }
+
+  function enqueueUpload_(rec){
+    pendingUploads.set(rec.id, rec);
+    uploadQueue.push(rec.id);
+    uploadBatch.total++;
+    updateUploadProgressToast_();
+    startUploadRunner_();
+  }
+  function startUploadRunner_(){
+    if(uploadRunnerActive) return;
+    uploadRunnerActive = true;
+    drainUploadQueue_();   // deliberately NOT awaited — the caller must never block on uploads
+  }
+  async function drainUploadQueue_(){
+    try{
+      while(uploadQueue.length){
+        const id = uploadQueue.shift();
+        try{
+          const rec = pendingUploads.get(id);
+          if(rec && !rec.cancelled) await runOneUpload_(rec);
+        }catch(err){
+          // Nothing thrown by one file may reach the loop — the remaining
+          // files must still be attempted.
+          console.error('upload item error', id, err);
+          const rec = pendingUploads.get(id);
+          if(rec) markUploadFailed_(rec, err);
+        }
+        try{ updateUploadProgressToast_(); }catch(e){}
+      }
+    } finally {
+      // Runs even on an unanticipated throw, so the persistent progress toast
+      // always reaches a terminal state.
+      uploadRunnerActive = false;
+      finalizeUploadBatch_();
+    }
+  }
+
+  function markUploadFailed_(rec, err){
+    // 'saving' means Drive already has the file and only the metadata write
+    // failed — a different failure with a different retry (re-persist, never
+    // re-upload), so the two must not collapse into one state.
+    rec.status = (rec.status === 'saving') ? 'save-failed' : 'failed';
+    rec.error = err && (err.message || String(err));
+    uploadBatch.failed++;
+    refreshPhotoSurfaces_();
+  }
+
+  async function prepareUploadData_(rec){
+    if(rec.kind === 'doc'){
+      return await withTimeout(
+        (rec.mimeType || '').startsWith('image/') ? compressImageFile(rec.file, 1300, 0.65) : readFileAsDataURL(rec.file),
+        20000, 'file-processing-timeout');
+    }
+    return await withTimeout(compressImageFile(rec.file), 20000, 'photo-processing-timeout');
+  }
+  // Compress + upload, keeping the old heavier-compression fallback for
+  // oversized source images (a desktop photo or screenshot dwarfs a phone
+  // capture). Photos only — a PDF can't be recompressed.
+  async function uploadRecordToDrive_(rec){
+    const dataUrl = await prepareUploadData_(rec);
+    let uploaded = await uploadToDrive(dataUrl, rec.filename, rec.projectName, rec.section);
+    if(!uploaded && rec.kind === 'photo' && rec.file){
+      const smaller = await withTimeout(compressImageFile(rec.file, 800, 0.5), 20000, 'photo-processing-timeout');
+      uploaded = await uploadToDrive(smaller, rec.filename, rec.projectName, rec.section);
+    }
+    return uploaded;
+  }
+
+  async function runOneUpload_(rec){
+    // Retrying a save-failed record: the Drive file already exists, so only
+    // the metadata write is re-attempted. Re-uploading would duplicate it.
+    if(rec.status === 'save-failed' || rec.status === 'saving'){
+      const home = findUploadHome_(rec.id);
+      if(home && home.target.driveFileId){ await persistUploadedRecord_(rec, home); return; }
+    }
+    rec.status = 'uploading';
+    refreshPhotoSurfaces_();
+    let uploaded = null;
+    try{
+      uploaded = await withTimeout(uploadRecordToDrive_(rec), UPLOAD_DEADLINE_MS, 'upload-timeout');
+    }catch(err){
+      console.error('upload error', rec.id, err);
+      if(isPermissionError(err)){
+        // Every remaining file in this batch would be rejected the same way —
+        // burning 17 more deadlines to be told "no" 17 more times helps nobody.
+        markUploadFailed_(rec, err);
+        failQueuedUploads_(err);
+        return;
+      }
+      markUploadFailed_(rec, err);
+      return;
+    }
+    if(!uploaded){ markUploadFailed_(rec, new Error('upload-failed')); return; }
+
+    const home = findUploadHome_(rec.id);
+    if(!home){
+      // Deleted (or its parent was, or the form was abandoned) while this was
+      // in flight. The Drive file has nothing to belong to, so try to remove
+      // it. Best-effort by design: deleteFile only trashes a file that is
+      // present in Fotos/Documentos (Section 7 — an unchecked client fileId
+      // could otherwise reach anything the deploying account can see), so a
+      // file whose row was never persisted stays in Drive. That orphan
+      // predates this pipeline — an abandoned draft photo always leaked the
+      // same way — and closing it needs a backend change, not a looser rule
+      // here.
+      uploadBatch.cancelled++;
+      forgetUpload_(rec);
+      deleteFromDrive(uploaded.driveFileId);
+      return;
+    }
+    home.target.driveFileId = uploaded.driveFileId;
+    home.target.driveUrl = uploaded.driveUrl;
+    rec.status = 'saving';   // from here on the row is eligible for the sheet
+    await persistUploadedRecord_(rec, home);
+  }
+
+  // Drive has the bytes; now the app's own record of it must be persisted
+  // before anything claims success. On failure the record deliberately stays
+  // in state WITH its driveFileId (never rolled back): the file really does
+  // exist, so the next sync of that sheet picks it up as an ordinary diff,
+  // and the thumbnail offers an explicit retry meanwhile. What must never
+  // happen is a Drive file the app has lost the reference to.
+  async function persistUploadedRecord_(rec, home){
+    if(!home.key){
+      // An unsaved draft — the parent record doesn't exist yet, so there is
+      // nothing to write. Saving the parent later carries the photo with it.
+      uploadBatch.done++;
+      forgetUpload_(rec);
+      refreshPhotoSurfaces_();
+      return;
+    }
+    const ok = await saveKey(home.key, home.value);
+    if(ok){
+      uploadBatch.done++;
+      forgetUpload_(rec);
+    } else {
+      markUploadFailed_(rec, new Error('metadata-save-failed'));
+      return;
+    }
+    refreshPhotoSurfaces_();
+  }
+
+  function failQueuedUploads_(err){
+    while(uploadQueue.length){
+      const rec = pendingUploads.get(uploadQueue.shift());
+      if(rec && !rec.cancelled) markUploadFailed_(rec, err);
+    }
+  }
+
+  function retryUpload_(id){
+    const rec = pendingUploads.get(id);
+    if(!rec || rec.status === 'pending' || rec.status === 'uploading') return;
+    rec.status = (rec.status === 'save-failed') ? 'saving' : 'pending';
+    rec.cancelled = false;
+    uploadQueue.push(id);
+    uploadBatch.total++;
+    refreshPhotoSurfaces_();
+    updateUploadProgressToast_();
+    startUploadRunner_();
+  }
+
+  // Called by every delete path before it drops a record from state. If the
+  // upload is already in flight, runOneUpload_'s findUploadHome_ will come
+  // back empty and delete the Drive file it just created.
+  function cancelUpload_(id){
+    const rec = pendingUploads.get(id);
+    if(!rec) return false;
+    rec.cancelled = true;
+    forgetUpload_(rec);
+    return true;
+  }
+  function cancelUploads_(fotos){
+    (fotos || []).forEach(f => cancelUpload_(f.id));
+  }
+
+  // The one entry point every photo picker uses. Fully synchronous: no
+  // compression, no network, nothing awaited before the render — the
+  // thumbnails are on screen within a frame of the picker closing, drawn
+  // from local object URLs, and the actual work happens in the queue after.
+  function startPhotoUploads_(files, opts){
+    const recs = files.map(file => {
+      const id = uid('ph');
+      return {
+        id, kind: 'photo', status: 'pending', file,
+        previewUrl: safeObjectURL_(file),
+        filename: id + '.jpg',
+        projectName: opts.projectName || activeProjectId,
+        section: opts.section,
+        criadoEm: Date.now(),
+      };
+    });
+    const metas = recs.map(r => ({id: r.id, criadoEm: r.criadoEm, driveFileId: '', driveUrl: ''}));
+    if(opts.attach(metas) === false){
+      recs.forEach(releasePreview_);
+      showToast('Não consegui adicionar essas fotos.');
+      return;
+    }
+    recs.forEach(r => pendingUploads.set(r.id, r));
+    refreshPhotoSurfaces_();
+    renderAll();
+    recs.forEach(r => enqueueUpload_(r));
+  }
+  $('#formPhotoInput').addEventListener('change', (e)=>{
     const files = Array.from(e.target.files);
     e.target.value = '';
     if(!files.length) return;
-    showToast(files.length > 1 ? `Processando ${files.length} fotos...` : 'Processando foto...', true);
-    const metas = [];
-    let anyFail = false;
-    for(const file of files){
-      let photoResult;
-      try{ photoResult = await processAndSavePhoto(file, activeProjectId, 'lancamentos'); }
-      catch(err){ anyFail = true; continue; }
-      metas.push({id: photoResult.id, criadoEm: Date.now(), driveFileId: photoResult.driveFileId, driveUrl: photoResult.driveUrl});
-    }
-    if(!metas.length){
-      showToast('Não consegui processar essas imagens.');
-      return;
-    }
-    let saveOk = true;
-    if(editingId){
-      const list = getList(addKind);
-      const prevList = cloneState_(list);
-      const entry = list.find(x=>x.id===editingId);
-      if(entry){
-        entry.fotos = [...(entry.fotos||[]), ...metas];
-        saveOk = await saveKey(addKind==='caixa' ? 'caixaObra' : 'empreiteiro', list, prevList);
-      }
-    } else {
-      draftFotos.push(...metas);
-    }
-    renderFormPhotoThumbs();
-    renderAll();
-    if(saveOk) showToast(anyFail ? `${metas.length} foto(s) adicionada(s), algumas falharam.` : (metas.length > 1 ? `${metas.length} fotos adicionadas.` : 'Foto adicionada.'));
-    else showToast('Não consegui salvar essas fotos. Tente novamente.', false, 4500);
+    startPhotoUploads_(files, {
+      projectName: activeProjectId,
+      section: 'lancamentos',
+      // Attaching is UI-only — the rows are held back from the sheet until
+      // each file's own upload lands (see persistableFotos_), so nothing here
+      // needs (or may) claim the photos are saved.
+      attach: (metas)=>{
+        if(editingId){
+          const entry = getList(addKind).find(x=>x.id===editingId);
+          if(!entry) return false;
+          entry.fotos = [...(entry.fotos||[]), ...metas];
+        } else {
+          draftFotos.push(...metas);
+        }
+        return true;
+      },
+    });
   });
 
   // --- Detail modal photo context ---
@@ -3512,6 +3887,7 @@
   }
   async function deleteModalPhotoNow(id){
     if(!activeModal) return;
+    cancelUpload_(id);
     const list = getList(activeModal.kind);
     const prevList = cloneState_(list);
     const entry = list.find(x=>x.id===activeModal.id);
@@ -3534,38 +3910,26 @@
     if(!ok) return;
     await deleteModalPhotoNow(id);
   }
-  $('#modalPhotoInput').addEventListener('change', async (e)=>{
+  $('#modalPhotoInput').addEventListener('change', (e)=>{
     const files = Array.from(e.target.files);
     e.target.value = '';
     if(!files.length || !activeModal) return;
-    showToast(files.length > 1 ? `Processando ${files.length} fotos...` : 'Processando foto...', true);
-    const list = getList(activeModal.kind);
-    const entry = list.find(x=>x.id===activeModal.id);
+    const entryId = activeModal.id, entryKind = activeModal.kind;
+    const entry = getList(entryKind).find(x=>x.id===entryId);
     if(!entry) return;
-    const metas = [];
-    let anyFail = false;
-    for(const file of files){
-      let photoResult;
-      try{ photoResult = await processAndSavePhoto(file, entry.projectId, 'lancamentos'); }
-      catch(err){ anyFail = true; continue; }
-      metas.push({id: photoResult.id, criadoEm: Date.now(), driveFileId: photoResult.driveFileId, driveUrl: photoResult.driveUrl});
-    }
-    if(!metas.length){
-      showToast('Não consegui processar essas imagens.');
-      return;
-    }
-    const prevList = cloneState_(list);
-    entry.fotos = [...(entry.fotos||[]), ...metas];
-    const saveOk1 = await saveKey(activeModal.kind==='caixa' ? 'caixaObra' : 'empreiteiro', list, prevList);
-    // Re-read rather than reuse the local `entry` — on failure it still
-    // points at the stale, already-mutated object (see deleteModalPhotoNow).
-    const current = getList(activeModal.kind).find(x=>x.id===activeModal.id);
-    renderModalPhotoThumbs(current ? current.fotos : []);
-    renderAll();
-    if(saveOk1) showToast(anyFail ? `${metas.length} foto(s) adicionada(s), algumas falharam.` : (metas.length > 1 ? `${metas.length} fotos adicionadas.` : 'Foto adicionada.'));
-    else showToast('Não consegui salvar essas fotos. Tente novamente.', false, 4500);
+    startPhotoUploads_(files, {
+      projectName: entry.projectId,
+      section: 'lancamentos',
+      attach: (metas)=>{
+        // Re-resolved by id, not captured above — the modal may have been
+        // closed and reopened on another entry before this runs.
+        const target = getList(entryKind).find(x=>x.id===entryId);
+        if(!target) return false;
+        target.fotos = [...(target.fotos||[]), ...metas];
+        return true;
+      },
+    });
   });
-
   // ---------- Task photos (new-task draft + existing-task modal, immediate) ----------
   function renderTaskFormPhotoThumbs(){
     renderPhotoThumbs($('#taskPhotoThumbs'), draftTaskFotos, {
@@ -3575,6 +3939,7 @@
     });
   }
   async function deleteTaskDraftPhotoNow(id){
+    cancelUpload_(id);
     const target = draftTaskFotos.find(f=>f.id===id);
     draftTaskFotos = draftTaskFotos.filter(f=>f.id!==id);
     await deleteFromDrive(target && target.driveFileId);
@@ -3586,26 +3951,14 @@
     if(!ok) return;
     await deleteTaskDraftPhotoNow(id);
   }
-  $('#taskPhotoInput').addEventListener('change', async (e)=>{
+  $('#taskPhotoInput').addEventListener('change', (e)=>{
     const files = Array.from(e.target.files);
     e.target.value = '';
     if(!files.length) return;
-    showToast(files.length > 1 ? `Processando ${files.length} fotos...` : 'Processando foto...', true);
-    const metas = [];
-    let anyFail = false;
-    for(const file of files){
-      let photoResult;
-      try{ photoResult = await processAndSavePhoto(file, activeProjectId, 'tarefas'); }
-      catch(err){ anyFail = true; continue; }
-      metas.push({id: photoResult.id, criadoEm: Date.now(), driveFileId: photoResult.driveFileId, driveUrl: photoResult.driveUrl});
-    }
-    if(!metas.length){
-      showToast('Não consegui processar essas imagens.');
-      return;
-    }
-    draftTaskFotos.push(...metas);
-    renderTaskFormPhotoThumbs();
-    showToast(anyFail ? `${metas.length} foto(s) adicionada(s), algumas falharam.` : (metas.length > 1 ? `${metas.length} fotos adicionadas.` : 'Foto adicionada.'));
+    startPhotoUploads_(files, {
+      projectName: activeProjectId, section: 'tarefas',
+      attach: (metas)=>{ draftTaskFotos.push(...metas); return true; },
+    });
   });
 
   function renderTaskModalPhotoThumbs(fotos){
@@ -3617,6 +3970,7 @@
   }
   async function deleteTaskModalPhotoNow(id){
     if(!activeTaskId) return;
+    cancelUpload_(id);
     const t = tasks.find(x=>x.id===activeTaskId);
     if(!t) return;
     // Per-task revert (just this task's photo list), never a whole-array clone
@@ -3637,34 +3991,22 @@
     if(!ok) return;
     await deleteTaskModalPhotoNow(id);
   }
-  $('#taskModalPhotoInput').addEventListener('change', async (e)=>{
+  $('#taskModalPhotoInput').addEventListener('change', (e)=>{
     const files = Array.from(e.target.files);
     e.target.value = '';
     if(!files.length || !activeTaskId) return;
-    showToast(files.length > 1 ? `Processando ${files.length} fotos...` : 'Processando foto...', true);
-    const t = tasks.find(x=>x.id===activeTaskId);
+    const taskId = activeTaskId;
+    const t = tasks.find(x=>x.id===taskId);
     if(!t) return;
-    const metas = [];
-    let anyFail = false;
-    for(const file of files){
-      let photoResult;
-      try{ photoResult = await processAndSavePhoto(file, t.projectId || activeProjectId, 'tarefas'); }
-      catch(err){ anyFail = true; continue; }
-      metas.push({id: photoResult.id, criadoEm: Date.now(), driveFileId: photoResult.driveFileId, driveUrl: photoResult.driveUrl});
-    }
-    if(!metas.length){
-      showToast('Não consegui processar essas imagens.');
-      return;
-    }
-    const prevFotos3 = (t.fotos||[]).slice(); // per-task revert, see deleteTaskModalPhotoNow
-    t.fotos = [...(t.fotos||[]), ...metas];
-    const saveOk3 = await saveKey('tasks', tasks);
-    if(!saveOk3) t.fotos = prevFotos3;
-    const current = tasks.find(x=>x.id===activeTaskId);
-    renderTaskModalPhotoThumbs(current ? current.fotos : []);
-    renderAll();
-    if(saveOk3) showToast(anyFail ? `${metas.length} foto(s) adicionada(s), algumas falharam.` : (metas.length > 1 ? `${metas.length} fotos adicionadas.` : 'Foto adicionada.'));
-    else showToast('Não consegui salvar essas fotos. Tente novamente.', false, 4500);
+    startPhotoUploads_(files, {
+      projectName: t.projectId || activeProjectId, section: 'tarefas',
+      attach: (metas)=>{
+        const target = tasks.find(x=>x.id===taskId);
+        if(!target) return false;
+        target.fotos = [...(target.fotos||[]), ...metas];
+        return true;
+      },
+    });
   });
 
   // ---------- Note edit/delete (works for standalone notes and notes attached to entries) ----------
@@ -4119,6 +4461,7 @@
     });
   }
   async function deleteNoteDraftPhotoNow(id){
+    cancelUpload_(id);
     const target = draftNoteFotos.find(f=>f.id===id);
     draftNoteFotos = draftNoteFotos.filter(f=>f.id!==id);
     await deleteFromDrive(target && target.driveFileId);
@@ -4130,26 +4473,14 @@
     if(!ok) return;
     await deleteNoteDraftPhotoNow(id);
   }
-  $('#notePhotoInputNew').addEventListener('change', async (e)=>{
+  $('#notePhotoInputNew').addEventListener('change', (e)=>{
     const files = Array.from(e.target.files);
     e.target.value = '';
     if(!files.length) return;
-    showToast(files.length > 1 ? `Processando ${files.length} fotos...` : 'Processando foto...', true);
-    const metas = [];
-    let anyFail = false;
-    for(const file of files){
-      let photoResult;
-      try{ photoResult = await processAndSavePhoto(file, activeProjectId, 'notas'); }
-      catch(err){ anyFail = true; continue; }
-      metas.push({id: photoResult.id, criadoEm: Date.now(), driveFileId: photoResult.driveFileId, driveUrl: photoResult.driveUrl});
-    }
-    if(!metas.length){
-      showToast('Não consegui processar essas imagens.');
-      return;
-    }
-    draftNoteFotos.push(...metas);
-    renderNoteFormPhotoThumbs();
-    showToast(anyFail ? `${metas.length} foto(s) adicionada(s), algumas falharam.` : (metas.length > 1 ? `${metas.length} fotos adicionadas.` : 'Foto adicionada.'));
+    startPhotoUploads_(files, {
+      projectName: activeProjectId, section: 'notas',
+      attach: (metas)=>{ draftNoteFotos.push(...metas); return true; },
+    });
   });
 
   // Existing standalone notes: a single shared hidden input is reused across every
@@ -4166,6 +4497,7 @@
     });
   }
   async function deleteExistingNotePhotoNow(noteId, photoId){
+    cancelUpload_(photoId);
     const n = notes.find(x=>x.id===noteId);
     if(!n) return;
     const prevNotes = cloneState_(notes);
@@ -4183,7 +4515,7 @@
     if(!ok) return;
     await deleteExistingNotePhotoNow(noteId, photoId);
   }
-  $('#notePhotoInputExisting').addEventListener('change', async (e)=>{
+  $('#notePhotoInputExisting').addEventListener('change', (e)=>{
     const files = Array.from(e.target.files);
     e.target.value = '';
     const noteId = notePhotoTargetId;
@@ -4191,27 +4523,15 @@
     if(!files.length || !noteId) return;
     const n = notes.find(x=>x.id===noteId);
     if(!n) return;
-    showToast(files.length > 1 ? `Processando ${files.length} fotos...` : 'Processando foto...', true);
-    const metas = [];
-    let anyFail = false;
-    for(const file of files){
-      let photoResult;
-      try{ photoResult = await processAndSavePhoto(file, n.projectId || activeProjectId, 'notas'); }
-      catch(err){ anyFail = true; continue; }
-      metas.push({id: photoResult.id, criadoEm: Date.now(), driveFileId: photoResult.driveFileId, driveUrl: photoResult.driveUrl});
-    }
-    if(!metas.length){
-      showToast('Não consegui processar essas imagens.');
-      return;
-    }
-    const prevNotes = cloneState_(notes);
-    n.fotos = [...(n.fotos||[]), ...metas];
-    const saveOk9 = await saveKey('notes', notes, prevNotes);
-    const current = notes.find(x=>x.id===noteId);
-    if(current) renderExistingNotePhotoThumbs(current);
-    renderAll();
-    if(saveOk9) showToast(anyFail ? `${metas.length} foto(s) adicionada(s), algumas falharam.` : (metas.length > 1 ? `${metas.length} fotos adicionadas.` : 'Foto adicionada.'));
-    else showToast('Não consegui salvar essas fotos. Tente novamente.', false, 4500);
+    startPhotoUploads_(files, {
+      projectName: n.projectId || activeProjectId, section: 'notas',
+      attach: (metas)=>{
+        const target = notes.find(x=>x.id===noteId);
+        if(!target) return false;
+        target.fotos = [...(target.fotos||[]), ...metas];
+        return true;
+      },
+    });
   });
 
   $('#saveNoteBtn').addEventListener('click', withGuard(async ()=>{
@@ -4552,6 +4872,7 @@
     await deleteAggregatedPhotoNow(catKey, photoId);
   }
   async function deleteAggregatedPhotoNow(catKey, photoId){
+    cancelUpload_(photoId);
     // Deletes from the actual source record (lançamento/tarefa/nota) — this hub is
     // a mirror of those photos, not a separate copy, so deleting here deletes there too.
     let driveFileId = null;
@@ -4605,13 +4926,17 @@
     const isImage = (d.mimeType||'').startsWith('image/');
     const ext = fileExtension(d.nome);
     const dateStr = new Date(d.criadoEm).toLocaleDateString('pt-BR');
-    return `<div class="doc-row" data-doc-id="${escapeHTML(d.id)}">
+    const rec = pendingUploads.get(d.id);
+    let meta = `${ext ? ext + ' · ' : ''}${dateStr}`;
+    if(rec && (rec.status === 'failed' || rec.status === 'save-failed')) meta = 'Falhou — toque para reenviar';
+    else if(rec) meta = 'Enviando...';
+    return `<div class="doc-row${rec ? ' is-pending' : ''}" data-doc-id="${escapeHTML(d.id)}">
       <div class="doc-icon" id="docicon-${escapeHTML(d.id)}">
         ${isImage ? '' : '<svg viewBox="0 0 24 24"><path d="M6 2h9l5 5v15H6z"/><path d="M15 2v5h5"/></svg>'}
       </div>
       <div class="doc-info">
         <div class="doc-name">${escapeHTML(d.nome)}</div>
-        <div class="doc-meta">${ext ? ext + ' · ' : ''}${dateStr}</div>
+        <div class="doc-meta">${escapeHTML(meta)}</div>
       </div>
       <button type="button" class="doc-del" data-del-doc="${escapeHTML(d.id)}"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
     </div>`;
@@ -4633,7 +4958,13 @@
     box.querySelectorAll('.doc-row').forEach(row=>{
       row.addEventListener('click', (e)=>{
         if(e.target.closest('.doc-del')) return;
-        openDocument(row.dataset.docId);
+        const id = row.dataset.docId;
+        const rec = pendingUploads.get(id);
+        if(rec){
+          if(rec.status === 'failed' || rec.status === 'save-failed') retryUpload_(id);
+          return; // still uploading — there is nothing in Drive to open yet
+        }
+        openDocument(id);
       });
     });
     const canDeleteDocs = canSection('docs','delete');
@@ -4643,9 +4974,12 @@
     });
     // Image-type documents get a real thumbnail, straight from Drive.
     list.forEach(d=>{
-      if(!(d.mimeType||'').startsWith('image/') || !d.driveFileId) return;
+      if(!(d.mimeType||'').startsWith('image/')) return;
+      const rec = pendingUploads.get(d.id);
+      const src = (rec && rec.previewUrl) ? rec.previewUrl : (d.driveFileId ? photoEmbedUrl(d.driveFileId) : '');
+      if(!src) return;
       const iconEl = document.getElementById('docicon-' + d.id);
-      if(iconEl) iconEl.innerHTML = `<img src="${escapeHTML(photoEmbedUrl(d.driveFileId))}" alt="">`;
+      if(iconEl) iconEl.innerHTML = `<img src="${escapeHTML(src)}" alt="">`;
     });
     const loadMoreBtn = $('#loadMoreDocsBtn');
     if(loadMoreBtn){
@@ -4713,6 +5047,7 @@
     openSafeUrl(d.driveUrl || ('https://drive.google.com/file/d/' + d.driveFileId + '/view'));
   }
   async function deleteDocumentNow(id){
+    cancelUpload_(id);
     const prevDocs = cloneState_(documentos);
     const target = documentos.find(d=>d.id===id);
     documentos = documentos.filter(d=>d.id!==id);
@@ -4727,59 +5062,33 @@
     if(!ok) return;
     await deleteDocumentNow(id);
   }
-  $('#docFileInput').addEventListener('change', async (e)=>{
+  // Same lifecycle as photos (see the BACKGROUND UPLOAD PIPELINE block): the
+  // rows appear in the list by name immediately and each file's bytes move
+  // afterwards, independently.
+  $('#docFileInput').addEventListener('change', (e)=>{
     const files = Array.from(e.target.files);
     e.target.value = '';
     if(!files.length) return;
-    showToast(files.length > 1 ? `Enviando ${files.length} documentos...` : 'Enviando documento...', true);
-    const newDocs = [];
-    let anyFail = false;
-    try{
-      for(const file of files){
-        const isImageFile = file.type.startsWith('image/');
-        if(file.size > 15 * 1024 * 1024){
-          anyFail = true;
-          continue;
-        }
-        let dataUrl;
-        try{
-          dataUrl = await withTimeout(
-            isImageFile ? compressImageFile(file, 1300, 0.65) : readFileAsDataURL(file),
-            20000, 'file-processing-timeout'
-          );
-        }catch(err){
-          console.error('doc process error', err);
-          anyFail = true;
-          continue;
-        }
-        const docId = uid('doc');
-        const uploaded = await uploadToDrive(dataUrl, file.name, activeProjectId, 'docs');
-        if(!uploaded){ anyFail = true; continue; }
-        newDocs.push({id: docId, projectId: activeProjectId, nome: file.name, mimeType: file.type || 'application/octet-stream', criadoEm: Date.now(), driveFileId: uploaded.driveFileId, driveUrl: uploaded.driveUrl});
-      }
-      if(!newDocs.length){
-        showToast('Não consegui enviar esse(s) arquivo(s). Tente novamente.');
-        return;
-      }
-      documentos.push(...newDocs);
-      // Deliberately NOT rolled back on failure like other saves: the Drive
-      // upload above already succeeded, so keeping the pending doc(s) in
-      // memory lets the next documentos save quietly pick them up as an
-      // already-computed diff, instead of forcing a wasteful full re-upload.
-      const metaOk = await saveKey('documentos', documentos);
-      docsPage = 1;
-      renderDocsList();
-      if(!metaOk){
-        showToast('Arquivo(s) enviado(s), mas não consegui registrar ainda — tentando novamente na próxima sincronização.', false, 5000);
-        return;
-      }
-      showToast(anyFail ? `${newDocs.length} documento(s) adicionado(s), algum(ns) falharam.` : (newDocs.length > 1 ? `${newDocs.length} documentos adicionados.` : 'Documento adicionado.'));
-    }catch(err){
-      // Final safety net — guarantees the persistent "Enviando..." toast can never
-      // get stuck forever, even if something entirely unanticipated goes wrong.
-      console.error('unexpected doc upload error', err);
-      showToast('Algo deu errado ao enviar o documento. Tente novamente.');
-    }
+    const recs = [];
+    let tooBig = 0;
+    files.forEach(file=>{
+      if(file.size > 15 * 1024 * 1024){ tooBig++; return; }
+      const id = uid('doc');
+      const mimeType = file.type || 'application/octet-stream';
+      recs.push({
+        id, kind: 'doc', status: 'pending', file, mimeType,
+        previewUrl: mimeType.startsWith('image/') ? safeObjectURL_(file) : '',
+        filename: file.name, projectName: activeProjectId, section: 'docs',
+        criadoEm: Date.now(),
+      });
+    });
+    if(tooBig) showToast(`${tooBig} arquivo(s) acima de 15 MB não enviado(s).`, false, 4500);
+    if(!recs.length) return;
+    documentos.push(...recs.map(r=>({id: r.id, projectId: activeProjectId, nome: r.filename, mimeType: r.mimeType, criadoEm: r.criadoEm, driveFileId: '', driveUrl: ''})));
+    recs.forEach(r=> pendingUploads.set(r.id, r));
+    docsPage = 1;
+    renderDocsList();
+    recs.forEach(r=> enqueueUpload_(r));
   });
 
   function renderAll(){
