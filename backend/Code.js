@@ -63,14 +63,39 @@ function authSheet_() {
 // Verifies a Google ID token is genuine, was issued for THIS app (not some
 // other Google Sign-In client), and carries a verified email — all three
 // checks matter; skipping any one of them defeats the point.
+// "This token is invalid" and "I could not check the token right now" are
+// completely different answers, and collapsing them signs people out for no
+// reason. Google's tokeninfo endpoint is rate-limited, and this app calls it
+// on EVERY request — so a large photo batch (three concurrent uploads plus
+// their row writes) can easily earn a 429. Treating that as a dead session
+// cleared the token and threw the user back to the sign-in screen mid-batch,
+// abandoning every upload still in flight.
+//
+// Only a verdict from Google that the token itself is bad (400/401) is an
+// auth failure. Anything else — 429, 5xx, a network wobble — is a transient
+// server condition the client should retry, exactly like a busy lock.
 function verifyIdToken_(idToken) {
   if (!idToken) throw new Error('não autenticado');
-  const resp = UrlFetchApp.fetch(
-    'https://oauth2.googleapis.com/tokeninfo?id_token=' + encodeURIComponent(idToken),
-    { muteHttpExceptions: true }
-  );
-  if (resp.getResponseCode() !== 200) throw new Error('não autenticado');
-  const info = JSON.parse(resp.getContentText());
+  let resp;
+  try {
+    resp = UrlFetchApp.fetch(
+      'https://oauth2.googleapis.com/tokeninfo?id_token=' + encodeURIComponent(idToken),
+      { muteHttpExceptions: true }
+    );
+  } catch (e) {
+    throw new Error('Servidor ocupado, tente novamente.');
+  }
+  const code = resp.getResponseCode();
+  if (code !== 200) {
+    if (code === 400 || code === 401) throw new Error('não autenticado');
+    throw new Error('Servidor ocupado, tente novamente.');
+  }
+  let info;
+  try {
+    info = JSON.parse(resp.getContentText());
+  } catch (e) {
+    throw new Error('Servidor ocupado, tente novamente.');
+  }
   if (info.aud !== GOOGLE_CLIENT_ID) throw new Error('não autenticado');
   if (!info.email || info.email_verified !== 'true') throw new Error('não autenticado');
   return { email: String(info.email).toLowerCase().trim(), name: info.name || info.email };

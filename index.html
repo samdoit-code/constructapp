@@ -448,6 +448,31 @@
   .photo-thumb.is-selected .photo-check svg{opacity:1;}
 
   /* ---- Upload tray: global, screen-independent, survives navigation ---- */
+  /* ---- Global busy indicator ----
+     Appears in the top-right whenever ANY request has been in flight longer
+     than BUSY_SHOW_DELAY_MS. Deliberately delayed: flashing a spinner for
+     every fast save would be noise, but an operation that takes a while must
+     never look like nothing is happening. Sits above the topbar so it is
+     visible on every screen, including inside modals. */
+  #busyDot{
+    position:fixed; z-index:60; right:14px;
+    display:none; align-items:center; gap:7px;
+    background:rgba(33,29,25,0.92); color:#fff;
+    border-radius:999px; padding:6px 12px 6px 9px;
+    box-shadow:0 3px 12px rgba(0,0,0,0.28);
+    font-size:11.5px; font-weight:600; letter-spacing:0.03em;
+    pointer-events:none;
+  }
+  #busyDot.show{display:flex;}
+  #busyDot .bspin{
+    width:13px; height:13px; border-radius:50%;
+    border:2px solid rgba(255,255,255,0.35); border-top-color:#fff;
+    animation:photoSpin .7s linear infinite; flex:0 0 auto;
+  }
+  @media (prefers-reduced-motion: reduce){
+    #busyDot .bspin{animation:none; border-top-color:rgba(255,255,255,0.85);}
+  }
+
   #uploadTray{
     position:fixed; left:0; right:0; z-index:29; display:none;
     background:var(--ink); color:#fff;
@@ -1077,6 +1102,10 @@
 
 </div>
 
+<!-- Global "something is happening" indicator. Shown only once a request has
+     been slow enough to be worth mentioning — see beginBusy_/endBusy_. -->
+<div id="busyDot" aria-live="polite"><span class="bspin"></span><span id="busyDotText">Processando...</span></div>
+
 <!-- Global upload tray. Deliberately outside every view: uploads are a
      background lifecycle, not a property of whichever screen started them, so
      the indicator has to outlive navigation. Positioned above the tab bar by
@@ -1611,10 +1640,69 @@
   // rejection to retry, and whatever button triggered this is stuck on
   // "Salvando..." with no way out short of reloading the app. uploadFile
   // gets a longer ceiling since it's genuinely slower (base64 upload).
+  // ---------- Global busy indicator ----------
+  // Every backend call goes through sheetsPostRaw, so counting in-flight
+  // requests here covers the whole app at once — saves, deletes, syncs,
+  // renames, uploads — without each call site having to remember to show
+  // anything. The delay is what keeps it honest: a fast save should not
+  // flash a spinner, but anything the user could mistake for a frozen app
+  // must announce itself.
+  const BUSY_SHOW_DELAY_MS = 450;
+  let busyCount = 0;
+  let busyShowTimer = null;
+  function syncBusyOffset_(){
+    const el = document.getElementById('busyDot');
+    const bar = document.querySelector('.topbar');
+    if(!el || !bar) return;
+    // Tucked just under the topbar, clear of the safe area.
+    el.style.top = (bar.offsetHeight + 8) + 'px';
+  }
+  function setBusyLabel_(label){
+    const t = document.getElementById('busyDotText');
+    if(t) t.textContent = label || 'Processando...';
+  }
+  function beginBusy_(label){
+    busyCount++;
+    if(label) setBusyLabel_(label);
+    if(busyShowTimer || busyCount > 1) return;
+    busyShowTimer = setTimeout(()=>{
+      busyShowTimer = null;
+      if(busyCount <= 0) return;
+      syncBusyOffset_();
+      const el = document.getElementById('busyDot');
+      if(el) el.classList.add('show');
+    }, BUSY_SHOW_DELAY_MS);
+  }
+  function endBusy_(){
+    busyCount = Math.max(0, busyCount - 1);
+    if(busyCount > 0) return;
+    clearTimeout(busyShowTimer); busyShowTimer = null;
+    const el = document.getElementById('busyDot');
+    if(el) el.classList.remove('show');
+    setBusyLabel_('Processando...');
+  }
+  // Labels for the actions worth naming; everything else just says the app is
+  // working. Uploads are excluded — they have the tray, and a second
+  // indicator for the same thing is noise.
+  const BUSY_LABELS = {
+    batchMulti: 'Salvando...', saveSheet: 'Salvando...',
+    deletePhotos: 'Excluindo...', deleteDocumentos: 'Excluindo...', deleteFile: 'Excluindo...',
+    renameProject: 'Renomeando...', getAll: 'Sincronizando...',
+  };
+
   async function sheetsPostRaw(body){
-    const timeoutMs = (body && body.action === 'uploadFile') ? 60000 : 30000;
+    // Deleting records trashes a Drive file per id, one API call each, so a
+    // parent with dozens of photos needs far more than the default budget —
+    // at 30s a task with ~60 photos timed out, retried twice, and showed an
+    // error after a minute and a half. Chunking (deletePhotoRecords_) keeps
+    // each request small; this is the headroom on top of that.
+    const SLOW_ACTIONS = {uploadFile: 60000, deletePhotos: 90000, deleteDocumentos: 90000, renameProject: 90000};
+    const timeoutMs = (body && SLOW_ACTIONS[body.action]) || 30000;
     const controller = new AbortController();
     const timer = setTimeout(()=> controller.abort(), timeoutMs);
+    const act = body && body.action;
+    const showBusy = act && act !== 'uploadFile' && act !== 'verify';
+    if(showBusy) beginBusy_(BUSY_LABELS[act]);
     try{
       const resp = await fetch(APPS_SCRIPT_URL, {
         method: 'POST',
@@ -1626,14 +1714,27 @@
       return await resp.json();
     } finally {
       clearTimeout(timer);
+      if(showBusy) endBusy_();
     }
   }
   // Retries the network call itself (a dropped connection, a brief timeout) —
   // but NOT a deterministic rejection from the server (a real conflict, a bad
   // secret): those come back as a normal successful response with an .error
   // field, so retrying them would just delay showing the real problem.
+  // 'Servidor ocupado' is the backend saying "I could not do this right now",
+  // not "this is wrong" — a busy script lock, or a rate-limited token check
+  // during a big upload batch. It has to be retried like a network blip
+  // rather than surfaced, otherwise a transient 429 on Google's tokeninfo
+  // endpoint reads as a failure mid-batch.
+  function isBusyError(err){
+    return /^Servidor ocupado/.test(String((err && err.message) || err || ''));
+  }
   async function sheetsPost(body){
-    const data = await withRetry(()=> sheetsPostRaw(body), 2, 900);
+    const data = await withRetry(async ()=>{
+      const d = await sheetsPostRaw(body);
+      if(d && d.error && isBusyError(new Error(d.error))) throw new Error(d.error);
+      return d;
+    }, 2, 900);
     if(data && data.error) throw new Error(data.error);
     return data;
   }
@@ -2203,19 +2304,29 @@
   // lançamento/tarefa/nota it hangs off. Dropping that needless parent write
   // also stops a photo delete from dragging the whole Tarefas diff along with
   // it.
+  // Each id costs a Drive trash call server-side, so a single request must
+  // never carry an unbounded number of them: deleting a task that held ~60
+  // photos blew straight past the request deadline and surfaced as "não
+  // consegui excluir" after a long wait. Chunking keeps every request small
+  // and bounded, and each chunk that lands is durably done — a failure part
+  // way through leaves the earlier chunks deleted rather than rolling back.
+  const DELETE_CHUNK_SIZE = 12;
   async function deletePhotoRecords_(ids, kind){
     const sheetName = kind === 'doc' ? 'documentos' : 'fotos';
     const persisted = (ids || []).filter(id => hasPersistedRow_(sheetName, id));
     if(!persisted.length) return true;
-    const resp = await sheetsPost({
-      action: kind === 'doc' ? 'deleteDocumentos' : 'deletePhotos',
-      ids: persisted,
-    });
-    const gone = new Set((resp.deleted || []).map(String));
-    // Keep the diff baseline honest, so the next sync neither re-sends nor
-    // re-deletes these rows.
-    if(sheetSnapshot[sheetName]){
-      sheetSnapshot[sheetName] = sheetSnapshot[sheetName].filter(r => !gone.has(String(r.id)));
+    for(let i = 0; i < persisted.length; i += DELETE_CHUNK_SIZE){
+      const chunk = persisted.slice(i, i + DELETE_CHUNK_SIZE);
+      const resp = await sheetsPost({
+        action: kind === 'doc' ? 'deleteDocumentos' : 'deletePhotos',
+        ids: chunk,
+      });
+      const gone = new Set((resp.deleted || []).map(String));
+      // Keep the diff baseline honest, so the next sync neither re-sends nor
+      // re-deletes these rows.
+      if(sheetSnapshot[sheetName]){
+        sheetSnapshot[sheetName] = sheetSnapshot[sheetName].filter(r => !gone.has(String(r.id)));
+      }
     }
     saveCacheToLocalStorage();
     return true;
