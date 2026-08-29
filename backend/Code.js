@@ -1052,13 +1052,29 @@ function renameProjectFotoRefsBulk_(oldName, newName) {
 // once per row and, for a project with real history, blow through Apps
 // Script's execution limit leaving the project half-deleted.
 //
-// Order is load-bearing. Fotos/Notas rows don't carry a project of their own
-// — they resolve it by walking up to their parent entry/task/note (see
-// resolveFotoProject_/resolveNotaProject_) — so which photos belong to this
-// project MUST be resolved while those parents still exist. This is the same
-// rule the client-side cascade already follows for deleting a single
-// lançamento/tarefa (CLAUDE.md: "a parent-deletion cascade must delete the
-// children FIRST"), applied one level up.
+// Order is load-bearing, in TWO separate places, and both are the same rule
+// ("a parent-deletion cascade must delete the children FIRST") applied one
+// level up. Fotos/Notas rows don't carry a project of their own — they
+// resolve it by walking up to their parent entry/task/note (see
+// resolveFotoProject_/resolveNotaProject_):
+//   (a) RESOLUTION must happen while the parents still exist — hence the
+//       single up-front read pass below, before anything is written.
+//   (b) DELETION must ALSO run children-before-parents, because nothing here
+//       is transactional. Sheets has no rollback, so a failure between two
+//       writes (a Sheets error, or the 6-minute execution limit — likeliest
+//       on exactly the large projects this bulk path exists for) leaves the
+//       operation half-done, and the user's only recovery is to run it
+//       again. Deleting parents first made that retry UNABLE to finish:
+//       with the parents already gone, the second run's entryIdx no longer
+//       contains them, resolveFotoProject_/resolveNotaProject_ return
+//       undefined, and those child rows never match the project again —
+//       permanently orphaned, and invisible to sweepOrphanFiles too, since
+//       it iterates readSheet_('projetos') and the project is gone. Doing
+//       children first costs nothing (resolution already happened in step 1)
+//       and makes every failure point recoverable: die before the children
+//       and nothing was deleted yet; die after them and the parents are
+//       still resolvable; die during the parents and each remaining one
+//       still matches on its own `projeto` column, needing no chain at all.
 function deleteProject_(name) {
   name = String(name || '').trim();
   if (!name) throw new Error('nome de projeto inválido');
@@ -1094,16 +1110,20 @@ function deleteProject_(name) {
     documentos: doomedDocs.length,
   };
 
-  // --- 2. Drop the rows, one read+write per sheet regardless of row count. ---
-  ['caixaObra', 'empreiteiro', 'tarefas', 'documentos'].forEach(function (key) {
-    deleteProjectRowsBulk_(key, function (r) { return r.projeto === name; });
-  });
-  const doomedNotaIds = {};
-  doomedNotas.forEach(function (n) { doomedNotaIds[String(n.id)] = true; });
-  deleteProjectRowsBulk_('notas', function (r) { return doomedNotaIds[String(r.id)]; });
+  // --- 2. Drop the rows, one read+write per sheet regardless of row count.
+  // CHILDREN FIRST (fotos, then notas — a foto can hang off a nota, so it is
+  // the deeper of the two), THEN the parents. See the ordering note above:
+  // this is what makes a retry after a partial failure able to finish the
+  // job instead of stranding unresolvable orphans. ---
   const doomedFotoIds = {};
   doomedFotos.forEach(function (f) { doomedFotoIds[String(f.id)] = true; });
   deleteProjectRowsBulk_('fotos', function (r) { return doomedFotoIds[String(r.id)]; });
+  const doomedNotaIds = {};
+  doomedNotas.forEach(function (n) { doomedNotaIds[String(n.id)] = true; });
+  deleteProjectRowsBulk_('notas', function (r) { return doomedNotaIds[String(r.id)]; });
+  ['caixaObra', 'empreiteiro', 'tarefas', 'documentos'].forEach(function (key) {
+    deleteProjectRowsBulk_(key, function (r) { return r.projeto === name; });
+  });
 
   // --- 3. The project row itself, last: while it exists the operation is
   // still resumable by simply re-running it, and a failure part-way through
