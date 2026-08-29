@@ -493,7 +493,6 @@
   #activityHub.ah-message .ah-pill{pointer-events:auto; cursor:pointer;}
   #activityHub .ah-ico{width:14px; height:14px; flex:0 0 auto; display:flex;}
   #activityHub .ah-ico svg{width:100%; height:100%; stroke:#fff; fill:none; stroke-width:2.4;}
-  #activityHub .ah-ico.spin svg{animation:photoSpin 1s linear infinite;}
   #activityHub .ah-spin{
     width:100%; height:100%; border-radius:50%; box-sizing:border-box;
     border:2px solid rgba(255,255,255,0.35); border-top-color:#fff;
@@ -501,7 +500,6 @@
   }
   @media (prefers-reduced-motion: reduce){
     #activityHub .ah-spin{animation:none; border-top-color:rgba(255,255,255,0.85);}
-    #activityHub .ah-ico.spin svg{animation:none;}
   }
   #activityHub .ah-txt{flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
   #activityHub .ah-txt .ah-fail{color:#ffb4a2;}
@@ -510,11 +508,12 @@
   #activityHub.open .ah-chev{transform:rotate(180deg);}
   #activityHub .ah-body{
     display:none; width:min(300px, 86vw); max-height:44vh; overflow-y:auto;
-    background:rgba(33,29,25,0.97); border-radius:12px 12px 0 0;
-    box-shadow:0 -2px 10px rgba(0,0,0,0.18);
+    background:rgba(33,29,25,0.97); border-radius:16px;
+    box-shadow:0 6px 20px rgba(0,0,0,0.3);
+    margin-bottom:8px; animation:dialogPop .18s var(--ease);
   }
   #activityHub.open .ah-body{display:block;}
-  #activityHub .ah-prog{height:3px; background:rgba(255,255,255,0.16);}
+  #activityHub .ah-prog{height:3px; background:rgba(255,255,255,0.16); border-radius:16px 16px 0 0; overflow:hidden;}
   #activityHub .ah-prog i{display:block; height:100%; background:var(--orange); transition:width .25s var(--ease);}
   #activityHub .ah-actions{display:flex; gap:8px; padding:9px 12px 4px; flex-wrap:wrap;}
   #activityHub .ah-actions button{
@@ -4322,7 +4321,7 @@
   function updateUploadProgressToast_(){ renderUploadTray_(); }
   const AH_ICON_SPIN = '<span class="ah-spin"></span>';
   const AH_ICON_UPLOAD = '<svg viewBox="0 0 24 24"><path d="M12 19V5M12 5l-6 6M12 5l6 6"/></svg>';
-  const AH_ICON_CHECK = '<svg viewBox="0 0 24 24" style="stroke:#7fd99a;"><path d="M5 13l4 4L19 7"/></svg>';
+  const AH_ICON_CHECK = '<svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>';
   // The single painter for the whole activity hub — every trigger (upload
   // progress, beginBusy_/endBusy_, showToast/hideToast) funnels through this
   // one function instead of each layer touching the DOM directly, which is
@@ -4360,8 +4359,14 @@
       const pct = total ? Math.round((settled / total) * 100) : 0;
       const fill = document.getElementById('ahProgFill');
       if(fill) fill.style.width = pct + '%';
-      icon.classList.toggle('spin', active);
-      icon.innerHTML = AH_ICON_UPLOAD;
+      icon.classList.remove('spin');
+      // The ring spinner (same one the busy layer uses) while files are
+      // actually moving, so the app has one "working" glyph instead of two
+      // (a spinning ring here, a separately-spinning arrow before) — the
+      // static arrow is kept only for the settled-but-not-yet-dismissed
+      // state (e.g. "18 arquivos enviados", or a failure summary), where
+      // nothing is actively moving any more.
+      icon.innerHTML = active ? AH_ICON_SPIN : AH_ICON_UPLOAD;
 
       let msg;
       if(active) msg = `Enviando ${Math.min(settled + 1, total)} de ${total}...`;
