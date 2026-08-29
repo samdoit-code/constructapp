@@ -1932,6 +1932,40 @@
     });
   }
 
+  // The photo counterpart of reapplyPendingTaskChanges_. A getAll rebuilds
+  // every parent array from the server; a photo whose bytes are still moving
+  // is deliberately absent from the server, so the rebuild erases it. Without
+  // this, findUploadHome_ would come back empty when the upload finished, the
+  // pipeline would decide the photo "belongs nowhere any more", and it would
+  // trash the Drive file it had just created — losing the photo silently, with
+  // no error anywhere. Re-attaching by the owner recorded at pick time makes
+  // survival structural rather than accidental.
+  //
+  // Drafts (owner.id === null) live in draftFotos/draftTaskFotos/draftNoteFotos,
+  // which hydration never touches, so they need nothing here.
+  function reapplyPendingUploads_(){
+    if(!pendingUploads.size) return;
+    pendingUploads.forEach((rec)=>{
+      const owner = rec.owner;
+      if(!owner || !owner.id) return;
+      const meta = {id: rec.id, criadoEm: rec.criadoEm, driveFileId: rec.driveFileId || '', driveUrl: rec.driveUrl || ''};
+      if(owner.kind === 'projeto'){
+        if(!projectFotos.some(f=>f.id===rec.id)) projectFotos.push({...meta, projectId: owner.id});
+        return;
+      }
+      const list = owner.kind === 'caixa' ? caixaObra
+        : owner.kind === 'emp' ? empreiteiro
+        : owner.kind === 'tasks' ? tasks
+        : owner.kind === 'notes' ? notes
+        : null;
+      if(!list) return;
+      const parent = list.find(x=>x.id===owner.id);
+      if(!parent) return;   // the parent really is gone server-side — nothing to re-attach to
+      parent.fotos = parent.fotos || [];
+      if(!parent.fotos.some(f=>f.id===rec.id)) parent.fotos.push(meta);
+    });
+  }
+
   function saveErrorMessage(err){
     if(isPermissionError(err)){
       const msg = String(err.message || err);
@@ -2343,6 +2377,13 @@
       // Server snapshot is now the confirmed baseline; the user's still-unsaved
       // checkbox intentions go back on top of it (see reapplyPendingTaskChanges_).
       reapplyPendingTaskChanges_();
+      // Same rule for photos still uploading: the server has never heard of
+      // them (they are withheld until their bytes land), so the rebuild above
+      // dropped them. Put them back BEFORE anything can conclude they belong
+      // nowhere. Deliberately after rebuildSheetSnapshot_, so the snapshot
+      // holds the server's truth and each re-attached photo stays a genuine
+      // unsaved delta rather than being baked into the baseline.
+      reapplyPendingUploads_();
 
       lastSyncTime = Date.now();
       saveCacheToLocalStorage();
@@ -3812,6 +3853,13 @@
       deleteFromDrive(uploaded.driveFileId);
       return;
     }
+    // Recorded on the JOB as well as on the state object. The state object can
+    // be wiped and rebuilt by a background getAll at any moment; the job is the
+    // only thing that reliably still knows a Drive file exists, which is what
+    // lets reapplyPendingUploads_ restore it complete rather than as a blank
+    // placeholder pointing at nothing.
+    rec.driveFileId = uploaded.driveFileId;
+    rec.driveUrl = uploaded.driveUrl;
     home.target.driveFileId = uploaded.driveFileId;
     home.target.driveUrl = uploaded.driveUrl;
     rec.status = 'saving';   // from here on the row is eligible for the sheet
@@ -3890,6 +3938,15 @@
         filename: id + '.jpg',
         projectName: opts.projectName || activeProjectId,
         section: opts.section,
+        // Who this photo belongs to, recorded at pick time. A background
+        // getAll rebuilds every parent array wholesale, which used to drop
+        // in-flight photos on the floor (they are deliberately withheld from
+        // the server until their upload lands, so the rebuild cannot find
+        // them) — findUploadHome_ then came back empty and the pipeline
+        // trashed the Drive file it had just created. reapplyPendingUploads_
+        // below re-attaches them from this, exactly as
+        // reapplyPendingTaskChanges_ does for checkbox intentions.
+        owner: opts.owner || null,
         criadoEm: Date.now(),
       };
     });
@@ -3911,6 +3968,7 @@
     startPhotoUploads_(files, {
       projectName: activeProjectId,
       section: 'lancamentos',
+      owner: editingId ? {kind: addKind, id: editingId} : {kind: 'draft-entry', id: null},
       // Attaching is UI-only — the rows are held back from the sheet until
       // each file's own upload lands (see persistableFotos_), so nothing here
       // needs (or may) claim the photos are saved.
@@ -3971,6 +4029,7 @@
     startPhotoUploads_(files, {
       projectName: entry.projectId,
       section: 'lancamentos',
+      owner: {kind: entryKind, id: entryId},
       attach: (metas)=>{
         // Re-resolved by id, not captured above — the modal may have been
         // closed and reopened on another entry before this runs.
@@ -4008,6 +4067,7 @@
     if(!files.length) return;
     startPhotoUploads_(files, {
       projectName: activeProjectId, section: 'tarefas',
+      owner: {kind: 'draft-task', id: null},
       attach: (metas)=>{ draftTaskFotos.push(...metas); return true; },
     });
   });
@@ -4051,6 +4111,7 @@
     if(!t) return;
     startPhotoUploads_(files, {
       projectName: t.projectId || activeProjectId, section: 'tarefas',
+      owner: {kind: 'tasks', id: taskId},
       attach: (metas)=>{
         const target = tasks.find(x=>x.id===taskId);
         if(!target) return false;
@@ -4530,6 +4591,7 @@
     if(!files.length) return;
     startPhotoUploads_(files, {
       projectName: activeProjectId, section: 'notas',
+      owner: {kind: 'draft-note', id: null},
       attach: (metas)=>{ draftNoteFotos.push(...metas); return true; },
     });
   });
@@ -4577,6 +4639,7 @@
     if(!n){ showToast('Essa nota não existe mais.'); return; }
     startPhotoUploads_(files, {
       projectName: n.projectId || activeProjectId, section: 'notas',
+      owner: {kind: 'notes', id: noteId},
       attach: (metas)=>{
         const target = notes.find(x=>x.id===noteId);
         if(!target) return false;
@@ -5145,6 +5208,7 @@
         id, kind: 'doc', status: 'pending', file, mimeType,
         previewUrl: mimeType.startsWith('image/') ? safeObjectURL_(file) : '',
         filename: file.name, projectName: activeProjectId, section: 'docs',
+        owner: {kind: 'doc', id: null},
         criadoEm: Date.now(),
       });
     });
@@ -5168,6 +5232,7 @@
     const projectId = activeProjectId;
     startPhotoUploads_(files, {
       projectName: projectId, section: 'docs',
+      owner: {kind: 'projeto', id: projectId},
       attach: (metas)=>{
         projectFotos.push(...metas.map(m => ({...m, projectId})));
         photosPagePerCat.projeto = 1;
