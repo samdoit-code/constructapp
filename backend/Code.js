@@ -742,18 +742,29 @@ function writeSheet_(key, rows) {
   if (!sheet) throw new Error('Aba não encontrada: ' + cfg.name);
 
   const lastRow = sheet.getLastRow();
-  if (lastRow > 1) {
-    sheet.getRange(2, 1, lastRow - 1, cfg.cols.length).clearContent();
-  }
-  if (!rows || rows.length === 0) return;
-
-  const values = rows.map(r => cfg.cols.map(c => {
+  const existingRows = Math.max(0, lastRow - 1);
+  const values = (rows || []).map(r => cfg.cols.map(c => {
     const v = r[c];
     if (v === undefined || v === null) return '';
     if (typeof v === 'boolean') return v ? 'SIM' : 'NAO';
     return sanitizeCell_(v);
   }));
-  sheet.getRange(2, 1, values.length, cfg.cols.length).setValues(values);
+
+  if (values.length) {
+    sheet.getRange(2, 1, values.length, cfg.cols.length).setValues(values);
+  }
+  // Surplus rows must be DELETED, not merely cleared. clearContent() leaves
+  // the physical rows behind, and a blank row is not inert here: readSheet_
+  // maps it to an object and mints an id for it, and backfillMissingIds_
+  // (top of every getAll, under the lock) then writes that generated id
+  // back — turning a leftover blank into a PERMANENT phantom record with a
+  // real id, which shows up in the app as an empty lançamento/tarefa that
+  // nobody created and nobody can explain. Only mattered once a caller
+  // shrank a sheet, which whole-tab saves rarely did until deleteProject_;
+  // it was always latent for saveProjetos_ (removing a project) too.
+  if (existingRows > values.length) {
+    sheet.deleteRows(2 + values.length, existingRows - values.length);
+  }
 }
 
 function findRowIndexById_(sheet, id) {
@@ -1034,6 +1045,101 @@ function renameProjectFotoRefsBulk_(oldName, newName) {
   if (changed) refIdRange.setValues(refIdValues);
 }
 
+// Deletes a project and EVERYTHING that belongs to it, as one atomic bulk
+// operation — same reasoning (and the same one-read/one-write-per-sheet
+// shape) as renameProject_ above: expressing this as a batchMulti of every
+// referencing row would run assertBatchAccess_/findConflicts_/applyBatch_
+// once per row and, for a project with real history, blow through Apps
+// Script's execution limit leaving the project half-deleted.
+//
+// Order is load-bearing. Fotos/Notas rows don't carry a project of their own
+// — they resolve it by walking up to their parent entry/task/note (see
+// resolveFotoProject_/resolveNotaProject_) — so which photos belong to this
+// project MUST be resolved while those parents still exist. This is the same
+// rule the client-side cascade already follows for deleting a single
+// lançamento/tarefa (CLAUDE.md: "a parent-deletion cascade must delete the
+// children FIRST"), applied one level up.
+function deleteProject_(name) {
+  name = String(name || '').trim();
+  if (!name) throw new Error('nome de projeto inválido');
+
+  const projetosSheet = ss_().getSheetByName(SHEETS.projetos.name);
+  if (!projetosSheet) throw new Error('Aba não encontrada: ' + SHEETS.projetos.name);
+  if (findRowIndexById_(projetosSheet, name) === -1) throw new Error('projeto não encontrado');
+
+  // --- 1. Resolve what belongs to this project, parents still intact. ---
+  const caixaObra = readSheet_('caixaObra');
+  const empreiteiro = readSheet_('empreiteiro');
+  const tarefas = readSheet_('tarefas');
+  const notas = readSheet_('notas');
+  const fotos = readSheet_('fotos');
+  const documentos = readSheet_('documentos');
+
+  const entryIdx = buildEntryProjectIndex_(caixaObra, empreiteiro, tarefas);
+  const notaProjectById = {};
+  notas.forEach(function (n) { notaProjectById[n.id] = resolveNotaProject_(n, entryIdx); });
+
+  const doomedNotas = notas.filter(function (n) { return notaProjectById[n.id] === name; });
+  const doomedFotos = fotos.filter(function (f) {
+    return resolveFotoProject_(f, entryIdx, notaProjectById) === name;
+  });
+  const doomedDocs = documentos.filter(function (d) { return d.projeto === name; });
+
+  const report = {
+    lancamentos: caixaObra.filter(function (r) { return r.projeto === name; }).length
+               + empreiteiro.filter(function (r) { return r.projeto === name; }).length,
+    tarefas: tarefas.filter(function (r) { return r.projeto === name; }).length,
+    notas: doomedNotas.length,
+    fotos: doomedFotos.length,
+    documentos: doomedDocs.length,
+  };
+
+  // --- 2. Drop the rows, one read+write per sheet regardless of row count. ---
+  ['caixaObra', 'empreiteiro', 'tarefas', 'documentos'].forEach(function (key) {
+    deleteProjectRowsBulk_(key, function (r) { return r.projeto === name; });
+  });
+  const doomedNotaIds = {};
+  doomedNotas.forEach(function (n) { doomedNotaIds[String(n.id)] = true; });
+  deleteProjectRowsBulk_('notas', function (r) { return doomedNotaIds[String(r.id)]; });
+  const doomedFotoIds = {};
+  doomedFotos.forEach(function (f) { doomedFotoIds[String(f.id)] = true; });
+  deleteProjectRowsBulk_('fotos', function (r) { return doomedFotoIds[String(r.id)]; });
+
+  // --- 3. The project row itself, last: while it exists the operation is
+  // still resumable by simply re-running it, and a failure part-way through
+  // leaves a project that visibly still exists rather than orphaned rows
+  // pointing at a project that doesn't. ---
+  const rowIdx = findRowIndexById_(projetosSheet, name);
+  if (rowIdx !== -1) projetosSheet.deleteRow(rowIdx);
+
+  // --- 4. Drive. Trashing the project's FOLDER takes every file inside it in
+  // one call — deliberately not one setTrashed() per driveFileId, which is
+  // exactly the unbounded-cost-per-id shape DELETE_CHUNK_SIZE exists to
+  // avoid and would time out on a project with hundreds of photos. A stray
+  // file that somehow lives outside the folder is not chased here; its row
+  // is gone, so sweepOrphanFiles reclaims it on the next run. Best-effort:
+  // Drive is never the source of truth, so a failure here must not fail (or
+  // half-undo) a delete that has already committed to the sheets. ---
+  try {
+    const folder = findProjectFolder_(name);
+    if (folder) folder.setTrashed(true);
+  } catch (e) { /* rows are already gone; sweepOrphanFiles cleans up the rest */ }
+
+  return report;
+}
+
+// One read + one clear + one write per sheet, regardless of how many rows
+// match — same bulk discipline as renameProjectColumnBulk_. Deliberately NOT
+// deleteRowsByIds_, which calls deleteRow() once per matching row: fine for a
+// handful of ids, but a project can own thousands of rows.
+function deleteProjectRowsBulk_(sheetKey, shouldDelete) {
+  const rows = readSheet_(sheetKey);
+  const keep = rows.filter(function (r) { return !shouldDelete(r); });
+  if (keep.length === rows.length) return 0;
+  writeSheet_(sheetKey, keep);
+  return rows.length - keep.length;
+}
+
 function doPost(e) {
   let body;
   try {
@@ -1169,6 +1275,19 @@ function doPost(e) {
         if (!can_(user, 'config', 'edit')) throw new Error('sem permissão para editar');
         renameProject_(body.oldName, body.newName);
         return jsonOut_({ ok: true });
+      }
+
+      // Deleting a project and everything under it. Two independent axes, as
+      // everywhere else: the section/action check (config.delete — NOT
+      // config.edit, so a role allowed to add and rename projects is not
+      // automatically allowed to destroy one), and then project scope, so a
+      // project-restricted user can never delete a project outside their own
+      // scope even if their role carries config.delete.
+      if (action === 'deleteProject') {
+        if (!can_(user, 'config', 'delete')) throw new Error('sem permissão para excluir');
+        if (!hasProjectAccess_(user, String(body.name || '').trim())) throw new Error('sem acesso a este projeto');
+        const removed = deleteProject_(body.name);
+        return jsonOut_({ ok: true, removed: removed });
       }
 
       if (action === 'deleteFile') {

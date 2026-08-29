@@ -627,7 +627,10 @@
   }
   @keyframes dialogPop{from{transform:scale(0.95); opacity:0;} to{transform:scale(1); opacity:1;}}
   .dialog-title{font-family:'Oswald',sans-serif; font-size:16px; font-weight:600; text-transform:none; letter-spacing:0.01em; margin-bottom:8px;}
-  .dialog-msg{font-size:14px; color:var(--ink-soft); line-height:1.45;}
+  /* pre-line so a message can use a blank line to separate "what you're about
+     to do" from "here's exactly what it destroys" (see deleteProjectFlow_).
+     Every other dialog message is a single line and is unaffected. */
+  .dialog-msg{font-size:14px; color:var(--ink-soft); line-height:1.45; white-space:pre-line;}
   .modal-sheet{
     background:var(--paper); width:100%; max-width:640px; max-height:92vh; overflow-y:auto;
     border-radius:18px 18px 0 0; padding:18px 18px calc(22px + var(--safe-bottom));
@@ -662,6 +665,9 @@
   .proj-row{display:flex; align-items:center; justify-content:space-between; background:#fff; border:1px solid var(--line); border-radius:10px; padding:11px 13px; margin-bottom:8px;}
   .proj-row .pname{font-size:14px; font-weight:600; display:flex; align-items:center; gap:8px;}
   .proj-row button{background:none; border:none; color:var(--blue); font-size:12px; font-weight:700; cursor:pointer;}
+  .proj-row .proj-acts{display:flex; align-items:center; gap:14px; flex:0 0 auto;}
+  .proj-row .proj-acts button.danger{color:var(--red);}
+  .proj-row .proj-acts button[disabled]{color:var(--ink-faint); cursor:default;}
 
   .update-banner{
     position:fixed; left:12px; right:12px; bottom:calc(78px + var(--safe-bottom)); z-index:410;
@@ -5746,10 +5752,43 @@
       }
     }
   });
+  // Everything that would be destroyed along with a project, counted from
+  // local state purely to make the confirmation dialog concrete ("18
+  // lançamentos, 4 tarefas...") rather than an abstract "are you sure". The
+  // backend recomputes this itself from the sheets and returns the
+  // authoritative numbers — this is a warning, never the source of truth.
+  function projectDeletionImpact_(name){
+    const entries = caixaObra.filter(e=>e.projectId===name).concat(empreiteiro.filter(e=>e.projectId===name));
+    const projTasks = tasks.filter(t=>t.projectId===name);
+    const projNotes = notes.filter(n=>n.projectId===name);
+    const fotoCount = [entries, projTasks, projNotes].reduce((s,list)=>
+      s + list.reduce((n,r)=> n + ((r.fotos||[]).length), 0), 0)
+      + projectFotos.filter(f=>f.projectId===name).length;
+    return {
+      lancamentos: entries.length,
+      tarefas: projTasks.length,
+      notas: projNotes.length,
+      documentos: documentos.filter(d=>d.projectId===name).length,
+      fotos: fotoCount,
+    };
+  }
+  function describeImpact_(im){
+    const parts = [];
+    if(im.lancamentos) parts.push(`${im.lancamentos} lançamento${im.lancamentos===1?'':'s'}`);
+    if(im.tarefas) parts.push(`${im.tarefas} tarefa${im.tarefas===1?'':'s'}`);
+    if(im.notas) parts.push(`${im.notas} nota${im.notas===1?'':'s'}`);
+    if(im.documentos) parts.push(`${im.documentos} documento${im.documentos===1?'':'s'}`);
+    if(im.fotos) parts.push(`${im.fotos} foto${im.fotos===1?'':'s'}`);
+    return parts;
+  }
   function renderSettingsProjects(){
     const box = $('#settingsProjects');
-    box.innerHTML = projects.map(p => `<div class="proj-row"><span class="pname"><span class="proj-dot-inline"></span>${escapeHTML(p.name)}</span><button data-rename="${escapeHTML(p.id)}">Renomear</button></div>`).join('');
+    const canDeleteConfig = canSection('config','delete');
+    box.innerHTML = projects.map(p => `<div class="proj-row"><span class="pname"><span class="proj-dot-inline"></span>${escapeHTML(p.name)}</span><span class="proj-acts"><button data-rename="${escapeHTML(p.id)}">Renomear</button>${canDeleteConfig ? `<button class="danger" data-delproj="${escapeHTML(p.id)}">Excluir</button>` : ''}</span></div>`).join('');
     const canEditConfig = canSection('config','edit');
+    box.querySelectorAll('[data-delproj]').forEach(btn=>{
+      btn.addEventListener('click', withGuard(()=> deleteProjectFlow_(btn)));
+    });
     box.querySelectorAll('[data-rename]').forEach(btn=>{
       if(!canEditConfig){ btn.style.display = 'none'; return; }
       btn.addEventListener('click', withGuard(async ()=>{
@@ -5797,6 +5836,68 @@
         }
       }));
     });
+  }
+  // Deleting a project destroys every lançamento, tarefa, nota, documento and
+  // foto under it, plus its Drive folder — irreversible from inside the app,
+  // and sitting one button away from "Renomear" in a list. So it is gated by
+  // TWO dialogs, not one: a first confirm that spells out exactly what will
+  // be lost (counts, not "are you sure"), then a type-the-name prompt. The
+  // second step exists specifically because the first is a single tap on a
+  // small screen, right next to a harmless action — typing the name is the
+  // only gate that can't be passed by muscle memory, and this is financial
+  // history with no undo. Same reasoning the whole delete path already
+  // applies at the row level, scaled to the blast radius.
+  async function deleteProjectFlow_(btn){
+    const p = projects.find(x=>x.id===btn.dataset.delproj);
+    if(!p) return;
+    const impact = projectDeletionImpact_(p.id);
+    const parts = describeImpact_(impact);
+    const detail = parts.length
+      ? `Isso vai excluir permanentemente ${parts.join(', ')} — e os arquivos no Drive. Não é possível desfazer.`
+      : 'Esse projeto não tem nenhum lançamento, tarefa, nota, documento ou foto. Não é possível desfazer.';
+    const ok = await showConfirm(`Excluir o projeto "${p.name}"?\n\n${detail}`,
+      {title:'Excluir projeto', okLabel:'Continuar'});
+    if(!ok) return;
+    const typed = await showPrompt('', {
+      title: 'Digite o nome para confirmar',
+      placeholder: p.name,
+    });
+    if(typed === null) return;
+    if(typed.trim().toLowerCase() !== p.name.toLowerCase()){
+      showToast('O nome não confere. Nada foi excluído.', false, 4000);
+      return;
+    }
+
+    const prevLabel = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Excluindo...';
+    try{
+      // One atomic backend action, never a batchMulti per row — a project
+      // with real history has far too many rows for that (see deleteProject_
+      // in Code.js, same reasoning as renameProject). The frontend never
+      // mutates its own arrays here; it asks the server, then refetches the
+      // authoritative result.
+      await sheetsPost({action:'deleteProject', name: p.id});
+      if(activeProjectId === p.id){
+        const remaining = projects.filter(x=>x.id!==p.id);
+        activeProjectId = remaining.length ? remaining[0].id : '';
+        await saveKey('activeProjectId', activeProjectId);
+      }
+      const ok2 = await fetchAndApplyFromServer();
+      if(!ok2) throw new Error('sync-after-delete-failed');
+      finishLoadSetup();
+      renderAll();
+      showToast('Projeto excluído.');
+    }catch(err){
+      console.error('delete project error', err);
+      showToast(saveErrorMessage(err), false, 4500);
+    }finally{
+      btn.disabled = false;
+      btn.textContent = prevLabel;
+    }
+    renderSettingsProjects();
+    renderProjectPills();
+    populateTaskProjectSelect();
   }
   $('#addProjectBtn').addEventListener('click', withGuard(async ()=>{
     const nn = await showPrompt('', {title:'Novo projeto', placeholder:'Ex: Obra Sítio Novo'});
