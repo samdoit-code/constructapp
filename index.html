@@ -134,6 +134,21 @@
   @keyframes fade{from{opacity:0; transform:translateY(6px);} to{opacity:1; transform:translateY(0);}}
 
   .section-title{display:flex; align-items:baseline; justify-content:space-between; font-size:13px; color:var(--ink-soft); font-weight:600; letter-spacing:0.08em; text-transform:uppercase; margin: 22px 2px 10px;}
+  .link-btn{background:none; border:none; color:var(--orange-dark); font-family:'Inter',sans-serif; font-size:11.5px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; cursor:pointer; padding:2px 0;}
+  /* Two peer actions, side by side, at equal weight. */
+  .docs-actions{display:flex; gap:9px; margin:4px 0 4px;}
+  .docs-actions .btn{flex:1; justify-content:center; min-width:0;}
+  /* Bulk-selection bar for the project photo album */
+  .photo-selbar{
+    display:flex; align-items:center; gap:10px; background:var(--card); border:1px solid var(--line);
+    border-radius:10px; padding:9px 12px; margin-bottom:10px; box-shadow:var(--shadow);
+  }
+  .photo-selbar .cnt{flex:1; min-width:0; font-size:13px; font-weight:600; color:var(--ink);}
+  .photo-selbar button{background:none; border:none; font-family:'Inter',sans-serif; font-size:11.5px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; cursor:pointer; padding:4px 2px;}
+  .photo-selbar button.sel-all{color:var(--blue);}
+  .photo-selbar button.sel-del{color:var(--red);}
+  .photo-selbar button.sel-del[disabled]{color:var(--ink-faint); cursor:default;}
+  .photo-selbar button.sel-cancel{color:var(--ink-soft);}
   .section-title:first-child{margin-top:6px;}
   .section-title .link{font-size:11.5px; color:var(--orange-dark); letter-spacing:0.02em; text-transform:none; font-weight:600; cursor:pointer;}
 
@@ -394,12 +409,73 @@
   .photo-thumb .photo-del svg{width:10px;height:10px; stroke:#fff; stroke-width:3;}
   .photo-thumb .photo-spinner{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:9.5px; color:var(--ink-soft); background:var(--paper-2);}
   /* Upload state lives on the thumbnail itself — the photo is the progress
-     indicator, the toast only summarises the batch. */
-  .photo-thumb.is-pending img{opacity:.45;}
+     indicator, the tray only summarises the batch.
+     EVERY state must look different. These used to share one appearance, so in
+     a 39-photo batch the 36 photos merely waiting looked exactly like the 3
+     actually moving — the screen genuinely stopped changing, which is what made
+     a working upload read as a frozen app. Each state now has its own scrim
+     weight and its own glyph, and queued photos carry their position so the
+     queue visibly drains even while nothing else moves. */
+  .photo-thumb.is-pending img{opacity:.5;}
+  .photo-thumb.is-active img{opacity:.62;}
   .photo-thumb .photo-status{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none;}
+  /* Queued: light scrim, no motion, just its place in line. */
+  .photo-thumb .photo-status.is-queued{background:rgba(33,29,25,0.42);}
+  .photo-thumb .photo-status.is-queued .q-pos{
+    font-family:'Oswald',sans-serif; font-size:15px; font-weight:600; color:#fff;
+    text-shadow:0 1px 3px rgba(0,0,0,0.75); font-variant-numeric:tabular-nums;
+  }
+  /* Uploading: the heaviest scrim in the set — this is the one that's moving. */
+  .photo-thumb .photo-status.is-busy{background:rgba(33,29,25,0.52);}
+  /* Saving: Drive already has it; nearly done, so lighten off. */
+  .photo-thumb .photo-status.is-saving{background:rgba(63,125,85,0.55); color:#fff; font-size:15px; font-weight:700;}
   .photo-thumb .photo-status.is-failed{background:rgba(33,29,25,0.5); color:#fff; font-size:19px; font-weight:600;}
-  .photo-thumb .photo-spin{width:17px; height:17px; border-radius:50%; border:2px solid rgba(255,255,255,0.55); border-top-color:#fff; box-shadow:0 0 0 1.5px rgba(33,29,25,0.28); animation:photoSpin .7s linear infinite;}
+  .photo-thumb .photo-spin{width:19px; height:19px; border-radius:50%; border:2.5px solid rgba(255,255,255,0.4); border-top-color:#fff; animation:photoSpin .7s linear infinite;}
   @keyframes photoSpin{to{transform:rotate(360deg);}}
+  /* "+N" tile capping how many thumbnails are mounted at once — 100 full-res
+     <img> is a real eviction risk on an older iPhone. */
+  .photo-thumb.photo-more{display:flex; align-items:center; justify-content:center; background:var(--paper-2); border-style:dashed;}
+  .photo-thumb.photo-more span{font-family:'Oswald',sans-serif; font-size:15px; font-weight:600; color:var(--ink-soft);}
+  /* Selection mode in the Docs album */
+  .photo-thumb.is-selected{border-color:var(--orange); border-width:2.5px;}
+  .photo-thumb .photo-check{
+    position:absolute; top:3px; left:3px; width:20px; height:20px; border-radius:50%;
+    background:rgba(255,255,255,0.9); border:1.5px solid var(--line);
+    display:flex; align-items:center; justify-content:center; pointer-events:none;
+  }
+  .photo-thumb.is-selected .photo-check{background:var(--orange); border-color:var(--orange);}
+  .photo-thumb .photo-check svg{width:11px; height:11px; stroke:#fff; stroke-width:3.4; fill:none; opacity:0;}
+  .photo-thumb.is-selected .photo-check svg{opacity:1;}
+
+  /* ---- Upload tray: global, screen-independent, survives navigation ---- */
+  #uploadTray{
+    position:fixed; left:0; right:0; z-index:29; display:none;
+    background:var(--ink); color:#fff;
+    box-shadow:0 -3px 14px rgba(33,29,25,0.22);
+  }
+  #uploadTray.show{display:block;}
+  #uploadTray .ut-bar{display:flex; align-items:center; gap:10px; padding:9px 14px; cursor:pointer;}
+  #uploadTray .ut-ico{width:16px; height:16px; flex:0 0 auto; stroke:#fff; fill:none; stroke-width:2.2;}
+  #uploadTray .ut-ico.spin{animation:photoSpin 1.1s linear infinite;}
+  #uploadTray .ut-txt{flex:1; min-width:0; font-size:13px; font-weight:600; letter-spacing:0.01em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  #uploadTray .ut-txt .ut-fail{color:#ffb4a2;}
+  #uploadTray .ut-chev{flex:0 0 auto; width:14px; height:14px; stroke:rgba(255,255,255,0.7); fill:none; stroke-width:2.6; transition:transform .2s var(--ease);}
+  #uploadTray.open .ut-chev{transform:rotate(180deg);}
+  #uploadTray .ut-prog{height:3px; background:rgba(255,255,255,0.16);}
+  #uploadTray .ut-prog i{display:block; height:100%; background:var(--orange); transition:width .25s var(--ease);}
+  #uploadTray .ut-body{display:none; max-height:44vh; overflow-y:auto; border-top:1px solid rgba(255,255,255,0.12); padding:4px 0 6px;}
+  #uploadTray.open .ut-body{display:block;}
+  #uploadTray .ut-actions{display:flex; gap:8px; padding:9px 14px 4px; flex-wrap:wrap;}
+  #uploadTray .ut-actions button{
+    background:rgba(255,255,255,0.12); border:none; color:#fff; font-family:'Inter',sans-serif;
+    font-size:11.5px; font-weight:600; padding:7px 11px; border-radius:7px; cursor:pointer;
+  }
+  #uploadTray .ut-actions button.danger{background:rgba(179,64,47,0.55);}
+  #uploadTray .ut-row{display:flex; align-items:center; gap:9px; padding:6px 14px; font-size:12px;}
+  #uploadTray .ut-row .n{flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:rgba(255,255,255,0.82);}
+  #uploadTray .ut-row .s{flex:0 0 auto; font-size:10.5px; font-weight:600; letter-spacing:0.06em; text-transform:uppercase; color:rgba(255,255,255,0.55);}
+  #uploadTray .ut-row .s.err{color:#ffb4a2;}
+  #uploadTray .ut-row button{background:none; border:none; color:var(--orange); font-size:11.5px; font-weight:700; cursor:pointer; padding:3px 4px; font-family:'Inter',sans-serif;}
   .doc-row.is-pending .doc-name{opacity:.62;}
 
   /* Tasks */
@@ -970,29 +1046,52 @@
 
   <!-- DOCUMENTOS -->
   <div class="view" id="view-docs">
-    <div class="section-title">Documentos</div>
-    <div class="form-card" style="margin-bottom:14px; padding:14px;">
-      <label for="docFileInput" class="btn btn-primary btn-block photo-pick-btn" style="justify-content:center; width:100%;">
+    <!-- Adding a document and adding a project photo are peer actions, so they
+         sit together at equal weight above BOTH lists. The photo action used to
+         be a secondary button below the entire document list, which meant
+         scrolling past every document in the project to reach it. -->
+    <div class="docs-actions" id="docsActions">
+      <label for="docFileInput" class="btn btn-primary photo-pick-btn">
         <svg viewBox="0 0 24 24" style="stroke:#fff;"><path d="M12 3v12m0 0l-4-4m4 4l4-4"/><path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg>
-        Adicionar documento
+        Documento
       </label>
       <input type="file" id="docFileInput" accept="image/*,application/pdf,.doc,.docx,.xls,.xlsx,.txt" multiple style="display:none;">
-    </div>
-    <div id="docsList"></div>
-
-    <div class="section-title">Fotos do projeto</div>
-    <div class="form-card" style="margin-bottom:14px; padding:14px;">
-      <label for="projectPhotoInput" class="btn btn-ghost btn-block photo-pick-btn" style="justify-content:center; width:100%;">
-        <svg viewBox="0 0 24 24"><path d="M4 8a2 2 0 012-2h1.2a1 1 0 00.9-.55L8.7 4.1A1 1 0 019.6 3.5h4.8a1 1 0 01.9.6l.6 1.35a1 1 0 00.9.55H18a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V8z"/><circle cx="12" cy="13" r="3.3"/></svg>
-        Adicionar foto
+      <label for="projectPhotoInput" class="btn btn-primary photo-pick-btn">
+        <svg viewBox="0 0 24 24" style="stroke:#fff;"><path d="M4 8a2 2 0 012-2h1.2a1 1 0 00.9-.55L8.7 4.1A1 1 0 019.6 3.5h4.8a1 1 0 01.9.6l.6 1.35a1 1 0 00.9.55H18a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V8z"/><circle cx="12" cy="13" r="3.3"/></svg>
+        Foto
       </label>
       <input type="file" id="projectPhotoInput" accept="image/*" multiple style="display:none;">
+    </div>
+
+    <div class="section-title">Documentos</div>
+    <div id="docsList"></div>
+
+    <div class="section-title">
+      <span>Fotos do projeto</span>
+      <button type="button" id="photoSelectToggle" class="link-btn" style="display:none;">Selecionar</button>
     </div>
     <div id="projectPhotosContainer"></div>
   </div>
 
 </main>
 
+</div>
+
+<!-- Global upload tray. Deliberately outside every view: uploads are a
+     background lifecycle, not a property of whichever screen started them, so
+     the indicator has to outlive navigation. Positioned above the tab bar by
+     syncTrayOffset() so it never covers the nav. -->
+<div id="uploadTray" aria-live="polite">
+  <div class="ut-prog"><i id="utProgFill" style="width:0%"></i></div>
+  <div class="ut-bar" id="utBar">
+    <svg class="ut-ico" id="utIcon" viewBox="0 0 24 24"><path d="M12 19V5M12 5l-6 6M12 5l6 6"/></svg>
+    <span class="ut-txt" id="utText"></span>
+    <svg class="ut-chev" viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></svg>
+  </div>
+  <div class="ut-body">
+    <div class="ut-actions" id="utActions"></div>
+    <div id="utList"></div>
+  </div>
 </div>
 
 <nav class="tabbar">
@@ -2736,6 +2835,18 @@
   window.addEventListener('orientationchange', ()=> setTimeout(syncTopbarOffset, 150));
   window.addEventListener('resize', syncTopbarOffset);
   syncTopbarOffset();
+  // The tray sits directly on top of the tab bar, so it has to track the bar's
+  // measured height the same way the content offset tracks the topbar's.
+  if(window.ResizeObserver){
+    const nav = document.querySelector('nav.tabbar');
+    if(nav) new ResizeObserver(()=> syncTrayOffset()).observe(nav);
+  }
+  window.addEventListener('resize', ()=> syncTrayOffset());
+  $('#utBar').addEventListener('click', ()=>{
+    trayOpen = !trayOpen;
+    $('#uploadTray').classList.toggle('open', trayOpen);
+    if(trayOpen) renderTrayBody_();
+  });
 
   function scrollTopNow(){
     const sc = document.getElementById('appScroll');
@@ -3462,33 +3573,72 @@
   // is on screen the instant the file is picked — no Drive round trip in
   // between — with an overlay carrying its own state. The thumbnails, not the
   // toast, are the real progress indicator.
+  // Every upload state gets its OWN appearance. These used to collapse into a
+  // single "is-busy" spinner, so a queued photo and an uploading one were
+  // indistinguishable — in a 39-photo batch that meant 36 identical thumbnails
+  // and a screen that appeared to stop responding. A queued photo now shows its
+  // position in line, which visibly counts down even when nothing else moves:
+  // the cheapest possible proof that the app is still working.
   function uploadStatusOverlay_(rec){
     if(!rec) return '';
     if(rec.status === 'failed' || rec.status === 'save-failed'){
       return `<div class="photo-status is-failed" title="Toque para reenviar"><span>&#8635;</span></div>`;
     }
-    return `<div class="photo-status is-busy"><span class="photo-spin"></span></div>`;
+    if(rec.status === 'saving'){
+      return `<div class="photo-status is-saving" title="Salvando"><span>&#10003;</span></div>`;
+    }
+    if(rec.status === 'pending'){
+      const pos = uploadQueue.indexOf(rec.id);
+      return `<div class="photo-status is-queued" title="Na fila">${pos >= 0 ? `<span class="q-pos">${pos + 1}</span>` : ''}</div>`;
+    }
+    return `<div class="photo-status is-busy" title="Enviando"><span class="photo-spin"></span></div>`;
+  }
+  function uploadThumbClass_(rec){
+    if(!rec) return '';
+    if(rec.status === 'pending') return ' is-pending';
+    return ' is-active';
+  }
+  // How many thumbnails are mounted at once. 100 full-resolution <img> means
+  // 100 decoded bitmaps, which is a genuine memory-eviction risk on an older
+  // iPhone — so the rest collapse into a single "+N" tile that expands on tap.
+  const THUMB_MOUNT_CAP = 24;
+  const thumbExpanded = new Set();   // container ids the user has expanded
+  function photoThumbHTML_(f, rec, ctx){
+    const url = f.driveFileId ? photoEmbedUrl(f.driveFileId) : '';
+    const localSrc = rec && rec.previewUrl ? rec.previewUrl : '';
+    let img;
+    if(localSrc) img = `<img src="${escapeHTML(localSrc)}" alt="Recibo">`;
+    else if(url) img = `<img src="${escapeHTML(url)}" alt="Recibo" loading="lazy">`;
+    else img = `<div class="photo-spinner">Erro</div>`;
+    const selectable = ctx.selectMode;
+    const selected = selectable && ctx.isSelected && ctx.isSelected(f.id);
+    const delBtn = (ctx.deletable && !selectable)
+      ? `<button type="button" class="photo-del" data-del="${escapeHTML(f.id)}"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>` : '';
+    const check = selectable
+      ? `<span class="photo-check"><svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg></span>` : '';
+    return `<div class="photo-thumb${uploadThumbClass_(rec)}${selected ? ' is-selected' : ''}" data-photo-id="${escapeHTML(f.id)}">${img}${uploadStatusOverlay_(rec)}${check}${delBtn}</div>`;
   }
   function renderPhotoThumbs(containerEl, fotos, ctx){
     if(!containerEl) return;
     if(!fotos || fotos.length === 0){ containerEl.innerHTML = ''; return; }
-    containerEl.innerHTML = fotos.map(f=>{
-      const rec = pendingUploads.get(f.id);
-      const url = f.driveFileId ? photoEmbedUrl(f.driveFileId) : '';
-      const localSrc = rec && rec.previewUrl ? rec.previewUrl : '';
-      let img;
-      if(localSrc) img = `<img src="${escapeHTML(localSrc)}" alt="Recibo">`;
-      else if(url) img = `<img src="${escapeHTML(url)}" alt="Recibo" loading="lazy">`;
-      else img = `<div class="photo-spinner">Erro</div>`;
-      const delBtn = ctx.deletable ? `<button type="button" class="photo-del" data-del="${escapeHTML(f.id)}"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>` : '';
-      return `<div class="photo-thumb${rec ? ' is-pending' : ''}" data-photo-id="${escapeHTML(f.id)}">${img}${uploadStatusOverlay_(rec)}${delBtn}</div>`;
-    }).join('');
-    fotos.forEach(f=>{
+    const key = containerEl.id || '';
+    const expanded = !key || thumbExpanded.has(key);
+    const cap = expanded ? fotos.length : THUMB_MOUNT_CAP;
+    const shown = fotos.slice(0, cap);
+    const hidden = fotos.length - shown.length;
+    containerEl.innerHTML = shown.map(f => photoThumbHTML_(f, pendingUploads.get(f.id), ctx)).join('')
+      + (hidden > 0 ? `<div class="photo-thumb photo-more" data-thumb-more="1"><span>+${hidden}</span></div>` : '');
+    const moreEl = containerEl.querySelector('[data-thumb-more]');
+    if(moreEl){
+      moreEl.addEventListener('click', ()=>{ thumbExpanded.add(key); renderPhotoThumbs(containerEl, fotos, ctx); });
+    }
+    shown.forEach(f=>{
       const el = containerEl.querySelector(`[data-photo-id="${CSS.escape(f.id)}"]`);
       if(!el) return;
       const url = f.driveFileId ? photoEmbedUrl(f.driveFileId) : '';
       el.addEventListener('click', (ev)=>{
         if(ev.target.closest('.photo-del')) return;
+        if(ctx.selectMode){ ctx.onToggleSelect(f.id); return; }
         const rec = pendingUploads.get(f.id);
         if(rec){
           // Still in flight, or failed: tapping retries rather than opening a
@@ -3503,6 +3653,33 @@
         delBtn.addEventListener('click', (ev)=>{ ev.stopPropagation(); ctx.onDelete(f.id); });
       }
     });
+  }
+  // Patches ONE thumbnail's state in place, wherever it happens to be mounted.
+  // Rebuilding every photo surface in the app on every per-file status change
+  // cost ~2 full re-renders per photo (measured: 82 refreshPhotoSurfaces_ and
+  // 84 renderDocsView calls for a 40-photo batch), which is the jank that made
+  // a large batch feel like a hang. Same in-place-patch discipline
+  // patchTaskRowClass_ already uses for checkboxes.
+  function patchPhotoThumbState_(id){
+    const rec = pendingUploads.get(id);
+    document.querySelectorAll(`.photo-thumb[data-photo-id="${CSS.escape(id)}"]`).forEach(el=>{
+      el.classList.remove('is-pending', 'is-active');
+      const cls = uploadThumbClass_(rec).trim();
+      if(cls) el.classList.add(cls);
+      const old = el.querySelector('.photo-status');
+      if(old) old.remove();
+      const html = uploadStatusOverlay_(rec);
+      if(html){
+        const del = el.querySelector('.photo-del');
+        el.insertAdjacentHTML(del ? 'beforeend' : 'beforeend', html);
+      }
+    });
+  }
+  // Repaints the queue-position numbers on every queued thumbnail. Cheap, and
+  // it is what makes a long queue visibly drain.
+  function patchQueuePositions_(){
+    if(!pendingUploads.size) return;
+    pendingUploads.forEach((rec, id)=>{ if(rec.status === 'pending') patchPhotoThumbState_(id); });
   }
 
   // ---------- Zoom controller (scoped to one element via CSS transform — never
@@ -3712,23 +3889,144 @@
     renderDocsView();
   }
 
-  function updateUploadProgressToast_(){
-    if(!uploadBatch.total) return;
-    const settled = uploadBatch.done + uploadBatch.failed + uploadBatch.cancelled;
-    const current = Math.min(settled + 1, uploadBatch.total);
-    if(uploadBatch.total === 1) showToast('Enviando...', true);
-    else showToast(`Enviando ${current} de ${uploadBatch.total}...`, true);
+  // ---------- Upload tray (global progress) ----------
+  // Replaces the old persistent toast. The toast was the ONLY signal a batch
+  // was alive, and it is transient by nature — navigate away, or let it
+  // auto-dismiss, and a 40-photo batch ran with no indication at all. The tray
+  // lives outside every view, so it survives navigation by construction.
+  //
+  // Counts come from uploadBatch, which is now a running tally that is NEVER
+  // reset mid-activity. The old version zeroed itself on every finalize, so a
+  // second batch started while the first was running merged into its totals and
+  // the numbers went backwards — which is what made overlapping batches look
+  // like the cause of the confusion. Overlap is fine; the counter was not.
+  let trayOpen = false;
+  let trayHideTimer = null;
+  function uploadActive_(){ return pendingUploads.size > 0 || uploadQueue.length > 0 || activeUploadWorkers > 0; }
+  function syncTrayOffset(){
+    const tray = document.getElementById('uploadTray');
+    const nav = document.querySelector('nav.tabbar');
+    if(!tray || !nav) return;
+    tray.style.bottom = nav.offsetHeight + 'px';
+  }
+  function updateUploadProgressToast_(){ renderUploadTray_(); }
+  function renderUploadTray_(){
+    const tray = document.getElementById('uploadTray');
+    if(!tray) return;
+    const {total, done, failed} = uploadBatch;
+    if(!total){ tray.classList.remove('show'); return; }
+    const settled = done + failed + uploadBatch.cancelled;
+    const active = uploadActive_();
+    tray.classList.add('show');
+    syncTrayOffset();
+
+    const pct = total ? Math.round((settled / total) * 100) : 0;
+    $('#utProgFill').style.width = pct + '%';
+    const icon = $('#utIcon');
+    icon.classList.toggle('spin', active);
+
+    let txt;
+    if(active) txt = `Enviando ${Math.min(settled + 1, total)} de ${total}...`;
+    else if(failed) txt = `${done} de ${total} enviadas`;
+    else txt = `${done} ${done === 1 ? 'arquivo enviado' : 'arquivos enviados'}`;
+    $('#utText').innerHTML = escapeHTML(txt) + (failed ? ` <span class="ut-fail">· ${failed} ${failed===1?'falhou':'falharam'}</span>` : '');
+
+    if(trayOpen) renderTrayBody_();
+
+    // Auto-dismiss only once everything has settled AND nothing failed. A
+    // failure stays on screen until the user has actually seen it.
+    clearTimeout(trayHideTimer);
+    if(!active && !failed){
+      trayHideTimer = setTimeout(()=>{
+        if(uploadActive_() || uploadBatch.failed) return;
+        tray.classList.remove('show');
+        trayOpen = false; tray.classList.remove('open');
+        uploadBatch = {total:0, done:0, failed:0, cancelled:0};
+      }, 2600);
+    }
+  }
+  const UPLOAD_STATUS_LABEL = {
+    pending:'Na fila', uploading:'Enviando', saving:'Salvando',
+    failed:'Falhou', 'save-failed':'Falhou ao salvar',
+  };
+  function renderTrayBody_(){
+    const list = $('#utList');
+    const acts = $('#utActions');
+    if(!list || !acts) return;
+    const jobs = Array.from(pendingUploads.values());
+    const failedJobs = jobs.filter(j => j.status === 'failed' || j.status === 'save-failed');
+    const cancellable = jobs.filter(j => j.status === 'pending');
+
+    acts.innerHTML = [
+      failedJobs.length ? `<button data-tray-act="retry">Tentar novamente (${failedJobs.length})</button>` : '',
+      failedJobs.length ? `<button class="danger" data-tray-act="discard">Descartar os que falharam</button>` : '',
+      cancellable.length ? `<button class="danger" data-tray-act="cancel-queued">Cancelar os que faltam (${cancellable.length})</button>` : '',
+    ].join('');
+
+    // Cap the rendered rows — a 100-job list does not need to be in the DOM.
+    const shown = jobs.slice(0, 30);
+    list.innerHTML = shown.map(j=>{
+      const err = j.status === 'failed' || j.status === 'save-failed';
+      return `<div class="ut-row">
+        <span class="n">${escapeHTML(j.origName || j.filename || j.id)}</span>
+        <span class="s${err ? ' err' : ''}">${escapeHTML(UPLOAD_STATUS_LABEL[j.status] || j.status)}</span>
+        ${err ? `<button data-tray-retry="${escapeHTML(j.id)}">Reenviar</button>` : ''}
+      </div>`;
+    }).join('') + (jobs.length > shown.length
+      ? `<div class="ut-row"><span class="n">+ ${jobs.length - shown.length} mais</span></div>` : '');
+
+    acts.querySelectorAll('[data-tray-act]').forEach(b=>{
+      b.addEventListener('click', (e)=>{ e.stopPropagation(); trayAction_(b.dataset.trayAct); });
+    });
+    list.querySelectorAll('[data-tray-retry]').forEach(b=>{
+      b.addEventListener('click', (e)=>{ e.stopPropagation(); retryUpload_(b.dataset.trayRetry); });
+    });
+  }
+  function trayAction_(act){
+    const jobs = Array.from(pendingUploads.values());
+    if(act === 'retry'){
+      jobs.filter(j=>j.status==='failed'||j.status==='save-failed').forEach(j=> retryUpload_(j.id));
+    } else if(act === 'discard'){
+      // Only jobs with NO Drive file are safe to drop outright. One that
+      // already reached Drive is left alone — silently forgetting it is
+      // exactly how a file becomes an orphan nobody can account for.
+      jobs.filter(j=>j.status==='failed').forEach(j=>{ discardUploadRecord_(j.id); });
+      const stillThere = Array.from(pendingUploads.values()).filter(j=>j.status==='save-failed').length;
+      if(stillThere) showToast(`${stillThere} já ${stillThere===1?'está':'estão'} no Drive — use "Reenviar" para salvar.`, false, 4200);
+      refreshPhotoSurfaces_(); renderAll(); renderUploadTray_();
+    } else if(act === 'cancel-queued'){
+      jobs.filter(j=>j.status==='pending').forEach(j=>{ discardUploadRecord_(j.id); });
+      refreshPhotoSurfaces_(); renderAll(); renderUploadTray_();
+    }
+  }
+  // Drops a job that has no Drive file, and removes its placeholder from
+  // whatever state array is holding it. Never used on a job that already
+  // uploaded.
+  function discardUploadRecord_(id){
+    const rec = pendingUploads.get(id);
+    if(!rec || rec.driveFileId) return false;
+    const home = findUploadHome_(id);
+    if(home){
+      if(home.key === 'documentos') documentos = documentos.filter(d=>d.id!==id);
+      else if(home.key === 'projectFotos') projectFotos = projectFotos.filter(f=>f.id!==id);
+      else if(home.key){
+        const parent = home.value.find(p=>(p.fotos||[]).some(f=>f.id===id));
+        if(parent) parent.fotos = parent.fotos.filter(f=>f.id!==id);
+      } else {
+        draftFotos = draftFotos.filter(f=>f.id!==id);
+        draftTaskFotos = draftTaskFotos.filter(f=>f.id!==id);
+        draftNoteFotos = draftNoteFotos.filter(f=>f.id!==id);
+      }
+    }
+    cancelUpload_(id);
+    uploadBatch.cancelled++;
+    return true;
   }
   function finalizeUploadBatch_(){
-    const {total, done, failed} = uploadBatch;
-    uploadBatch = {total:0, done:0, failed:0, cancelled:0};
-    if(!total) return;
+    if(!uploadBatch.total) return;
     refreshPhotoSurfaces_();
     renderAll();
-    if(failed && done) showToast(`${done} de ${total} enviados — ${failed} falhou(aram). Toque na miniatura para reenviar.`, false, 5200);
-    else if(failed) showToast(failed > 1 ? `${failed} envios falharam. Toque na miniatura para reenviar.` : 'O envio falhou. Toque na miniatura para reenviar.', false, 5200);
-    else if(done) showToast(done > 1 ? `${done} arquivos enviados.` : 'Envio concluído.');
-    else hideToast();   // everything in the batch was cancelled — don't leave a persistent toast up
+    renderUploadTray_();
   }
 
   function enqueueUpload_(rec){
@@ -3787,7 +4085,8 @@
     rec.status = (rec.status === 'saving') ? 'save-failed' : 'failed';
     rec.error = err && (err.message || String(err));
     uploadBatch.failed++;
-    refreshPhotoSurfaces_();
+    patchPhotoThumbState_(rec.id);
+    renderUploadTray_();
   }
 
   async function prepareUploadData_(rec){
@@ -3819,7 +4118,8 @@
       if(home && home.target.driveFileId){ await persistUploadedRecord_(rec, home); return; }
     }
     rec.status = 'uploading';
-    refreshPhotoSurfaces_();
+    patchPhotoThumbState_(rec.id);
+    patchQueuePositions_();   // everyone behind it just moved up a place
     let uploaded = null;
     try{
       uploaded = await withTimeout(uploadRecordToDrive_(rec), UPLOAD_DEADLINE_MS, 'upload-timeout');
@@ -3878,7 +4178,8 @@
       // nothing to write. Saving the parent later carries the photo with it.
       uploadBatch.done++;
       forgetUpload_(rec);
-      refreshPhotoSurfaces_();
+      patchPhotoThumbState_(rec.id);
+      renderUploadTray_();
       return;
     }
     const ok = await saveKey(home.key, home.value);
@@ -3889,7 +4190,8 @@
       markUploadFailed_(rec, new Error('metadata-save-failed'));
       return;
     }
-    refreshPhotoSurfaces_();
+    patchPhotoThumbState_(rec.id);
+    renderUploadTray_();
   }
 
   function failQueuedUploads_(err){
@@ -3906,7 +4208,7 @@
     rec.cancelled = false;
     uploadQueue.push(id);
     uploadBatch.total++;
-    refreshPhotoSurfaces_();
+    patchPhotoThumbState_(id);
     updateUploadProgressToast_();
     startUploadRunner_();
   }
@@ -3936,6 +4238,9 @@
         id, kind: 'photo', status: 'pending', file,
         previewUrl: safeObjectURL_(file),
         filename: id + '.jpg',
+        // What the user actually picked, kept only for display in the upload
+        // tray — the Drive filename stays the generated id.
+        origName: file.name || (id + '.jpg'),
         projectName: opts.projectName || activeProjectId,
         section: opts.section,
         // Who this photo belongs to, recorded at pick time. A background
@@ -3960,6 +4265,11 @@
     refreshPhotoSurfaces_();
     renderAll();
     recs.forEach(r => enqueueUpload_(r));
+    // Workers spawn DURING the loop above and immediately shift their item off,
+    // so any position repaint that happened mid-loop saw a queue holding one or
+    // two entries. Repaint once now that every file is actually queued —
+    // without this, most thumbnails never show their place in line at all.
+    patchQueuePositions_();
   }
   $('#formPhotoInput').addEventListener('change', (e)=>{
     const files = Array.from(e.target.files);
@@ -4943,7 +5253,7 @@
     ].filter(c => c.items.length > 0);
 
     if(cats.length === 0){
-      container.innerHTML = emptyStateHTML('Nenhuma foto neste projeto ainda.', 'Toque em "Adicionar foto" acima, ou fotos adicionadas em lançamentos, tarefas e notas aparecem aqui automaticamente.');
+      container.innerHTML = emptyStateHTML('Nenhuma foto neste projeto ainda.', 'Toque em "Foto" acima. Fotos adicionadas em lançamentos, tarefas e notas também aparecem aqui.');
       return;
     }
     container.innerHTML = cats.map(c => {
@@ -5074,7 +5384,7 @@
     const box = $('#docsList');
     const fullList = documentos.filter(d => d.projectId === activeProjectId).sort((a,b)=> b.criadoEm - a.criadoEm);
     if(fullList.length === 0){
-      box.innerHTML = emptyStateHTML('Nenhum documento ainda.', 'Toque em "Adicionar documento" para enviar o primeiro.');
+      box.innerHTML = emptyStateHTML('Nenhum documento ainda.', 'Toque em "Documento" acima para enviar o primeiro.');
       return;
     }
     const visibleCount = Math.min(docsPage * DOCS_PAGE_SIZE, fullList.length);
@@ -5219,6 +5529,7 @@
     docsPage = 1;
     renderDocsList();
     recs.forEach(r=> enqueueUpload_(r));
+    patchQueuePositions_();   // see startPhotoUploads_ — same reason
   });
 
   // A photo added directly to the project (not attached to a lançamento,
