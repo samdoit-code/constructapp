@@ -2283,6 +2283,78 @@
   }
 
   const CACHE_KEY = 'cmoreira_cache_v1';
+  // ---------- Durable upload journal ----------
+  // The gap between "the bytes are in Drive" and "the app has a row for them"
+  // is where photos went missing. A record whose upload succeeded but whose
+  // row write failed lived ONLY in memory: it stayed on screen with a retry
+  // affordance, but it was never written anywhere durable. It survived only if
+  // some later unrelated write to the same tab happened to sweep it up — and
+  // saveKey('tasks') sends the whole recomputed Fotos diff, so a checkbox tap
+  // would do it. Reproduced: with another write following, the photo persisted;
+  // with nothing following, a reload lost it and orphaned its Drive file.
+  //
+  // That is the "photos disappear, then reappear when I start another upload"
+  // behaviour, and it is why it felt impossible to know what state a photo was
+  // in — the answer genuinely depended on unrelated activity.
+  //
+  // So the moment a job has a driveFileId it is journaled to localStorage,
+  // and the next boot finishes the job instead of losing it. Only metadata is
+  // stored, never bytes: by this point the expensive part is already done and
+  // all that remains is writing a row.
+  const UPLOAD_JOURNAL_KEY = 'cmoreira_upload_journal_v1';
+  function saveUploadJournal_(){
+    try{
+      const jobs = [];
+      pendingUploads.forEach(rec=>{
+        if(!rec.driveFileId || !rec.owner) return;   // nothing durable to record yet
+        jobs.push({
+          id: rec.id, kind: rec.kind, owner: rec.owner, status: rec.status,
+          driveFileId: rec.driveFileId, driveUrl: rec.driveUrl || '',
+          criadoEm: rec.criadoEm, origName: rec.origName || '',
+          nome: rec.filename || '', mimeType: rec.mimeType || '',
+        });
+      });
+      if(jobs.length) localStorage.setItem(UPLOAD_JOURNAL_KEY, JSON.stringify(jobs));
+      else localStorage.removeItem(UPLOAD_JOURNAL_KEY);
+    }catch(e){ console.error('upload journal write failed', e); }
+  }
+  function readUploadJournal_(){
+    try{
+      const raw = localStorage.getItem(UPLOAD_JOURNAL_KEY);
+      return raw ? (JSON.parse(raw) || []) : [];
+    }catch(e){ return []; }
+  }
+  // Runs after a boot hydration. Any journaled job whose row is genuinely
+  // absent from the server gets re-attached and re-persisted — no re-upload,
+  // since Drive already has the bytes.
+  async function resumeJournaledUploads_(){
+    const jobs = readUploadJournal_();
+    if(!jobs.length) return;
+    const persistedFotos = new Set((sheetSnapshot.fotos || []).map(r => String(r.id)));
+    const persistedDocs = new Set((sheetSnapshot.documentos || []).map(r => String(r.id)));
+    const unfinished = jobs.filter(j =>
+      !(j.kind === 'doc' ? persistedDocs : persistedFotos).has(String(j.id)));
+    if(!unfinished.length){ try{ localStorage.removeItem(UPLOAD_JOURNAL_KEY); }catch(e){} return; }
+
+    unfinished.forEach(j=>{
+      // Rebuild a minimal job. There is no File and no preview — the bytes are
+      // already in Drive, so all that is left is the row.
+      pendingUploads.set(j.id, {
+        id: j.id, kind: j.kind || 'photo', status: 'save-failed',
+        owner: j.owner, driveFileId: j.driveFileId, driveUrl: j.driveUrl,
+        criadoEm: j.criadoEm, origName: j.origName, filename: j.nome,
+        mimeType: j.mimeType, previewUrl: '', file: null, resumed: true,
+      });
+      uploadBatch.total++;
+    });
+    reapplyPendingUploads_();   // put their records back on the right parents
+    refreshPhotoSurfaces_();
+    renderAll();
+    showToast(unfinished.length === 1
+      ? 'Retomando 1 envio interrompido...'
+      : `Retomando ${unfinished.length} envios interrompidos...`, false, 3500);
+    unfinished.forEach(j=> retryUpload_(j.id));
+  }
   let lastSyncTime = null;
 
   // Serialising the whole dataset and writing it to localStorage is a
@@ -2726,6 +2798,9 @@
         finishLoadSetup();
         renderAll();
         updateSyncStatusText();
+        // Only once the server's truth is in: anything still journaled here
+        // genuinely never got its row written.
+        resumeJournaledUploads_();
       } else if(!navigator.onLine){
         showToast('Sem internet — mostrando os últimos dados salvos neste aparelho.');
       }
@@ -2743,6 +2818,7 @@
     finishLoadSetup();
     renderAll();
     updateSyncStatusText();
+    resumeJournaledUploads_();
   }
 
   // ---------- Toast ----------
@@ -2921,20 +2997,12 @@
   function switchView(name){
     if(!hasPageAccess(name)) return; // blocks direct console calls too, not just hidden buttons — though the backend rejecting the underlying data/writes is the real authority
     const previousView = document.querySelector('.view.active')?.id?.replace('view-','');
-    if(previousView === 'tasks' && name !== 'tasks' && draftTaskFotos.length){
-      const orphans = draftTaskFotos;
-      draftTaskFotos = [];
-      cancelUploads_(orphans);
-      deletePhotoBlobs(orphans);
-      renderTaskFormPhotoThumbs();
-    }
-    if(previousView === 'notes' && name !== 'notes' && draftNoteFotos.length){
-      const orphans = draftNoteFotos;
-      draftNoteFotos = [];
-      cancelUploads_(orphans);
-      deletePhotoBlobs(orphans);
-      renderNoteFormPhotoThumbs();
-    }
+    // Leaving Tarefas or Notas used to DESTROY any draft photos on those
+    // forms — cancelling their uploads and discarding the files — so photos
+    // picked seconds earlier vanished because the user glanced at another tab.
+    // Tapping a tab is not a "discard my work" gesture. Drafts now survive
+    // navigation, exactly as the Add form's drafts already did; they are
+    // cleared when the form is actually submitted or explicitly reset.
     $all('.view').forEach(v => v.classList.remove('active'));
     $('#view-' + name).classList.add('active');
     $all('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -3901,6 +3969,7 @@
     releasePreview_(rec);
     rec.file = null;              // let the browser reclaim the picked file
     pendingUploads.delete(rec.id);
+    saveUploadJournal_();         // done (or gone) — drop it from the journal too
   }
 
   // Re-resolves, by id, where a record actually lives RIGHT NOW — never by
@@ -4144,6 +4213,7 @@
     rec.status = (rec.status === 'saving') ? 'save-failed' : 'failed';
     rec.error = err && (err.message || String(err));
     uploadBatch.failed++;
+    saveUploadJournal_();
     patchPhotoThumbState_(rec.id);
     renderUploadTray_();
   }
@@ -4221,6 +4291,10 @@
     home.target.driveFileId = uploaded.driveFileId;
     home.target.driveUrl = uploaded.driveUrl;
     rec.status = 'saving';   // from here on the row is eligible for the sheet
+    // Journal BEFORE attempting the row write. If anything from here on goes
+    // wrong — a failed write, a closed tab, iOS discarding the webview — the
+    // next boot still knows a Drive file exists and finishes the job.
+    saveUploadJournal_();
     await persistUploadedRecord_(rec, home);
   }
 
