@@ -2181,13 +2181,44 @@
       return null;
     }
   }
-  async function deleteFromDrive(driveFileId){
-    if(!driveFileId) return;
-    // Best-effort: even if this fails, the reference is already gone from the
-    // sheet by the time this is called, so nothing breaks in the app itself —
-    // worst case an orphaned file sits harmlessly in Drive.
-    try{ await sheetsPost({action:'deleteFile', fileId: driveFileId}); }
-    catch(e){ console.error('drive delete error (non-fatal)', e); }
+  // Does a persisted row exist for this id? A photo still uploading (or one
+  // whose parent was never saved) has no row, so there is nothing for the
+  // server to delete — its Drive file, if any, is reclaimed by the backend's
+  // orphan sweeper instead.
+  function hasPersistedRow_(sheetName, id){
+    return (sheetSnapshot[sheetName] || []).some(r => String(r.id) === String(id));
+  }
+  // Deletes photo/document RECORDS server-side: one locked backend operation
+  // trashes each Drive file AND removes each row.
+  //
+  // Replaces the old two-step client flow, which could never work: it removed
+  // the row first (via saveKey) and then asked deleteFile to trash the file,
+  // but deleteFile refuses any fileId not present in Fotos/Documentos — which
+  // by then it never was. Every delete threw 'arquivo não encontrado', the
+  // error was swallowed, and the file stayed in Drive forever. Nothing was
+  // ever actually deleted from Drive.
+  //
+  // Note what is NOT here: any parent save. A photo lives in the Fotos sheet,
+  // never on its parent's row, so deleting one changes nothing about the
+  // lançamento/tarefa/nota it hangs off. Dropping that needless parent write
+  // also stops a photo delete from dragging the whole Tarefas diff along with
+  // it.
+  async function deletePhotoRecords_(ids, kind){
+    const sheetName = kind === 'doc' ? 'documentos' : 'fotos';
+    const persisted = (ids || []).filter(id => hasPersistedRow_(sheetName, id));
+    if(!persisted.length) return true;
+    const resp = await sheetsPost({
+      action: kind === 'doc' ? 'deleteDocumentos' : 'deletePhotos',
+      ids: persisted,
+    });
+    const gone = new Set((resp.deleted || []).map(String));
+    // Keep the diff baseline honest, so the next sync neither re-sends nor
+    // re-deletes these rows.
+    if(sheetSnapshot[sheetName]){
+      sheetSnapshot[sheetName] = sheetSnapshot[sheetName].filter(r => !gone.has(String(r.id)));
+    }
+    saveCacheToLocalStorage();
+    return true;
   }
 
   function compressImageFile(file, maxDim, quality){
@@ -2216,9 +2247,39 @@
       reader.readAsDataURL(file);
     });
   }
+  // The one delete path every photo/document surface uses. There used to be
+  // nine near-identical copies of this with three different rollback
+  // disciplines mixed arbitrarily between them — some cloning a whole state
+  // array (which silently undoes anything else in flight on it), some with no
+  // rollback at all.
+  //
+  // `mutate` removes the record from wherever it lives; `revert` puts back
+  // ONLY what mutate touched. Neither ever clones a whole array.
+  async function removeOnePhoto_(id, mutate, revert, kind){
+    cancelUpload_(id);
+    mutate();
+    try{
+      await deletePhotoRecords_([id], kind || 'photo');
+      return true;
+    }catch(e){
+      console.error('delete record error', e);
+      revert();
+      showToast(saveErrorMessage(e), false, 4500);
+      return false;
+    }
+  }
+
+  // Cascade for a parent record (lançamento/tarefa/nota) being deleted.
+  // MUST run BEFORE the parent's own save: the server resolves each photo's
+  // authorization from its parent chain, so once the parent row is gone the
+  // photos can no longer be authorized — which is exactly how deleting a task
+  // used to orphan every photo attached to it.
   async function deletePhotoBlobs(fotos){
-    if(!fotos || !fotos.length) return;
-    for(const f of fotos){ await deleteFromDrive(f.driveFileId); }
+    const ids = (fotos || []).map(f => f.id).filter(Boolean);
+    if(!ids.length) return;
+    (fotos || []).forEach(f => cancelUpload_(f.id));
+    try{ await deletePhotoRecords_(ids, 'photo'); }
+    catch(e){ console.error('photo cascade delete error (non-fatal)', e); }
   }
 
   const CACHE_KEY = 'cmoreira_cache_v1';
@@ -2842,6 +2903,11 @@
     if(nav) new ResizeObserver(()=> syncTrayOffset()).observe(nav);
   }
   window.addEventListener('resize', ()=> syncTrayOffset());
+  $('#photoSelectToggle').addEventListener('click', ()=>{
+    photoSelectMode = !photoSelectMode;
+    if(!photoSelectMode) photoSelection.clear();
+    renderProjectPhotosSection();
+  });
   $('#utBar').addEventListener('click', ()=>{
     trayOpen = !trayOpen;
     $('#uploadTray').classList.toggle('open', trayOpen);
@@ -3018,6 +3084,10 @@
   }
   const PHOTOS_PAGE_SIZE = 24;
   let photosPagePerCat = {projeto:1, caixa:1, emp:1, tasks:1, notes:1};
+  // Album selection mode. Clearing a mistaken 40-photo batch used to cost 40
+  // taps and 40 confirm dialogs, one per photo.
+  let photoSelectMode = false;
+  const photoSelection = new Set();
   const DOCS_PAGE_SIZE = 30;
   let docsPage = 1;
   const TASKS_PAGE_SIZE = 40;
@@ -3768,28 +3838,17 @@
     });
   }
   async function deleteFormPhotoNow(id){
-    cancelUpload_(id);
-    let driveFileId = null;
-    let saveOk = true;
-    if(editingId){
-      const list = getList(addKind);
-      const prevList = cloneState_(list);
-      const entry = list.find(x=>x.id===editingId);
-      if(entry){
-        const target = (entry.fotos||[]).find(f=>f.id===id);
-        driveFileId = target && target.driveFileId;
-        entry.fotos = (entry.fotos||[]).filter(f=>f.id!==id);
-        saveOk = await saveKey(addKind==='caixa' ? 'caixaObra' : 'empreiteiro', list, prevList);
-      }
-    } else {
-      const target = draftFotos.find(f=>f.id===id);
-      driveFileId = target && target.driveFileId;
-      draftFotos = draftFotos.filter(f=>f.id!==id);
-    }
-    if(saveOk) await deleteFromDrive(driveFileId);
+    const entry = editingId ? getList(addKind).find(x=>x.id===editingId) : null;
+    const prevFotos = entry ? (entry.fotos||[]).slice() : null;
+    const ok = await removeOnePhoto_(id, ()=>{
+      if(entry) entry.fotos = (entry.fotos||[]).filter(f=>f.id!==id);
+      else draftFotos = draftFotos.filter(f=>f.id!==id);
+    }, ()=>{
+      if(entry && prevFotos) entry.fotos = prevFotos;
+    });
     renderFormPhotoThumbs();
     renderAll();
-    if(saveOk) showToast('Foto excluída.');
+    if(ok) showToast('Foto excluída.');
   }
   async function deleteFormPhotoWithConfirm(id){
     const ok = await showConfirm('Excluir esta foto? Essa ação não pode ser desfeita.', {title:'Excluir foto', okLabel:'Excluir'});
@@ -4140,17 +4199,16 @@
     const home = findUploadHome_(rec.id);
     if(!home){
       // Deleted (or its parent was, or the form was abandoned) while this was
-      // in flight. The Drive file has nothing to belong to, so try to remove
-      // it. Best-effort by design: deleteFile only trashes a file that is
-      // present in Fotos/Documentos (Section 7 — an unchecked client fileId
-      // could otherwise reach anything the deploying account can see), so a
-      // file whose row was never persisted stays in Drive. That orphan
-      // predates this pipeline — an abandoned draft photo always leaked the
-      // same way — and closing it needs a backend change, not a looser rule
-      // here.
+      // in flight. The Drive file has nothing to belong to and no row was ever
+      // written for it, so there is nothing the client can authorize a delete
+      // against — the server resolves a file's permissions from its row, and
+      // deliberately refuses a bare fileId. The backend's orphan sweeper
+      // (sweepOrphanFiles) reclaims it instead: it trashes anything in a
+      // project's Fotos//Documentos/ subfolders that no row references and
+      // that is older than a safety threshold, so it can never race an upload
+      // still in flight.
       uploadBatch.cancelled++;
       forgetUpload_(rec);
-      deleteFromDrive(uploaded.driveFileId);
       return;
     }
     // Recorded on the JOB as well as on the state object. The state object can
@@ -4231,7 +4289,15 @@
   // compression, no network, nothing awaited before the render — the
   // thumbnails are on screen within a frame of the picker closing, drawn
   // from local object URLs, and the actual work happens in the queue after.
+  const MAX_PHOTO_BYTES = 25 * 1024 * 1024;
   function startPhotoUploads_(files, opts){
+    // Documents were capped at 15MB but photos had no ceiling at all, so an
+    // enormous original went straight into FileReader as a base64 string
+    // before compression could shrink it.
+    const tooBig = files.filter(f => f.size > MAX_PHOTO_BYTES).length;
+    files = files.filter(f => f.size <= MAX_PHOTO_BYTES);
+    if(tooBig) showToast(`${tooBig} foto(s) acima de 25 MB não enviada(s).`, false, 4500);
+    if(!files.length) return;
     const recs = files.map(file => {
       const id = uid('ph');
       return {
@@ -4306,23 +4372,16 @@
   }
   async function deleteModalPhotoNow(id){
     if(!activeModal) return;
-    cancelUpload_(id);
-    const list = getList(activeModal.kind);
-    const prevList = cloneState_(list);
-    const entry = list.find(x=>x.id===activeModal.id);
+    const entry = getList(activeModal.kind).find(x=>x.id===activeModal.id);
     if(!entry) return;
-    const target = (entry.fotos||[]).find(f=>f.id===id);
-    entry.fotos = (entry.fotos||[]).filter(f=>f.id!==id);
-    const saveOk0 = await saveKey(activeModal.kind==='caixa' ? 'caixaObra' : 'empreiteiro', list, prevList);
-    if(saveOk0) await deleteFromDrive(target && target.driveFileId);
-    // Re-read from the module array rather than the local `entry`/`list`
-    // references above — on failure those still point at the now-stale,
-    // already-mutated objects, while saveKey() has since reassigned the
-    // module array back to its pre-mutation state.
+    const prevFotos = (entry.fotos||[]).slice();
+    const ok = await removeOnePhoto_(id,
+      ()=>{ entry.fotos = (entry.fotos||[]).filter(f=>f.id!==id); },
+      ()=>{ entry.fotos = prevFotos; });
     const current = getList(activeModal.kind).find(x=>x.id===activeModal.id);
     renderModalPhotoThumbs(current ? current.fotos : []);
     renderAll();
-    if(saveOk0) showToast('Foto excluída.');
+    if(ok) showToast('Foto excluída.');
   }
   async function deleteModalPhotoWithConfirm(id){
     const ok = await showConfirm('Excluir esta foto? Essa ação não pode ser desfeita.', {title:'Excluir foto', okLabel:'Excluir'});
@@ -4359,12 +4418,10 @@
     });
   }
   async function deleteTaskDraftPhotoNow(id){
-    cancelUpload_(id);
-    const target = draftTaskFotos.find(f=>f.id===id);
-    draftTaskFotos = draftTaskFotos.filter(f=>f.id!==id);
-    await deleteFromDrive(target && target.driveFileId);
+    const ok = await removeOnePhoto_(id,
+      ()=>{ draftTaskFotos = draftTaskFotos.filter(f=>f.id!==id); }, ()=>{});
     renderTaskFormPhotoThumbs();
-    showToast('Foto excluída.');
+    if(ok) showToast('Foto excluída.');
   }
   async function deleteTaskDraftPhotoWithConfirm(id){
     const ok = await showConfirm('Excluir esta foto? Essa ação não pode ser desfeita.', {title:'Excluir foto', okLabel:'Excluir'});
@@ -4391,21 +4448,18 @@
   }
   async function deleteTaskModalPhotoNow(id){
     if(!activeTaskId) return;
-    cancelUpload_(id);
     const t = tasks.find(x=>x.id===activeTaskId);
     if(!t) return;
     // Per-task revert (just this task's photo list), never a whole-array clone
     // — that would also undo any checkbox toggle still in flight.
     const prevFotos = (t.fotos||[]).slice();
-    const target = (t.fotos||[]).find(f=>f.id===id);
-    t.fotos = (t.fotos||[]).filter(f=>f.id!==id);
-    const saveOk2 = await saveKey('tasks', tasks);
-    if(!saveOk2) t.fotos = prevFotos;
-    if(saveOk2) await deleteFromDrive(target && target.driveFileId);
+    const ok = await removeOnePhoto_(id,
+      ()=>{ t.fotos = (t.fotos||[]).filter(f=>f.id!==id); },
+      ()=>{ t.fotos = prevFotos; });
     const current = tasks.find(x=>x.id===activeTaskId);
     renderTaskModalPhotoThumbs(current ? current.fotos : []);
     renderAll();
-    if(saveOk2) showToast('Foto excluída.');
+    if(ok) showToast('Foto excluída.');
   }
   async function deleteTaskModalPhotoWithConfirm(id){
     const ok = await showConfirm('Excluir esta foto? Essa ação não pode ser desfeita.', {title:'Excluir foto', okLabel:'Excluir'});
@@ -4485,9 +4539,12 @@
     if(ref.origin === 'standalone'){
       const prevNotes = cloneState_(notes);
       const target = notes.find(x=>x.id===ref.id);
+      // Photos FIRST, while the note still exists: the server resolves each
+      // photo's authorization through its parent, so once the note row is gone
+      // the photos can no longer be authorized and their Drive files leak.
+      if(target) await deletePhotoBlobs(target.fotos);
       notes = notes.filter(x=>x.id!==ref.id);
       saveOk = await saveKey('notes', notes, prevNotes);
-      if(saveOk && target) deletePhotoBlobs(target.fotos);
     } else {
       const list = ref.origin === 'caixa' ? caixaObra : empreiteiro;
       const prevList = cloneState_(list);
@@ -4583,14 +4640,12 @@
     const list = getList(activeModal.kind);
     const prevList = cloneState_(list);
     const target = list.find(x=>x.id === activeModal.id);
+    // Photos FIRST, while the entry still exists — see deletePhotoBlobs.
+    if(target) await deletePhotoBlobs(target.fotos);
     if(activeModal.kind === 'caixa') caixaObra = caixaObra.filter(x=>x.id !== activeModal.id);
     else empreiteiro = empreiteiro.filter(x=>x.id !== activeModal.id);
     const saveOk5 = await saveKey(key, activeModal.kind === 'caixa' ? caixaObra : empreiteiro, prevList);
     if(saveOk5){
-      // Only trash the Drive files once the row is confirmed gone from the
-      // sheet — otherwise a failed delete leaves the record intact but
-      // pointing at trashed files.
-      if(target) deletePhotoBlobs(target.fotos);
       $('#detailModal').classList.remove('open');
       activeModal = null;
       showToast('Lançamento excluído.');
@@ -4857,6 +4912,8 @@
     const removedIdx = tasks.findIndex(x=>x.id===activeTaskId);
     if(removedIdx < 0) return;
     const target = tasks[removedIdx];
+    // Photos FIRST, while the task still exists — see deletePhotoBlobs.
+    if(target) await deletePhotoBlobs(target.fotos);
     tasks.splice(removedIdx, 1);
     const saveOk7 = await saveKey('tasks', tasks);
     if(!saveOk7){
@@ -4866,7 +4923,6 @@
       return;
     }
     pendingTaskChanges.delete(target.id); // nothing left to reconcile for a deleted task
-    if(target) deletePhotoBlobs(target.fotos);
     $('#taskModal').classList.remove('open');
     activeTaskId = null;
     renderAll();
@@ -4883,12 +4939,10 @@
     });
   }
   async function deleteNoteDraftPhotoNow(id){
-    cancelUpload_(id);
-    const target = draftNoteFotos.find(f=>f.id===id);
-    draftNoteFotos = draftNoteFotos.filter(f=>f.id!==id);
-    await deleteFromDrive(target && target.driveFileId);
+    const ok = await removeOnePhoto_(id,
+      ()=>{ draftNoteFotos = draftNoteFotos.filter(f=>f.id!==id); }, ()=>{});
     renderNoteFormPhotoThumbs();
-    showToast('Foto excluída.');
+    if(ok) showToast('Foto excluída.');
   }
   async function deleteNoteDraftPhotoWithConfirm(id){
     const ok = await showConfirm('Excluir esta foto? Essa ação não pode ser desfeita.', {title:'Excluir foto', okLabel:'Excluir'});
@@ -4923,18 +4977,18 @@
     });
   }
   async function deleteExistingNotePhotoNow(noteId, photoId){
-    cancelUpload_(photoId);
     const n = notes.find(x=>x.id===noteId);
     if(!n) return;
-    const prevNotes = cloneState_(notes);
-    const target = (n.fotos||[]).find(f=>f.id===photoId);
-    n.fotos = (n.fotos||[]).filter(f=>f.id!==photoId);
-    const saveOk8 = await saveKey('notes', notes, prevNotes);
-    if(saveOk8) await deleteFromDrive(target && target.driveFileId);
+    // Per-note revert, never a whole-array clone of `notes` — another note's
+    // photo may be attaching at the same moment.
+    const prevFotos = (n.fotos||[]).slice();
+    const ok = await removeOnePhoto_(photoId,
+      ()=>{ n.fotos = (n.fotos||[]).filter(f=>f.id!==photoId); },
+      ()=>{ n.fotos = prevFotos; });
     const current = notes.find(x=>x.id===noteId);
     if(current) renderExistingNotePhotoThumbs(current);
     renderAll();
-    if(saveOk8) showToast('Foto excluída.');
+    if(ok) showToast('Foto excluída.');
   }
   async function deleteExistingNotePhotoWithConfirm(noteId, photoId){
     const ok = await showConfirm('Excluir esta foto? Essa ação não pode ser desfeita.', {title:'Excluir foto', okLabel:'Excluir'});
@@ -5252,11 +5306,26 @@
       {key:'notes', label:'Notas', items: groups.notes},
     ].filter(c => c.items.length > 0);
 
-    if(cats.length === 0){
+    const selToggle = $('#photoSelectToggle');
+    const anyPhotos = cats.length > 0;
+    if(selToggle){
+      setHidden(selToggle, !anyPhotos || !canSection('docs','delete'));
+      selToggle.textContent = photoSelectMode ? 'Concluir' : 'Selecionar';
+    }
+    if(!anyPhotos){
+      photoSelectMode = false; photoSelection.clear();
       container.innerHTML = emptyStateHTML('Nenhuma foto neste projeto ainda.', 'Toque em "Foto" acima. Fotos adicionadas em lançamentos, tarefas e notas também aparecem aqui.');
       return;
     }
-    container.innerHTML = cats.map(c => {
+    const allIds = cats.reduce((acc,c)=> acc.concat(c.items.map(i=>i.id)), []);
+    const selBar = photoSelectMode ? `
+      <div class="photo-selbar">
+        <span class="cnt">${photoSelection.size} selecionada${photoSelection.size===1?'':'s'}</span>
+        <button type="button" class="sel-all" data-sel="all">${photoSelection.size >= allIds.length ? 'Limpar' : 'Todas'}</button>
+        <button type="button" class="sel-del" data-sel="del"${photoSelection.size ? '' : ' disabled'}>Excluir</button>
+        <button type="button" class="sel-cancel" data-sel="cancel">Cancelar</button>
+      </div>` : '';
+    container.innerHTML = selBar + cats.map(c => {
       const page = photosPagePerCat[c.key] || 1;
       const visibleCount = Math.min(page * PHOTOS_PAGE_SIZE, c.items.length);
       const hasMore = visibleCount < c.items.length;
@@ -5280,6 +5349,14 @@
       const canDelete = canSection(CAT_SECTION[c.key], 'delete');
       renderPhotoThumbs(el, visibleItems, {
         deletable: canDelete,
+        // Selection mode only offers photos this role may actually delete —
+        // each category is owned by a different section (see CAT_SECTION).
+        selectMode: photoSelectMode && canDelete,
+        isSelected: (id)=> photoSelection.has(id),
+        onToggleSelect: (id)=>{
+          if(photoSelection.has(id)) photoSelection.delete(id); else photoSelection.add(id);
+          renderProjectPhotosSection();
+        },
         onView: (id, dataUrl)=>{
           // Navigation spans the FULL group (not just the visible page) — pagination
           // only bounds what's fetched/rendered up front, never what you can browse to.
@@ -5296,6 +5373,24 @@
         renderProjectPhotosSection();
       });
     });
+    container.querySelectorAll('[data-sel]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const act = btn.dataset.sel;
+        if(act === 'all'){
+          // Only ever selects what this role may delete, mirroring selectMode.
+          const selectable = cats.filter(c=>canSection(CAT_SECTION[c.key],'delete'))
+            .reduce((acc,c)=> acc.concat(c.items.map(i=>i.id)), []);
+          if(photoSelection.size >= selectable.length) photoSelection.clear();
+          else selectable.forEach(id=> photoSelection.add(id));
+          renderProjectPhotosSection();
+        } else if(act === 'del'){
+          deleteSelectedPhotos_();
+        } else {
+          photoSelectMode = false; photoSelection.clear();
+          renderProjectPhotosSection();
+        }
+      });
+    });
   }
 
   async function deleteAggregatedPhotoWithConfirm(catKey, photoId){
@@ -5304,57 +5399,71 @@
     await deleteAggregatedPhotoNow(catKey, photoId);
   }
   async function deleteAggregatedPhotoNow(catKey, photoId){
-    cancelUpload_(photoId);
-    // Deletes from the actual source record (lançamento/tarefa/nota) — this hub is
-    // a mirror of those photos, not a separate copy, so deleting here deletes there too.
-    let driveFileId = null;
-    let saveOk = true;
+    // The album is a mirror of photos that live on their real parent, so
+    // deleting here deletes there too. Every category reverts only the one
+    // list it touched -- never a whole-array clone, which would undo whatever
+    // else happens to be in flight on that array.
+    let revert = ()=>{};
+    let mutate = null;
     if(catKey === 'projeto'){
-      const prevProjectFotos = projectFotos.slice();
-      const target = projectFotos.find(f=>f.id===photoId);
-      driveFileId = target && target.driveFileId;
-      projectFotos = projectFotos.filter(f=>f.id!==photoId);
-      saveOk = await saveKey('projectFotos', projectFotos);
-      if(!saveOk) projectFotos = prevProjectFotos;
-    } else if(catKey === 'caixa' || catKey === 'emp'){
-      const list = catKey === 'caixa' ? caixaObra : empreiteiro;
-      const prevList = cloneState_(list);
-      for(const e of list){
-        if(e.fotos && e.fotos.some(f=>f.id===photoId)){
-          driveFileId = (e.fotos.find(f=>f.id===photoId)||{}).driveFileId;
-          e.fotos = e.fotos.filter(f=>f.id!==photoId);
-          saveOk = await saveKey(catKey==='caixa' ? 'caixaObra' : 'empreiteiro', list, prevList);
-          break;
-        }
-      }
-    } else if(catKey === 'tasks'){
-      for(const t of tasks){
-        if(t.fotos && t.fotos.some(f=>f.id===photoId)){
-          driveFileId = (t.fotos.find(f=>f.id===photoId)||{}).driveFileId;
-          // Per-task revert, never a whole-array clone — see quickToggleTask's
-          // invariants: a checkbox toggle may be in flight on another task.
-          const prevFotos4 = t.fotos.slice();
-          t.fotos = t.fotos.filter(f=>f.id!==photoId);
-          saveOk = await saveKey('tasks', tasks);
-          if(!saveOk) t.fotos = prevFotos4;
-          break;
-        }
-      }
-    } else if(catKey === 'notes'){
-      const prevNotes = cloneState_(notes);
-      for(const n of notes){
-        if(n.fotos && n.fotos.some(f=>f.id===photoId)){
-          driveFileId = (n.fotos.find(f=>f.id===photoId)||{}).driveFileId;
-          n.fotos = n.fotos.filter(f=>f.id!==photoId);
-          saveOk = await saveKey('notes', notes, prevNotes);
-          break;
-        }
-      }
+      const prev = projectFotos.slice();
+      mutate = ()=>{ projectFotos = projectFotos.filter(f=>f.id!==photoId); };
+      revert = ()=>{ projectFotos = prev; };
+    } else {
+      const list = catKey === 'caixa' ? caixaObra
+        : catKey === 'emp' ? empreiteiro
+        : catKey === 'tasks' ? tasks
+        : catKey === 'notes' ? notes : null;
+      if(!list) return;
+      const parent = list.find(r => (r.fotos||[]).some(f=>f.id===photoId));
+      if(!parent) return;
+      const prevFotos = parent.fotos.slice();
+      mutate = ()=>{ parent.fotos = parent.fotos.filter(f=>f.id!==photoId); };
+      revert = ()=>{ parent.fotos = prevFotos; };
     }
-    if(saveOk) await deleteFromDrive(driveFileId);
+    const ok = await removeOnePhoto_(photoId, mutate, revert);
     renderAll();
-    if(saveOk) showToast('Foto excluída.');
-    else showToast('Não consegui excluir a foto. Tente novamente.', false, 4500);
+    if(ok) showToast('Foto excluída.');
+  }
+
+  // Bulk delete for the album. One request for the whole selection rather than
+  // N -- the same reasoning that made project rename a dedicated bulk action.
+  async function deleteSelectedPhotos_(){
+    const ids = Array.from(photoSelection);
+    if(!ids.length) return;
+    const ok = await showConfirm(
+      ids.length === 1 ? 'Excluir esta foto? Essa ação não pode ser desfeita.'
+                       : `Excluir ${ids.length} fotos? Essa ação não pode ser desfeita.`,
+      {title: ids.length === 1 ? 'Excluir foto' : 'Excluir fotos', okLabel:'Excluir'});
+    if(!ok) return;
+
+    const snapshots = [];
+    const capture = (obj, key)=> snapshots.push({obj, key, prev: obj[key].slice()});
+    capture({projectFotos}, 'projectFotos');
+    const restoreProject = projectFotos.slice();
+    const touched = [];
+    [caixaObra, empreiteiro, tasks, notes].forEach(list=>{
+      list.forEach(rec=>{
+        if((rec.fotos||[]).some(f=>ids.includes(f.id))) touched.push({rec, prev: rec.fotos.slice()});
+      });
+    });
+    // Optimistic removal everywhere the ids appear.
+    projectFotos = projectFotos.filter(f=>!ids.includes(f.id));
+    touched.forEach(t=>{ t.rec.fotos = t.rec.fotos.filter(f=>!ids.includes(f.id)); });
+    ids.forEach(id=> cancelUpload_(id));
+    photoSelection.clear();
+    renderAll();
+
+    try{
+      await deletePhotoRecords_(ids, 'photo');
+      showToast(ids.length === 1 ? 'Foto excluída.' : `${ids.length} fotos excluídas.`);
+    }catch(e){
+      console.error('bulk photo delete error', e);
+      projectFotos = restoreProject;
+      touched.forEach(t=>{ t.rec.fotos = t.prev; });
+      showToast(saveErrorMessage(e), false, 4500);
+    }
+    renderAll();
   }
 
   function fileExtension(filename){
@@ -5486,15 +5595,13 @@
     openSafeUrl(d.driveUrl || ('https://drive.google.com/file/d/' + d.driveFileId + '/view'));
   }
   async function deleteDocumentNow(id){
-    cancelUpload_(id);
-    const prevDocs = cloneState_(documentos);
-    const target = documentos.find(d=>d.id===id);
-    documentos = documentos.filter(d=>d.id!==id);
-    const saveOk11 = await saveKey('documentos', documentos, prevDocs);
-    if(saveOk11) await deleteFromDrive(target && target.driveFileId);
+    const prevDocs = documentos.slice();
+    const ok = await removeOnePhoto_(id,
+      ()=>{ documentos = documentos.filter(d=>d.id!==id); },
+      ()=>{ documentos = prevDocs; },
+      'doc');
     renderDocsList();
-    if(saveOk11) showToast('Documento excluído.');
-    else showToast('Não consegui excluir o documento. Tente novamente.', false, 4500);
+    if(ok) showToast('Documento excluído.');
   }
   async function deleteDocumentWithConfirm(id){
     const ok = await showConfirm('Excluir este documento? Essa ação não pode ser desfeita.', {title:'Excluir documento', okLabel:'Excluir'});

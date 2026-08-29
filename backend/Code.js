@@ -518,6 +518,10 @@ const PROJECT_FOLDERS = {
   'Obra Boreal': '1WPZnzIzDeBc2x57OArVInOACDIzgUh8F',
 };
 const FALLBACK_FOLDER_ID = '1BN2no3X5zHks6F94X6elC7j1kMROH7yT'; // "Construtora Moreira" parent
+// Hard ceiling on a single upload, enforced on the DECODED bytes. Photos are
+// compressed client-side to ~100-200KB, and documents are capped at 15MB in
+// the picker, so this only ever catches something abnormal.
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
 // Resolves a project's Drive folder BY NAME rather than relying only on the
 // hardcoded map above — a project added or renamed through the app's own
@@ -826,6 +830,26 @@ function applyBatch_(ops, indexes) {
   return updated;
 }
 
+// Removes rows by id from one sheet. Same discipline as applyBatch_'s delete
+// branch: deleteRow shifts everything below it, so each id is re-scanned
+// rather than trusting a prebuilt index. Bottom-up so a single pass is enough
+// even when several ids land in one sheet.
+function deleteRowsByIds_(sheetKey, ids) {
+  const cfg = SHEETS[sheetKey];
+  const sheet = ss_().getSheetByName(cfg.name);
+  if (!sheet) return 0;
+  const wanted = {};
+  ids.forEach(function (id) { wanted[String(id)] = true; });
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return 0;
+  const col = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+  let removed = 0;
+  for (let i = col.length - 1; i >= 0; i--) {
+    if (wanted[String(col[i][0])]) { sheet.deleteRow(i + 2); removed++; }
+  }
+  return removed;
+}
+
 // GET is no longer used for anything — reads now go through doPost (see
 // 'getAll' below) so the bearer idToken never has to travel in a URL/query
 // string, where it'd be liable to end up in logs. Kept as a harmless no-op
@@ -1026,6 +1050,12 @@ function doPost(e) {
         : uploadKind === 'doc' ? resolveOrCreateSubfolder_(projectFolder, 'Documentos')
         : projectFolder;
       const bytes = Utilities.base64Decode(body.base64);
+      // Photos had no size ceiling anywhere — not in the picker, not here —
+      // while documents were capped client-side only. Since uploadFile now
+      // runs outside the script lock, an authenticated client could push
+      // unbounded bytes at Drive with nothing to stop it. Server-side is the
+      // only place this can actually be enforced.
+      if (bytes.length > MAX_UPLOAD_BYTES) throw new Error('arquivo grande demais');
       const blob = Utilities.newBlob(bytes, body.mimeType, body.filename);
       const file = folder.createFile(blob);
       file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
@@ -1109,6 +1139,79 @@ function doPost(e) {
         return jsonOut_({ ok: true });
       }
 
+      // Deletes photo/document RECORDS by their own id: trashes each Drive
+      // file AND removes each sheet row, together, inside this one lock.
+      //
+      // This exists because the two-step client flow it replaces could never
+      // work. The client removed the row first (via batchMulti) and then asked
+      // deleteFile to trash the file — but deleteFile deliberately refuses any
+      // fileId that is not present in Fotos/Documentos, which by then it never
+      // was. Every delete therefore threw 'arquivo não encontrado', the error
+      // was swallowed client-side, and the file stayed in Drive forever. Two
+      // documented rules were in direct contradiction and the security rule
+      // silently won.
+      //
+      // Doing it server-side also *narrows* the security surface rather than
+      // widening it: the client can no longer name a Drive file at all. It
+      // names an app record; the server resolves the row, authorizes it on
+      // both axes, and derives the fileId itself.
+      if (action === 'deletePhotos' || action === 'deleteDocumentos') {
+        const isFoto = action === 'deletePhotos';
+        const sheetKey = isFoto ? 'fotos' : 'documentos';
+        const ids = (body.ids || []).map(String);
+        if (!ids.length) return jsonOut_({ ok: true, deleted: [] });
+
+        const rows = readSheet_(sheetKey);
+        const byId = {};
+        rows.forEach(function (r) { byId[String(r.id)] = r; });
+
+        // Resolve section/project for every requested row BEFORE touching
+        // anything, so an unauthorized id in the list rejects the whole
+        // request rather than leaving a half-applied delete behind.
+        let resolveSection, resolveProject;
+        if (isFoto) {
+          const entryIdx = buildEntryProjectIndex_(readSheet_('caixaObra'), readSheet_('empreiteiro'), readSheet_('tarefas'));
+          const notaSectionById = {};
+          const notaProjectById = {};
+          readSheet_('notas').forEach(function (n) {
+            notaSectionById[n.id] = resolveNotaSection_(n);
+            notaProjectById[n.id] = resolveNotaProject_(n, entryIdx);
+          });
+          resolveSection = function (row) { return resolveFotoSection_(row, notaSectionById); };
+          resolveProject = function (row) { return resolveFotoProject_(row, entryIdx, notaProjectById); };
+        } else {
+          resolveSection = function () { return 'docs'; };
+          resolveProject = function (row) { return row.projeto; };
+        }
+
+        const targets = [];
+        ids.forEach(function (id) {
+          const row = byId[id];
+          if (!row) return; // already gone — deleting twice is not an error
+          const section = resolveSection(row);
+          const project = resolveProject(row);
+          if (!section || !can_(user, section, 'delete')) throw new Error('sem permissão para excluir arquivos');
+          if (!hasProjectAccess_(user, project)) throw new Error('sem acesso a este projeto');
+          targets.push(row);
+        });
+
+        // Trash first, then drop the rows. If trashing fails the row survives,
+        // so the app still knows about the file and can retry — the opposite
+        // ordering is what created untraceable orphans.
+        targets.forEach(function (row) {
+          if (!row.driveFileId) return;
+          try {
+            DriveApp.getFileById(row.driveFileId).setTrashed(true);
+          } catch (e) {
+            // Already trashed, or removed from Drive by hand. The row should
+            // still go — leaving it would point at nothing.
+          }
+        });
+        const deletedIds = targets.map(function (r) { return String(r.id); });
+        if (deletedIds.length) deleteRowsByIds_(sheetKey, deletedIds);
+        return jsonOut_({ ok: true, deleted: deletedIds });
+      }
+
       return jsonOut_({ error: 'Ação desconhecida: ' + action });
     } finally {
       lock.releaseLock();
@@ -1136,6 +1239,58 @@ function installDailyBackupTrigger() {
     .everyDays(1)
     .atHour(3)
     .create();
+}
+
+// ------------------------------------------------------------
+// Orphan sweeper. Trashes Drive files under a project's Fotos//Documentos/
+// subfolders that no Fotos/Documentos row references any more.
+//
+// Two things create orphans: an upload that reached Drive but whose row was
+// never written (the app was closed, or the metadata save failed and was never
+// retried), and — historically — every single delete, because the old
+// client-side flow removed the row before asking Drive to trash the file (see
+// deletePhotos above). Nothing could clean those up from the client without
+// loosening the rule that stops an unchecked fileId reaching the deploying
+// account's whole Drive, so it has to happen here.
+//
+// Deliberately conservative:
+//   - only looks inside project folders this app created, never the parent;
+//   - only touches files older than ORPHAN_MIN_AGE_MS, so it can never race an
+//     upload that is still in flight;
+//   - dry-run by default. Call sweepOrphanFiles(true) to actually trash.
+// Safe to re-run: trashing is idempotent and Drive keeps trash for 30 days.
+// ------------------------------------------------------------
+const ORPHAN_MIN_AGE_MS = 24 * 60 * 60 * 1000;
+
+function sweepOrphanFiles(commit) {
+  const referenced = {};
+  readSheet_('fotos').forEach(function (r) { if (r.driveFileId) referenced[r.driveFileId] = true; });
+  readSheet_('documentos').forEach(function (r) { if (r.driveFileId) referenced[r.driveFileId] = true; });
+
+  const cutoff = Date.now() - ORPHAN_MIN_AGE_MS;
+  const report = { scanned: 0, orphans: 0, trashed: 0, tooNew: 0, folders: [], committed: !!commit };
+
+  readSheet_('projetos').forEach(function (p) {
+    const projectFolder = findProjectFolder_(p.id);
+    if (!projectFolder) return;
+    ['Fotos', 'Documentos'].forEach(function (subName) {
+      const subs = projectFolder.getFoldersByName(subName);
+      if (!subs.hasNext()) return;
+      const folder = subs.next();
+      report.folders.push(p.id + '/' + subName);
+      const files = folder.getFiles();
+      while (files.hasNext()) {
+        const f = files.next();
+        report.scanned++;
+        if (referenced[f.getId()]) continue;
+        if (f.getDateCreated().getTime() > cutoff) { report.tooNew++; continue; }
+        report.orphans++;
+        if (commit) { f.setTrashed(true); report.trashed++; }
+      }
+    });
+  });
+  Logger.log(JSON.stringify(report));
+  return report;
 }
 
 function getOrCreateBackupFolder_() {
