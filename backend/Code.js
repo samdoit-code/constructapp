@@ -1335,9 +1335,29 @@ function sweepOrphanFiles(commit) {
   const cutoff = Date.now() - ORPHAN_MIN_AGE_MS;
   const report = { scanned: 0, orphans: 0, trashed: 0, tooNew: 0, folders: [], committed: !!commit };
 
+  function scanFolder(folder, label) {
+    report.folders.push(label);
+    const files = folder.getFiles();
+    while (files.hasNext()) {
+      const f = files.next();
+      report.scanned++;
+      if (referenced[f.getId()]) continue;
+      if (f.getDateCreated().getTime() > cutoff) { report.tooNew++; continue; }
+      report.orphans++;
+      if (commit) { f.setTrashed(true); report.trashed++; }
+    }
+  }
+
   readSheet_('projetos').forEach(function (p) {
     const projectFolder = findProjectFolder_(p.id);
     if (!projectFolder) return;
+    // Files sitting directly in the project root (not inside Fotos/
+    // Documentos) — the uploadFile fallback for a missing/unrecognized `kind`
+    // lands there deliberately, and it was invisible to this sweeper until
+    // now: getFiles() on a folder only returns that folder's own immediate
+    // files, never recursing into its subfolders, so this can't double-count
+    // anything already caught below.
+    scanFolder(projectFolder, p.id + '/(raiz)');
     ['Fotos', 'Documentos'].forEach(function (subName) {
       // Scan EVERY folder with this name, not just the first. A pre-fix race
       // (see resolveOrCreateSubfolderLocked_) let concurrent uploads create
@@ -1349,21 +1369,26 @@ function sweepOrphanFiles(commit) {
       while (subs.hasNext()) {
         const folder = subs.next();
         subCount++;
-        report.folders.push(p.id + '/' + subName + (subCount > 1 ? ' (dup ' + subCount + ')' : ''));
-        const files = folder.getFiles();
-        while (files.hasNext()) {
-          const f = files.next();
-          report.scanned++;
-          if (referenced[f.getId()]) continue;
-          if (f.getDateCreated().getTime() > cutoff) { report.tooNew++; continue; }
-          report.orphans++;
-          if (commit) { f.setTrashed(true); report.trashed++; }
-        }
+        scanFolder(folder, p.id + '/' + subName + (subCount > 1 ? ' (dup ' + subCount + ')' : ''));
       }
     });
   });
   Logger.log(JSON.stringify(report));
   return report;
+}
+
+// Zero-arg wrappers so these can be run directly from the Apps Script
+// editor's "Run" button, which always calls a function with NO arguments —
+// sweepOrphanFiles()/mergeDuplicateProjectFolders() called that way silently
+// stay in dry-run mode (commit defaults to undefined/falsy) and report as if
+// they succeeded, having actually deleted or moved nothing. This was the
+// real cause of "I ran both and nothing changed" — the functions were
+// working correctly, but every manual run through the editor was a dry run.
+function sweepOrphanFilesCommit() {
+  return sweepOrphanFiles(true);
+}
+function mergeDuplicateProjectFoldersCommit() {
+  return mergeDuplicateProjectFolders(true);
 }
 
 // ------------------------------------------------------------
