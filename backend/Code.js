@@ -304,6 +304,7 @@ function resolveFotoProject_(foto, entryIdx, notaProjectById) {
   if (foto.refTipo === 'emp') return entryIdx.emp[foto.refId];
   if (foto.refTipo === 'tasks') return entryIdx.tasks[foto.refId];
   if (foto.refTipo === 'notes') return notaProjectById[foto.refId];
+  if (foto.refTipo === 'projeto') return foto.refId; // photo added directly to a project — refId IS the project name
   return undefined;
 }
 
@@ -322,6 +323,7 @@ function resolveFotoSection_(foto, notaSectionById) {
   if (foto.refTipo === 'caixa' || foto.refTipo === 'emp') return 'lancamentos';
   if (foto.refTipo === 'tasks') return 'tarefas';
   if (foto.refTipo === 'notes') return notaSectionById[foto.refId]; // 2-hop: whatever section that note itself belongs to
+  if (foto.refTipo === 'projeto') return 'docs'; // photo added directly to a project, governed the same as Documentos
   return undefined;
 }
 
@@ -535,6 +537,20 @@ function resolveOrCreateProjectFolder_(projectName) {
   const found = findProjectFolder_(projectName);
   if (found) return found;
   return DriveApp.getFolderById(FALLBACK_FOLDER_ID).createFolder(projectName);
+}
+
+// Every project folder gets its own Fotos/Documentos subfolders on first
+// use, rather than dumping every upload straight into the project root.
+// Routed on an explicit "kind" the client sends (see uploadFile below) —
+// never inferred from "section" (a photo and a document can share the same
+// section, e.g. both 'docs') or from mimeType (a scanned receipt uploaded as
+// a "document" is legitimately an image). Existing files are never moved:
+// every reference in the app is by driveFileId, so where a file physically
+// sits has no effect on behavior — this only changes where NEW uploads land.
+function resolveOrCreateSubfolder_(parentFolder, name) {
+  const existing = parentFolder.getFoldersByName(name);
+  if (existing.hasNext()) return existing.next();
+  return parentFolder.createFolder(name);
 }
 
 // Which sheet tabs are exposed, and their column order (must match the header
@@ -867,6 +883,12 @@ function renameProject_(oldName, newName) {
   ['caixaObra', 'empreiteiro', 'tarefas', 'documentos', 'notas'].forEach(function (key) {
     renameProjectColumnBulk_(key, oldName, newName);
   });
+  // Fotos has no 'projeto' column — a project-level photo (refTipo:'projeto')
+  // carries the project name in refId instead (see resolveFotoProject_ /
+  // resolveFotoSection_). Without this, renaming a project would silently
+  // orphan every photo added directly to it, since nothing else in this
+  // function ever touches the Fotos sheet.
+  renameProjectFotoRefsBulk_(oldName, newName);
 
   // Best-effort cosmetic rename of the Drive folder too, so it keeps matching
   // the project by name (see findProjectFolder_/resolveOrCreateProjectFolder_
@@ -895,6 +917,32 @@ function renameProjectColumnBulk_(sheetKey, oldName, newName) {
     if (values[i][0] === oldName) { values[i][0] = sanitizeCell_(newName); changed = true; }
   }
   if (changed) range.setValues(values);
+}
+
+// Same one-read/one-write-per-sheet shape as renameProjectColumnBulk_ above,
+// but for Fotos specifically: it has no 'projeto' column, so a project-level
+// photo's project lives in refId (only where refTipo==='projeto' — every
+// other refTipo's refId is an entry/task/note id, never a project name, and
+// must not be touched).
+function renameProjectFotoRefsBulk_(oldName, newName) {
+  const cfg = SHEETS.fotos;
+  const sheet = ss_().getSheetByName(cfg.name);
+  if (!sheet) return;
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  const refTipoCol = cfg.cols.indexOf('refTipo') + 1;
+  const refIdCol = cfg.cols.indexOf('refId') + 1;
+  const refTipoValues = sheet.getRange(2, refTipoCol, lastRow - 1, 1).getValues();
+  const refIdRange = sheet.getRange(2, refIdCol, lastRow - 1, 1);
+  const refIdValues = refIdRange.getValues();
+  let changed = false;
+  for (let i = 0; i < refIdValues.length; i++) {
+    if (refTipoValues[i][0] === 'projeto' && refIdValues[i][0] === oldName) {
+      refIdValues[i][0] = sanitizeCell_(newName);
+      changed = true;
+    }
+  }
+  if (changed) refIdRange.setValues(refIdValues);
 }
 
 function doPost(e) {
@@ -947,6 +995,43 @@ function doPost(e) {
       return jsonOut_(filterAllByAccess_(user, out));
     }
 
+    if (action === 'uploadFile') {
+      // Deliberately OUTSIDE the script lock below — this action touches
+      // ONLY Drive, never a sheet, so it has nothing to serialize against.
+      // It used to sit inside the same lock as batchMulti/saveSheet/
+      // renameProject, which meant every upload queued behind every other
+      // upload AND behind the user's own task/entry saves — this was the
+      // stated reason concurrent client-side uploads kept getting declined
+      // (see CLAUDE.md §9): parallelizing the client just relocated the
+      // wait into lock contention. Moving this out removes that reason.
+      // Security is unchanged: the file this creates isn't visible anywhere
+      // in the app until a later batchMulti (still fully locked) attaches it
+      // to a Fotos/Documentos row, and THAT step independently re-resolves
+      // its real section from the row's own refTipo — never trusting what
+      // this action was told. body.section here is only a client-declared
+      // hint for which upload-permission bucket to check, cheap enough to
+      // keep a denied role from writing to Drive at all.
+      const uploadSection = String(body.section || '').toLowerCase().trim();
+      if (!can_(user, uploadSection, 'upload')) throw new Error('sem permissão para enviar arquivos');
+      if (!hasProjectAccess_(user, body.projeto)) throw new Error('sem acesso a este projeto');
+      const projectFolder = resolveOrCreateProjectFolder_(body.projeto);
+      // "kind" is a separate, explicit field from "section" — a photo and a
+      // document can share the same section (e.g. 'docs' for a project
+      // photo), so section alone can't say which subfolder a file belongs
+      // in. An unrecognized/missing kind falls back to the project root
+      // rather than guessing, so an old, not-yet-redeployed frontend still
+      // uploads successfully.
+      const uploadKind = String(body.kind || '').toLowerCase().trim();
+      const folder = uploadKind === 'photo' ? resolveOrCreateSubfolder_(projectFolder, 'Fotos')
+        : uploadKind === 'doc' ? resolveOrCreateSubfolder_(projectFolder, 'Documentos')
+        : projectFolder;
+      const bytes = Utilities.base64Decode(body.base64);
+      const blob = Utilities.newBlob(bytes, body.mimeType, body.filename);
+      const file = folder.createFile(blob);
+      file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+      return jsonOut_({ ok: true, fileId: file.getId(), url: file.getUrl() });
+    }
+
     const lock = LockService.getScriptLock();
     try {
       lock.waitLock(15000);
@@ -989,27 +1074,6 @@ function doPost(e) {
         if (!can_(user, 'config', 'edit')) throw new Error('sem permissão para editar');
         renameProject_(body.oldName, body.newName);
         return jsonOut_({ ok: true });
-      }
-
-      if (action === 'uploadFile') {
-        // uploadFile alone can't leak anything — the file it creates isn't
-        // visible anywhere in the app until a subsequent batchMulti attaches
-        // it to a Fotos/Documentos row, and THAT step independently resolves
-        // its real section from the row's own refTipo (see assertBatchAccess_
-        // above), never trusting what the client claims. So body.section here
-        // is only a client-declared hint for which upload-permission bucket
-        // to check — cheap enough to keep a denied role from writing to Drive
-        // at all, but the attach step is what actually enforces the true
-        // section either way.
-        const uploadSection = String(body.section || '').toLowerCase().trim();
-        if (!can_(user, uploadSection, 'upload')) throw new Error('sem permissão para enviar arquivos');
-        if (!hasProjectAccess_(user, body.projeto)) throw new Error('sem acesso a este projeto');
-        const folder = resolveOrCreateProjectFolder_(body.projeto);
-        const bytes = Utilities.base64Decode(body.base64);
-        const blob = Utilities.newBlob(bytes, body.mimeType, body.filename);
-        const file = folder.createFile(blob);
-        file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-        return jsonOut_({ ok: true, fileId: file.getId(), url: file.getUrl() });
       }
 
       if (action === 'deleteFile') {

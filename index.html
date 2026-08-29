@@ -366,7 +366,7 @@
   .note-card .origin{font-size:10.5px; font-weight:700; color:var(--blue); background:rgba(44,92,115,0.09); padding:2px 7px; border-radius:6px; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:150px;}
   .note-card .del{background:none; border:none; color:var(--red); font-size:11.5px; font-weight:600; cursor:pointer; padding:4px 2px; flex:0 0 auto;}
   .note-actions{display:flex; gap:14px; margin-top:8px; padding-top:8px; border-top:1px dashed #ecdfa8;}
-  .note-actions button{background:none; border:none; font-size:11.5px; font-weight:700; cursor:pointer; padding:2px 0;}
+  .note-actions button, .note-actions label{background:none; border:none; font-size:11.5px; font-weight:700; cursor:pointer; padding:2px 0; display:inline-block;}
   .note-actions .n-edit{color:var(--blue);}
   .note-actions .n-photo{color:var(--orange-dark);}
   .note-actions .n-del{color:var(--red);}
@@ -968,9 +968,6 @@
     <div id="notesFeed"></div>
   </div>
 
-  <!-- Shared hidden file input for adding a photo to an EXISTING standalone note in the feed -->
-  <input type="file" id="notePhotoInputExisting" accept="image/*" multiple style="display:none;">
-
   <!-- DOCUMENTOS -->
   <div class="view" id="view-docs">
     <div class="section-title">Documentos</div>
@@ -984,6 +981,13 @@
     <div id="docsList"></div>
 
     <div class="section-title">Fotos do projeto</div>
+    <div class="form-card" style="margin-bottom:14px; padding:14px;">
+      <label for="projectPhotoInput" class="btn btn-ghost btn-block photo-pick-btn" style="justify-content:center; width:100%;">
+        <svg viewBox="0 0 24 24"><path d="M4 8a2 2 0 012-2h1.2a1 1 0 00.9-.55L8.7 4.1A1 1 0 019.6 3.5h4.8a1 1 0 01.9.6l.6 1.35a1 1 0 00.9.55H18a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V8z"/><circle cx="12" cy="13" r="3.3"/></svg>
+        Adicionar foto
+      </label>
+      <input type="file" id="projectPhotoInput" accept="image/*" multiple style="display:none;">
+    </div>
     <div id="projectPhotosContainer"></div>
   </div>
 
@@ -1237,6 +1241,11 @@
   let tasks = [];
   let notes = [];
   let documentos = [];
+  // Photos added directly to a project (not attached to a lançamento, tarefa,
+  // or nota) — the Fotos sheet's refTipo:'projeto' rows, refId = the project
+  // name. A flat array, not nested under anything, since there is no parent
+  // record for these to live on.
+  let projectFotos = [];
   let tipos = [];
   let unidades = [];
   let activeProjectId = null;
@@ -1251,7 +1260,6 @@
   let draftFotos = []; // {id, criadoEm} — photos attached to a NEW (not yet saved) entry
   let draftTaskFotos = []; // same, for a NEW (not yet saved) task
   let draftNoteFotos = []; // same, for a NEW (not yet saved) standalone note
-  let notePhotoTargetId = null; // which existing standalone note the shared note-photo input targets
 
   // Files whose bytes have NOT finished their round trip to Drive yet. Keyed
   // by the record's own permanent id (uid('ph')/uid('doc')), which is minted
@@ -1262,7 +1270,17 @@
   // arrays, the cache, or a sheet row.
   const pendingUploads = new Map();
   const uploadQueue = [];               // ids, in the order they were picked
-  let uploadRunnerActive = false;
+  // A few files upload in parallel rather than one at a time. Safe now that
+  // uploadFile (Code.js) runs outside the script lock — with it inside the
+  // lock, N concurrent client uploads just relocated the wait into lock
+  // contention (the stated reason concurrency was declined twice; see
+  // CLAUDE.md §9). The per-item invariants that make a batch impossible to
+  // hang (its own try/catch, its own deadline) are unchanged and now apply
+  // per WORKER instead of per sequential iteration — a hung file still can't
+  // block the batch, it just occupies one of three workers until its
+  // deadline instead of blocking all of them.
+  const UPLOAD_CONCURRENCY = 3;
+  let activeUploadWorkers = 0;
   let uploadBatch = {total:0, done:0, failed:0, cancelled:0};
 
   const DEFAULT_TIPOS = ['Material de Construção','Ferramentas & Equipamento','Mão de obra avulsa','Transporte','Taxas & Documentação','Alimentação','Contas & Utilidades','Outros'];
@@ -1573,6 +1591,7 @@
     empreiteiro.forEach(e => persistableFotos_(e.fotos).forEach(f => rows.push({id:f.id, refTipo:'emp', refId:e.id, driveFileId:f.driveFileId||'', driveUrl:f.driveUrl||'', criadoEm:f.criadoEm, lastModified:f.lastModified})));
     tasks.forEach(t => persistableFotos_(t.fotos).forEach(f => rows.push({id:f.id, refTipo:'tasks', refId:t.id, driveFileId:f.driveFileId||'', driveUrl:f.driveUrl||'', criadoEm:f.criadoEm, lastModified:f.lastModified})));
     notes.forEach(n => persistableFotos_(n.fotos).forEach(f => rows.push({id:f.id, refTipo:'notes', refId:n.id, driveFileId:f.driveFileId||'', driveUrl:f.driveUrl||'', criadoEm:f.criadoEm, lastModified:f.lastModified})));
+    persistableFotos_(projectFotos).forEach(f => rows.push({id:f.id, refTipo:'projeto', refId:f.projectId, driveFileId:f.driveFileId||'', driveUrl:f.driveUrl||'', criadoEm:f.criadoEm, lastModified:f.lastModified}));
     return rows;
   }
   // The "Notas" tab is likewise a union: standalone notes (refTipo/refId blank,
@@ -1724,6 +1743,7 @@
     tasks.forEach(t=>{ patch(t); (t.fotos||[]).forEach(patch); });
     notes.forEach(n=>{ patch(n); (n.fotos||[]).forEach(patch); });
     documentos.forEach(patch);
+    projectFotos.forEach(patch);
   }
   async function syncSheetsNow_(sheetRowsMap, isRetry){
     // Only send sheets that actually have an upsert or delete — every save
@@ -1951,6 +1971,7 @@
     else if(key === 'tasks') tasks = previousValue;
     else if(key === 'notes') notes = previousValue;
     else if(key === 'documentos') documentos = previousValue;
+    else if(key === 'projectFotos') projectFotos = previousValue;
     else if(key === 'projects') projects = previousValue;
   }
 
@@ -1989,6 +2010,12 @@
     if(key === 'notes'){
       return await syncSheets({notas: computeNotasRows(), fotos: computeFotosRows()});
     }
+    if(key === 'projectFotos'){
+      // Fotos is a flattened tab shared across every parent type (see
+      // computeFotosRows) — a project photo has no own tab, so its save just
+      // resyncs that one shared tab, same as notes above.
+      return await syncSheets({fotos: computeFotosRows()});
+    }
     if(SHEET_TAB[key]){
       const payload = {}; payload[SHEET_TAB[key]] = toSheetRows(key, value);
       if(key==='caixaObra' || key==='empreiteiro' || key==='tasks') payload.fotos = computeFotosRows();
@@ -2008,10 +2035,10 @@
   function photoEmbedUrl(driveFileId){ return 'https://lh3.googleusercontent.com/d/' + driveFileId; }
   function pdfEmbedUrl(driveFileId){ return 'https://drive.google.com/file/d/' + driveFileId + '/preview'; }
 
-  async function uploadToDrive(dataUrl, filename, projectName, section){
+  async function uploadToDrive(dataUrl, filename, projectName, section, kind){
     try{
       const resp = await sheetsPost({
-        action: 'uploadFile', projeto: projectName || '', filename: filename, section: section,
+        action: 'uploadFile', projeto: projectName || '', filename: filename, section: section, kind: kind || '',
         mimeType: mimeFromDataUrl_(dataUrl), base64: dataUrlToBase64_(dataUrl),
       });
       return {driveFileId: resp.fileId, driveUrl: resp.url};
@@ -2081,7 +2108,7 @@
   // The cache is a performance store; anything not yet confirmed server-side
   // has no business in it.
   function cacheableState_(){
-    if(!pendingUploads.size) return {caixaObra, empreiteiro, tasks, notes, documentos};
+    if(!pendingUploads.size) return {caixaObra, empreiteiro, tasks, notes, documentos, projectFotos};
     const strip = list => list.map(rec => (rec.fotos && rec.fotos.some(f => pendingUploads.has(f.id)))
       ? {...rec, fotos: rec.fotos.filter(f => !pendingUploads.has(f.id))}
       : rec);
@@ -2089,6 +2116,7 @@
       caixaObra: strip(caixaObra), empreiteiro: strip(empreiteiro),
       tasks: strip(tasks), notes: strip(notes),
       documentos: documentos.filter(d => !pendingUploads.has(d.id)),
+      projectFotos: projectFotos.filter(f => !pendingUploads.has(f.id)),
     };
   }
   let cacheWriteScheduled = false;
@@ -2101,7 +2129,7 @@
         const snap = cacheableState_();
         localStorage.setItem(CACHE_KEY, JSON.stringify({
           projects, caixaObra: snap.caixaObra, empreiteiro: snap.empreiteiro, tasks: snap.tasks,
-          notes: snap.notes, documentos: snap.documentos, tipos, unidades,
+          notes: snap.notes, documentos: snap.documentos, projectFotos: snap.projectFotos, tipos, unidades,
           savedAt: lastSyncTime,
         }));
       }catch(e){
@@ -2127,6 +2155,7 @@
       tasks = payload.tasks || [];
       notes = payload.notes || [];
       documentos = payload.documentos || [];
+      projectFotos = payload.projectFotos || [];
       tipos = (payload.tipos && payload.tipos.length) ? payload.tipos : DEFAULT_TIPOS.slice();
       unidades = (payload.unidades && payload.unidades.length) ? payload.unidades : DEFAULT_UNIDADES.slice();
       rebuildSheetSnapshot_();
@@ -2295,6 +2324,9 @@
         id:r.id, projectId:r.projeto||null, texto:r.texto,
         fotos: fotosByRef['notes|'+r.id] || [], criadoEm:r.criadoEm, lastModified:r.lastModified,
       }));
+      projectFotos = (data.fotos||[]).filter(f => f.refTipo === 'projeto').map(f => ({
+        id:f.id, projectId:f.refId, driveFileId:f.driveFileId, driveUrl:f.driveUrl, criadoEm:f.criadoEm, lastModified:f.lastModified,
+      }));
       documentos = (data.documentos||[]).map(r => ({
         id:r.id, projectId:r.projeto, nome:r.nome, mimeType:r.mimeType,
         driveFileId:r.driveFileId, driveUrl:r.driveUrl, criadoEm:r.criadoEm, lastModified:r.lastModified,
@@ -2398,6 +2430,7 @@
     setHidden(modalNoteInput, !canSection('lancamentos','create'));
     setHidden('#modalAddNoteBtn', !canSection('lancamentos','create'));
     setHidden(document.querySelector('label[for="docFileInput"]'), !canSection('docs','upload'));
+    setHidden(document.querySelector('label[for="projectPhotoInput"]'), !canSection('docs','upload'));
     setHidden('#pdfViewDeleteBtn', !canSection('docs','delete'));
     setHidden('#addProjectBtn', !canSection('config','edit'));
   }
@@ -2460,8 +2493,11 @@
     // .notas/.fotos with it).
     if(!canView('notas')){ notes = []; }
     else if(allowedProjects !== '*'){ notes = notes.filter(n => projOk(n.projectId)); }
-    if(!canView('docs')){ documentos = []; }
-    else if(allowedProjects !== '*'){ documentos = documentos.filter(d => projOk(d.projectId)); }
+    if(!canView('docs')){ documentos = []; projectFotos = []; }
+    else if(allowedProjects !== '*'){
+      documentos = documentos.filter(d => projOk(d.projectId));
+      projectFotos = projectFotos.filter(f => projOk(f.projectId));
+    }
     if(allowedProjects !== '*'){ projects = projects.filter(p => projOk(p.id)); }
   }
 
@@ -2623,7 +2659,7 @@
         await saveKey('activeProjectId', activeProjectId);
         entriesPage = 1;
         notesPage = 1;
-        photosPagePerCat = {caixa:1, emp:1, tasks:1, notes:1};
+        photosPagePerCat = {projeto:1, caixa:1, emp:1, tasks:1, notes:1};
         docsPage = 1;
         tasksPagePerCat = {overdue:1, today:1, open:1, done:1};
         renderProjectPills();
@@ -2829,7 +2865,7 @@
     return list;
   }
   const PHOTOS_PAGE_SIZE = 24;
-  let photosPagePerCat = {caixa:1, emp:1, tasks:1, notes:1};
+  let photosPagePerCat = {projeto:1, caixa:1, emp:1, tasks:1, notes:1};
   const DOCS_PAGE_SIZE = 30;
   let docsPage = 1;
   const TASKS_PAGE_SIZE = 40;
@@ -3600,6 +3636,8 @@
   function findUploadHome_(id){
     const doc = documentos.find(d => d.id === id);
     if(doc) return {target: doc, key: 'documentos', value: documentos};
+    const pf = projectFotos.find(f => f.id === id);
+    if(pf) return {target: pf, key: 'projectFotos', value: projectFotos};
     for(const arr of [draftFotos, draftTaskFotos, draftNoteFotos]){
       const f = arr.find(x => x.id === id);
       if(f) return {target: f, key: null, value: null};   // unsaved draft: nothing to persist yet
@@ -3659,12 +3697,22 @@
     updateUploadProgressToast_();
     startUploadRunner_();
   }
+  // Tops up the worker pool to UPLOAD_CONCURRENCY (never more workers than
+  // there are queued items). Safe to call redundantly — every enqueueUpload_
+  // and retryUpload_ call calls this, but a worker already running (or
+  // already covering every queued item) makes each redundant call a no-op.
+  // Relies on JS's run-to-completion semantics: each spawned worker runs
+  // synchronously (incrementing activeUploadWorkers, shifting its own item
+  // off uploadQueue) up to its own first await, so by the time this loop's
+  // next iteration checks the counters they already reflect that worker —
+  // no two workers can ever be spawned for the same queued item.
   function startUploadRunner_(){
-    if(uploadRunnerActive) return;
-    uploadRunnerActive = true;
-    drainUploadQueue_();   // deliberately NOT awaited — the caller must never block on uploads
+    while(activeUploadWorkers < UPLOAD_CONCURRENCY && activeUploadWorkers < uploadQueue.length){
+      activeUploadWorkers++;
+      runUploadWorker_();   // deliberately NOT awaited — the caller must never block on uploads
+    }
   }
-  async function drainUploadQueue_(){
+  async function runUploadWorker_(){
     try{
       while(uploadQueue.length){
         const id = uploadQueue.shift();
@@ -3673,7 +3721,8 @@
           if(rec && !rec.cancelled) await runOneUpload_(rec);
         }catch(err){
           // Nothing thrown by one file may reach the loop — the remaining
-          // files must still be attempted.
+          // files (in this worker AND every other worker) must still be
+          // attempted.
           console.error('upload item error', id, err);
           const rec = pendingUploads.get(id);
           if(rec) markUploadFailed_(rec, err);
@@ -3681,10 +3730,12 @@
         try{ updateUploadProgressToast_(); }catch(e){}
       }
     } finally {
-      // Runs even on an unanticipated throw, so the persistent progress toast
-      // always reaches a terminal state.
-      uploadRunnerActive = false;
-      finalizeUploadBatch_();
+      // Runs even on an unanticipated throw, so this worker's slot is always
+      // released. The batch is only "done" once every worker has drained —
+      // finalizing on the last one out is what keeps the toast honest when
+      // multiple workers finish at different times.
+      activeUploadWorkers--;
+      if(activeUploadWorkers === 0) finalizeUploadBatch_();
     }
   }
 
@@ -3711,10 +3762,10 @@
   // capture). Photos only — a PDF can't be recompressed.
   async function uploadRecordToDrive_(rec){
     const dataUrl = await prepareUploadData_(rec);
-    let uploaded = await uploadToDrive(dataUrl, rec.filename, rec.projectName, rec.section);
+    let uploaded = await uploadToDrive(dataUrl, rec.filename, rec.projectName, rec.section, rec.kind);
     if(!uploaded && rec.kind === 'photo' && rec.file){
       const smaller = await withTimeout(compressImageFile(rec.file, 800, 0.5), 20000, 'photo-processing-timeout');
-      uploaded = await uploadToDrive(smaller, rec.filename, rec.projectName, rec.section);
+      uploaded = await uploadToDrive(smaller, rec.filename, rec.projectName, rec.section, rec.kind);
     }
     return uploaded;
   }
@@ -4485,7 +4536,10 @@
 
   // Existing standalone notes: a single shared hidden input is reused across every
   // note card in the feed, since the list of note-card DOM nodes is rebuilt on
-  // every render — notePhotoTargetId tracks which note the next file belongs to.
+  // every render — each card's <input> now closes over its own note id via
+  // data-note-id, read at change time from e.target itself, so there is no
+  // shared/module-level target that could go stale between a tap and the
+  // native picker returning (see onExistingNotePhotoInputChange_ below).
   function renderExistingNotePhotoThumbs(note){
     const container = document.getElementById('notephotos-' + note.id);
     if(!container) return;
@@ -4515,14 +4569,12 @@
     if(!ok) return;
     await deleteExistingNotePhotoNow(noteId, photoId);
   }
-  $('#notePhotoInputExisting').addEventListener('change', (e)=>{
+  function onExistingNotePhotoInputChange_(noteId, e){
     const files = Array.from(e.target.files);
     e.target.value = '';
-    const noteId = notePhotoTargetId;
-    notePhotoTargetId = null;
-    if(!files.length || !noteId) return;
+    if(!files.length) return;
     const n = notes.find(x=>x.id===noteId);
-    if(!n) return;
+    if(!n){ showToast('Essa nota não existe mais.'); return; }
     startPhotoUploads_(files, {
       projectName: n.projectId || activeProjectId, section: 'notas',
       attach: (metas)=>{
@@ -4532,7 +4584,7 @@
         return true;
       },
     });
-  });
+  }
 
   $('#saveNoteBtn').addEventListener('click', withGuard(async ()=>{
     const txt = $('#noteInput').value.trim();
@@ -4604,6 +4656,9 @@
       const canEditNote = canSection(itemSection, 'edit');
       const canDeleteNote = canSection(itemSection, 'delete');
       const canAddPhoto = isStandalone && canSection('notas', 'upload');
+      // The photo input/label is bound to THIS card's note id via a native
+      // <label for>, not a shared hidden input plus a remembered module
+      // variable — see the "target belongs on the element" note below.
       html += `<div class="note-card">
         <div class="txt">${escapeHTML(it.texto)}</div>
         <div class="meta-row">
@@ -4613,7 +4668,8 @@
         ${isStandalone ? `<div class="photo-thumbs" id="notephotos-${escapeHTML(it.ref.id)}"></div>` : ''}
         <div class="note-actions">
           ${canEditNote ? `<button class="n-edit" data-feed-idx="${idx}">Editar</button>` : ''}
-          ${canAddPhoto ? `<button type="button" class="n-photo" data-note-photo-trigger="${escapeHTML(it.ref.id)}">+ Foto</button>` : ''}
+          ${canAddPhoto ? `<label class="n-photo" for="notephotoinput-${escapeHTML(it.ref.id)}">+ Foto</label>
+          <input type="file" id="notephotoinput-${escapeHTML(it.ref.id)}" class="note-photo-input" data-note-id="${escapeHTML(it.ref.id)}" accept="image/*" multiple style="display:none;">` : ''}
           ${canDeleteNote ? `<button class="n-del" data-feed-idx="${idx}">Excluir</button>` : ''}
         </div>
       </div>`;
@@ -4631,11 +4687,12 @@
     box.querySelectorAll('.n-del[data-feed-idx]').forEach(el=>{
       el.addEventListener('click', ()=> deleteNoteRef(items[Number(el.dataset.feedIdx)].ref));
     });
-    box.querySelectorAll('[data-note-photo-trigger]').forEach(el=>{
-      el.addEventListener('click', ()=>{
-        notePhotoTargetId = el.dataset.notePhotoTrigger;
-        $('#notePhotoInputExisting').click();
-      });
+    // Each input closes over its own note id via data-note-id, read fresh
+    // from the element that actually fired change — nothing to go stale
+    // between the tap and the picker returning, unlike the old shared-input
+    // + module-variable design this replaced.
+    box.querySelectorAll('.note-photo-input').forEach(el=>{
+      el.addEventListener('change', (e)=> onExistingNotePhotoInputChange_(e.target.dataset.noteId, e));
     });
     for(let idx=0; idx<visibleCount; idx++){
       if(items[idx].noteObj) renderExistingNotePhotoThumbs(items[idx].noteObj);
@@ -4795,7 +4852,8 @@
   // ---------- Init render ----------
   // ---------- Documentos (project document hub) ----------
   function projectFotosGrouped(){
-    const groups = {caixa: [], emp: [], tasks: [], notes: []};
+    const groups = {projeto: [], caixa: [], emp: [], tasks: [], notes: []};
+    projectFotos.filter(f => f.projectId === activeProjectId).forEach(f => groups.projeto.push({...f, refId:f.id}));
     projEntries(caixaObra).forEach(e => (e.fotos||[]).forEach(f => groups.caixa.push({...f, refKind:'caixa', refId:e.id})));
     projEntries(empreiteiro).forEach(e => (e.fotos||[]).forEach(f => groups.emp.push({...f, refKind:'emp', refId:e.id})));
     tasks.filter(t => t.projectId === activeProjectId || !t.projectId).forEach(t => (t.fotos||[]).forEach(f => groups.tasks.push({...f, refId:t.id})));
@@ -4814,6 +4872,7 @@
     const groups = projectFotosGrouped();
     const container = $('#projectPhotosContainer');
     const cats = [
+      {key:'projeto', label:'Geral', items: groups.projeto},
       {key:'caixa', label:'Caixa da obra', items: groups.caixa},
       {key:'emp', label:'Empreiteiro', items: groups.emp},
       {key:'tasks', label:'Tarefas', items: groups.tasks},
@@ -4821,7 +4880,7 @@
     ].filter(c => c.items.length > 0);
 
     if(cats.length === 0){
-      container.innerHTML = emptyStateHTML('Nenhuma foto neste projeto ainda.', 'Fotos adicionadas em lançamentos, tarefas e notas aparecem aqui automaticamente.');
+      container.innerHTML = emptyStateHTML('Nenhuma foto neste projeto ainda.', 'Toque em "Adicionar foto" acima, ou fotos adicionadas em lançamentos, tarefas e notas aparecem aqui automaticamente.');
       return;
     }
     container.innerHTML = cats.map(c => {
@@ -4840,7 +4899,7 @@
     // standalone Notas section) — not by 'docs', which this gallery merely
     // happens to live under. Same rule the backend enforces per row; deleting
     // here has to respect it too, not just what got returned to display.
-    const CAT_SECTION = {caixa:'lancamentos', emp:'lancamentos', tasks:'tarefas', notes:'notas'};
+    const CAT_SECTION = {projeto:'docs', caixa:'lancamentos', emp:'lancamentos', tasks:'tarefas', notes:'notas'};
     cats.forEach(c => {
       const page = photosPagePerCat[c.key] || 1;
       const visibleItems = c.items.slice(0, page * PHOTOS_PAGE_SIZE);
@@ -4877,7 +4936,14 @@
     // a mirror of those photos, not a separate copy, so deleting here deletes there too.
     let driveFileId = null;
     let saveOk = true;
-    if(catKey === 'caixa' || catKey === 'emp'){
+    if(catKey === 'projeto'){
+      const prevProjectFotos = projectFotos.slice();
+      const target = projectFotos.find(f=>f.id===photoId);
+      driveFileId = target && target.driveFileId;
+      projectFotos = projectFotos.filter(f=>f.id!==photoId);
+      saveOk = await saveKey('projectFotos', projectFotos);
+      if(!saveOk) projectFotos = prevProjectFotos;
+    } else if(catKey === 'caixa' || catKey === 'emp'){
       const list = catKey === 'caixa' ? caixaObra : empreiteiro;
       const prevList = cloneState_(list);
       for(const e of list){
@@ -5089,6 +5155,25 @@
     docsPage = 1;
     renderDocsList();
     recs.forEach(r=> enqueueUpload_(r));
+  });
+
+  // A photo added directly to the project (not attached to a lançamento,
+  // tarefa, or nota) — governed by 'docs', same as documents, since it has
+  // no other natural owning section. Uses the shared photo pipeline
+  // (startPhotoUploads_), same as every other photo picker in the app.
+  $('#projectPhotoInput').addEventListener('change', (e)=>{
+    const files = Array.from(e.target.files);
+    e.target.value = '';
+    if(!files.length) return;
+    const projectId = activeProjectId;
+    startPhotoUploads_(files, {
+      projectName: projectId, section: 'docs',
+      attach: (metas)=>{
+        projectFotos.push(...metas.map(m => ({...m, projectId})));
+        photosPagePerCat.projeto = 1;
+        return true;
+      },
+    });
   });
 
   function renderAll(){
