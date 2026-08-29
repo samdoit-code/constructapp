@@ -561,11 +561,26 @@ function findProjectFolder_(projectName) {
   const existing = parent.getFoldersByName(projectName);
   return existing.hasNext() ? existing.next() : null;
 }
+// Same check-then-create race as resolveOrCreateSubfolderLocked_ below, one
+// level up: the first upload ever made to a brand-new project (one without a
+// PROJECT_FOLDERS entry) could race two concurrent uploadFile calls into
+// creating two same-named project folders. Locked for the same reason and the
+// same way — only the cheap lookup-or-create, never the upload.
 function resolveOrCreateProjectFolder_(projectName) {
   if (!projectName) return DriveApp.getFolderById(FALLBACK_FOLDER_ID);
   const found = findProjectFolder_(projectName);
   if (found) return found;
-  return DriveApp.getFolderById(FALLBACK_FOLDER_ID).createFolder(projectName);
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(15000);
+  } catch (e) { /* losing this race is fine — re-check below finds the winner's folder */ }
+  try {
+    const recheck = findProjectFolder_(projectName);
+    if (recheck) return recheck;
+    return DriveApp.getFolderById(FALLBACK_FOLDER_ID).createFolder(projectName);
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 // Every project folder gets its own Fotos/Documentos subfolders on first
@@ -576,6 +591,31 @@ function resolveOrCreateProjectFolder_(projectName) {
 // a "document" is legitimately an image). Existing files are never moved:
 // every reference in the app is by driveFileId, so where a file physically
 // sits has no effect on behavior — this only changes where NEW uploads land.
+//
+// Check-then-create, so it MUST be serialized even though uploadFile itself
+// runs outside the script lock (see the comment on that action). Without a
+// lock here, the first batch of uploads to a brand-new project's Fotos/
+// folder raced: multiple concurrent workers each saw "no Fotos folder yet"
+// and each created their own — Drive allows several folders with the same
+// name in one parent, so nothing stopped it. Reproduced live: a project
+// ended up with 3 separate "Fotos" folders after one 61-photo batch, with
+// uploads scattered across all three. The lock is held only for this cheap
+// lookup-or-create, never for the upload itself, so it doesn't reintroduce
+// the throughput problem moving uploadFile out of the lock was fixing.
+function resolveOrCreateSubfolderLocked_(parentFolder, name) {
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(15000);
+  } catch (e) {
+    // Someone else is creating a folder right now — losing this race is fine,
+    // the retry below will find what they made.
+  }
+  try {
+    return resolveOrCreateSubfolder_(parentFolder, name);
+  } finally {
+    lock.releaseLock();
+  }
+}
 function resolveOrCreateSubfolder_(parentFolder, name) {
   const existing = parentFolder.getFoldersByName(name);
   if (existing.hasNext()) return existing.next();
@@ -1071,8 +1111,8 @@ function doPost(e) {
       // rather than guessing, so an old, not-yet-redeployed frontend still
       // uploads successfully.
       const uploadKind = String(body.kind || '').toLowerCase().trim();
-      const folder = uploadKind === 'photo' ? resolveOrCreateSubfolder_(projectFolder, 'Fotos')
-        : uploadKind === 'doc' ? resolveOrCreateSubfolder_(projectFolder, 'Documentos')
+      const folder = uploadKind === 'photo' ? resolveOrCreateSubfolderLocked_(projectFolder, 'Fotos')
+        : uploadKind === 'doc' ? resolveOrCreateSubfolderLocked_(projectFolder, 'Documentos')
         : projectFolder;
       const bytes = Utilities.base64Decode(body.base64);
       // Photos had no size ceiling anywhere — not in the picker, not here —
@@ -1299,21 +1339,100 @@ function sweepOrphanFiles(commit) {
     const projectFolder = findProjectFolder_(p.id);
     if (!projectFolder) return;
     ['Fotos', 'Documentos'].forEach(function (subName) {
+      // Scan EVERY folder with this name, not just the first. A pre-fix race
+      // (see resolveOrCreateSubfolderLocked_) let concurrent uploads create
+      // duplicate same-named subfolders — stopping at the first match meant
+      // whatever landed in the other copies was invisible to the sweeper,
+      // which is why a Drive full of visible leftovers still swept to zero.
       const subs = projectFolder.getFoldersByName(subName);
-      if (!subs.hasNext()) return;
-      const folder = subs.next();
-      report.folders.push(p.id + '/' + subName);
-      const files = folder.getFiles();
-      while (files.hasNext()) {
-        const f = files.next();
-        report.scanned++;
-        if (referenced[f.getId()]) continue;
-        if (f.getDateCreated().getTime() > cutoff) { report.tooNew++; continue; }
-        report.orphans++;
-        if (commit) { f.setTrashed(true); report.trashed++; }
+      let subCount = 0;
+      while (subs.hasNext()) {
+        const folder = subs.next();
+        subCount++;
+        report.folders.push(p.id + '/' + subName + (subCount > 1 ? ' (dup ' + subCount + ')' : ''));
+        const files = folder.getFiles();
+        while (files.hasNext()) {
+          const f = files.next();
+          report.scanned++;
+          if (referenced[f.getId()]) continue;
+          if (f.getDateCreated().getTime() > cutoff) { report.tooNew++; continue; }
+          report.orphans++;
+          if (commit) { f.setTrashed(true); report.trashed++; }
+        }
       }
     });
   });
+  Logger.log(JSON.stringify(report));
+  return report;
+}
+
+// ------------------------------------------------------------
+// One-time repair for duplicate Fotos/Documentos folders created by the race
+// resolveOrCreateSubfolderLocked_ now prevents. Run manually once — safe to
+// re-run, and a no-op once nothing is duplicated any more.
+//
+// For each project, for each of Fotos/Documentos: if more than one same-named
+// folder exists, keeps the OLDEST as canonical, moves every file out of the
+// others into it (addFile + removeFile — files are never deleted, only
+// relocated), and trashes the now-empty duplicates. Nothing here touches
+// which rows point at which driveFileId, because it never needed to: every
+// reference in the app is by id, never by folder path.
+//
+// Dry-run by default, same as sweepOrphanFiles — call
+// mergeDuplicateProjectFolders(true) to actually move anything.
+// ------------------------------------------------------------
+function mergeDuplicateProjectFolders(commit) {
+  const report = { projects: [], filesMoved: 0, foldersTrashed: 0, committed: !!commit };
+
+  function mergeSameNamed(parent, label) {
+    const folders = [];
+    const it = parent.getFolders();
+    while (it.hasNext()) folders.push(it.next());
+    // Group by name — Drive lets siblings share a name, which is the whole bug.
+    const byName = {};
+    folders.forEach(function (f) {
+      const n = f.getName();
+      (byName[n] = byName[n] || []).push(f);
+    });
+    Object.keys(byName).forEach(function (name) {
+      const group = byName[name];
+      if (group.length < 2) return;
+      group.sort(function (a, b) { return a.getDateCreated().getTime() - b.getDateCreated().getTime(); });
+      const canonical = group[0];
+      const dupes = group.slice(1);
+      let moved = 0;
+      dupes.forEach(function (dupe) {
+        const files = dupe.getFiles();
+        while (files.hasNext()) {
+          const f = files.next();
+          if (commit) {
+            canonical.addFile(f);
+            dupe.removeFile(f);
+          }
+          moved++;
+        }
+      });
+      report.projects.push({
+        where: label + '/' + name,
+        duplicateFolders: dupes.length,
+        filesMoved: moved,
+      });
+      report.filesMoved += moved;
+      if (commit) {
+        dupes.forEach(function (dupe) { dupe.setTrashed(true); });
+      }
+      report.foldersTrashed += dupes.length;
+    });
+  }
+
+  readSheet_('projetos').forEach(function (p) {
+    const projectFolder = findProjectFolder_(p.id);
+    if (!projectFolder) return;
+    mergeSameNamed(projectFolder, p.id);
+  });
+  // The project folders themselves, one level up, share the same bug window.
+  mergeSameNamed(DriveApp.getFolderById(FALLBACK_FOLDER_ID), '(projeto)');
+
   Logger.log(JSON.stringify(report));
   return report;
 }
