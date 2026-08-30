@@ -531,6 +531,56 @@ function assertBatchAccess_(user, ops) {
     });
   });
 }
+// ------------------------------------------------------------
+// Usuarios.projetos is a foreign key by NAME (see the Usuarios tab schema) —
+// it stores exact project names as text, in a DIFFERENT spreadsheet from the
+// business data. Nothing kept it in step with a project rename or delete, so
+// renaming a project silently revoked every scoped user's access to it: their
+// getAll went to zero projects and zero rows, with no error anywhere and no
+// way for a non-technical user to understand or fix it.
+//
+// Both helpers are exact-match, same as hasProjectAccess_'s own indexOf — a
+// looser (case-insensitive) match here would grant or revoke access the real
+// check would not agree with. '*' is never touched: it means "all projects",
+// not a list containing this one.
+// ------------------------------------------------------------
+function rewriteUsuariosProjects_(mapFn) {
+  const sheet = authSheet_();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return 0;
+  const col = 4; // email,nome,role,projetos,ativo,criadoEm
+  const range = sheet.getRange(2, col, lastRow - 1, 1);
+  const values = range.getValues();
+  let changed = false;
+  for (let i = 0; i < values.length; i++) {
+    const raw = String(values[i][0] || '').trim();
+    if (!raw || raw === '*') continue;
+    const list = raw.split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+    const next = mapFn(list);
+    const joined = next.join(', ');
+    if (joined !== raw) { values[i][0] = joined; changed = true; }
+  }
+  if (changed) range.setValues(values);
+  return changed ? 1 : 0;
+}
+
+function renameProjectInUsuarios_(oldName, newName) {
+  return rewriteUsuariosProjects_(function (list) {
+    const out = [];
+    list.forEach(function (name) {
+      const mapped = (name === oldName) ? newName : name;
+      if (out.indexOf(mapped) === -1) out.push(mapped); // never duplicate if they already had both
+    });
+    return out;
+  });
+}
+
+function removeProjectFromUsuarios_(name) {
+  return rewriteUsuariosProjects_(function (list) {
+    return list.filter(function (p) { return p !== name; });
+  });
+}
+
 // ==================================================================
 // END AUTHORIZATION BLOCK
 // ==================================================================
@@ -559,7 +609,17 @@ const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 // of silently picking one.
 function findProjectFolder_(projectName) {
   if (!projectName) return null;
-  if (PROJECT_FOLDERS[projectName]) return DriveApp.getFolderById(PROJECT_FOLDERS[projectName]);
+  if (PROJECT_FOLDERS[projectName]) {
+    // A hardcoded legacy seed, not the backend-owned canonical id — so if it
+    // no longer resolves, falling through to the name search below is the
+    // right move, not an error. (This is NOT the stale-canonical case that
+    // lookupProjectFolder_ deliberately refuses to name-guess around: this map
+    // is only ever consulted on the 'unset' path, for a project that has never
+    // had a driveFolderId persisted.) Without this it threw a raw Drive error
+    // straight out of every upload for those two projects.
+    try { return DriveApp.getFolderById(PROJECT_FOLDERS[projectName]); }
+    catch (e) { /* seed id no longer valid — fall through to the name search */ }
+  }
   const parent = DriveApp.getFolderById(FALLBACK_FOLDER_ID);
   const existing = parent.getFoldersByName(projectName);
   return existing.hasNext() ? existing.next() : null;
@@ -596,27 +656,82 @@ function persistProjectFolderId_(projectName, folderId) {
 // for a fresh name-based guess" — that would silently create a second,
 // unrelated folder under a name that might now belong to something else.
 // It surfaces as a null folder to the caller, same as "never had one".
-function resolveProjectFolderById_(projectName) {
-  if (!projectName) return null;
-  const rows = readSheet_('projetos');
+//
+// Returns an explicit STATE, not just a folder-or-null, because the two ways
+// of "not getting a folder back" demand opposite handling and collapsing them
+// is what let a name guess sneak back in:
+//   'unset'    — no driveFolderId stored yet. A name lookup IS legitimate here
+//                (that is the self-healing backfill for pre-ID-era projects).
+//   'stale'    — an id IS stored but no longer resolves. A name lookup here
+//                could silently attach to an unrelated folder that happens to
+//                now hold the project's name, so it is NEVER attempted; the
+//                caller must surface this rather than guess.
+//   'trashed'  — the id resolves but the folder is in the Drive trash.
+//                getFolderById happily returns a trashed folder, so without
+//                this check an upload would land inside a trash tree and be
+//                purged after 30 days while its Fotos row still pointed at it.
+//   'resolved' — the canonical folder, live and usable.
+// Callers that previously wrote `resolveProjectFolderById_(x) || findProjectFolder_(x)`
+// must go through this instead: that `||` was exactly the name fallback the
+// stale case exists to prevent.
+const PROJECT_FOLDER_UNSET = 'unset';
+const PROJECT_FOLDER_STALE = 'stale';
+const PROJECT_FOLDER_TRASHED = 'trashed';
+const PROJECT_FOLDER_RESOLVED = 'resolved';
+
+function lookupProjectFolder_(projectName, projetosRows) {
+  if (!projectName) return { state: PROJECT_FOLDER_UNSET, folder: null, storedId: '' };
+  const rows = projetosRows || readSheet_('projetos');
   const row = rows.find(function (p) { return p.id === projectName; });
-  const storedId = row && row.driveFolderId;
-  if (!storedId) return null;
+  const storedId = (row && row.driveFolderId) || '';
+  if (!storedId) return { state: PROJECT_FOLDER_UNSET, folder: null, storedId: '' };
+  let folder;
   try {
-    return DriveApp.getFolderById(storedId);
+    folder = DriveApp.getFolderById(storedId);
   } catch (e) {
-    return null; // stale id — never silently fall back to a name guess here
+    return { state: PROJECT_FOLDER_STALE, folder: null, storedId: storedId };
   }
+  let trashed = false;
+  try { trashed = !!folder.isTrashed(); } catch (e) { /* older Drive shim — treat as live */ }
+  if (trashed) return { state: PROJECT_FOLDER_TRASHED, folder: folder, storedId: storedId };
+  return { state: PROJECT_FOLDER_RESOLVED, folder: folder, storedId: storedId };
+}
+
+// Resolves a project's folder for a READ-ONLY caller (the sweeper, the merge
+// repair, the audit report) without ever creating or persisting anything.
+// Honours the same stale/trashed rule as lookupProjectFolder_, and only falls
+// back to a name search for a project that has genuinely never been backfilled.
+function resolveExistingProjectFolder_(projectName, projetosRows) {
+  const found = lookupProjectFolder_(projectName, projetosRows);
+  if (found.state === PROJECT_FOLDER_UNSET) {
+    let byName = null;
+    try { byName = findProjectFolder_(projectName); } catch (e) { byName = null; }
+    return byName
+      ? { state: PROJECT_FOLDER_RESOLVED, folder: byName, storedId: '', viaName: true }
+      : { state: PROJECT_FOLDER_UNSET, folder: null, storedId: '' };
+  }
+  return found;
 }
 // Same check-then-create race as resolveOrCreateSubfolderLocked_ below, one
 // level up: the first upload ever made to a brand-new project (one without a
 // stored driveFolderId yet) could race two concurrent uploadFile calls into
 // creating two same-named project folders. Locked for the same reason and the
 // same way — only the cheap lookup-or-create-or-backfill, never the upload.
+// Thrown (rather than silently working around) when a project's canonical
+// folder id is stored but unusable. Deliberately NOT phrased as a permission
+// or auth error, so the frontend treats it as an ordinary retryable failure
+// and shows it per-file instead of signing anyone out.
+const DRIVE_FOLDER_UNAVAILABLE = 'pasta do projeto indisponível no Drive';
+
 function resolveOrCreateProjectFolder_(projectName) {
   if (!projectName) return DriveApp.getFolderById(FALLBACK_FOLDER_ID);
-  const byId = resolveProjectFolderById_(projectName);
-  if (byId) return byId;
+  const byId = lookupProjectFolder_(projectName);
+  if (byId.state === PROJECT_FOLDER_RESOLVED) return byId.folder;
+  // A stored id that is gone or in the trash is a real problem to report, not
+  // one to route around: guessing by name could attach every future upload to
+  // an unrelated folder AND overwrite the canonical id with that guess, and
+  // uploading into a trashed folder loses the files 30 days later.
+  if (byId.state !== PROJECT_FOLDER_UNSET) throw new Error(DRIVE_FOLDER_UNAVAILABLE);
   const lock = LockService.getScriptLock();
   try {
     lock.waitLock(15000);
@@ -626,8 +741,9 @@ function resolveOrCreateProjectFolder_(projectName) {
     // while we waited for the lock), THEN fall back to name/create — all
     // still under the lock, so the eventual persistProjectFolderId_ below
     // can't race a concurrent resolution for the same project.
-    const recheckById = resolveProjectFolderById_(projectName);
-    if (recheckById) return recheckById;
+    const recheckById = lookupProjectFolder_(projectName);
+    if (recheckById.state === PROJECT_FOLDER_RESOLVED) return recheckById.folder;
+    if (recheckById.state !== PROJECT_FOLDER_UNSET) throw new Error(DRIVE_FOLDER_UNAVAILABLE);
     let folder = findProjectFolder_(projectName);
     if (!folder) folder = DriveApp.getFolderById(FALLBACK_FOLDER_ID).createFolder(projectName);
     persistProjectFolderId_(projectName, folder.getId());
@@ -830,15 +946,48 @@ function writeSheet_(key, rows) {
 
   const lastRow = sheet.getLastRow();
   const existingRows = Math.max(0, lastRow - 1);
-  const values = (rows || []).map(r => cfg.cols.map(c => {
-    const v = r[c];
-    if (v === undefined || v === null) return '';
-    if (typeof v === 'boolean') return v ? 'SIM' : 'NAO';
-    return sanitizeCell_(v);
-  }));
+
+  // A whole-tab replace rewrites rows POSITIONALLY, but only across the
+  // schema's own columns — so any column a person added by hand to the right
+  // of the schema kept its original row position while the data above it
+  // shifted up, silently re-attaching every manual note to the wrong record.
+  // That was harmless while this only ever touched Projetos/Tipos/Unidades,
+  // and became a live data-corruption path the moment deleteProject_ started
+  // using it on CaixaObra/Empreiteiro/Tarefas/Notas/Fotos/Documentos.
+  //
+  // So carry those extra cells along WITH their row, keyed by column A (the
+  // id for every id-bearing sheet; the value itself for the single-column
+  // reference lists). A row that is genuinely new simply gets blanks.
+  const schemaWidth = cfg.cols.length;
+  const sheetWidth = Math.max(schemaWidth, sheet.getLastColumn());
+  const extraWidth = sheetWidth - schemaWidth;
+  const extraByKey = {};
+  if (extraWidth > 0 && existingRows > 0) {
+    const current = sheet.getRange(2, 1, existingRows, sheetWidth).getValues();
+    current.forEach(function (row) {
+      const k = String(row[0]);
+      if (k !== '') extraByKey[k] = row.slice(schemaWidth);
+    });
+  }
+  const blankExtra = [];
+  for (let i = 0; i < extraWidth; i++) blankExtra.push('');
+
+  const values = (rows || []).map(r => {
+    const base = cfg.cols.map(c => {
+      const v = r[c];
+      if (v === undefined || v === null) return '';
+      if (typeof v === 'boolean') return v ? 'SIM' : 'NAO';
+      return sanitizeCell_(v);
+    });
+    if (!extraWidth) return base;
+    // Keyed on the row's OWN key value, not the sanitized cell — sanitizeCell_
+    // can prefix an apostrophe, which would never match what was read back.
+    const key = String(r[cfg.cols[0]] === undefined || r[cfg.cols[0]] === null ? '' : r[cfg.cols[0]]);
+    return base.concat(extraByKey[key] || blankExtra);
+  });
 
   if (values.length) {
-    sheet.getRange(2, 1, values.length, cfg.cols.length).setValues(values);
+    sheet.getRange(2, 1, values.length, sheetWidth).setValues(values);
   }
   // Surplus rows must be DELETED, not merely cleared. clearContent() leaves
   // the physical rows behind, and a blank row is not inert here: readSheet_
@@ -948,7 +1097,24 @@ function findConflicts_(ops, indexes) {
     (op.upserts || []).forEach(u => {
       if (!u.expectedLastModified) return; // brand-new row, nothing to conflict with
       const rowIdx = idx.map[String(u.id)];
-      if (!rowIdx) return; // row vanished (deleted elsewhere) — treat as new
+      if (!rowIdx) {
+        // The row is GONE. This used to fall through as "treat as new", which
+        // silently re-appended it — so a device holding stale state could
+        // resurrect a record another device (or deleteProject_) had deleted,
+        // and re-creating a row of an already-deleted project left an orphan
+        // nothing could resolve or clean up.
+        //
+        // An expectedLastModified is only ever set for a row the client has
+        // actually seen the server hold (diffRows_ takes it from a snapshot
+        // built from a getAll or a confirmed write), so "it had one and the
+        // row is gone" can only mean deleted-elsewhere. Reported as its own
+        // kind of conflict so the client drops it locally instead of
+        // resurrecting it. Purely additive — an older frontend that ignores
+        // the flag just sees a conflict and stops, which is still safer than
+        // the silent resurrection it replaces.
+        conflicts.push({ sheet: op.sheet, id: u.id, deleted: true });
+        return;
+      }
       const current = idx.lastModifiedByRow[rowIdx];
       if (String(current) !== String(u.expectedLastModified)) {
         conflicts.push({ sheet: op.sheet, id: u.id, currentLastModified: current });
@@ -1089,14 +1255,27 @@ function renameProject_(oldName, newName) {
   const rowIdx = findRowIndexById_(projetosSheet, oldName);
   if (rowIdx === -1) throw new Error('projeto não encontrado');
 
-  // Resolve the Drive folder BY ID (falling back to name only for a project
-  // never backfilled yet — see resolveProjectFolderById_) BEFORE renaming the
-  // row's id below, since the id lookup only works while the row still says
-  // oldName. A manually-renamed-in-Drive folder is found correctly either
-  // way, because the id — once known — doesn't care what it's called.
+  // Usuarios.projetos FIRST, deliberately. Nothing else has been written yet,
+  // so a failure here is a clean no-op; and if the business-data rewrite below
+  // fails part-way, re-running the rename still works (the Projetos row still
+  // says oldName) and this step is idempotent — no entry matches oldName any
+  // more, so it simply changes nothing the second time.
+  renameProjectInUsuarios_(oldName, newName);
+
+  // Resolve the Drive folder BEFORE renaming the row's id below, since the id
+  // lookup only works while the row still says oldName. A manually-renamed-in-
+  // Drive folder is found correctly, because the id — once known — doesn't
+  // care what it's called. A STALE or TRASHED stored id resolves to nothing
+  // here on purpose: renaming a folder found by a name guess would rename an
+  // unrelated folder (see lookupProjectFolder_).
   let folder = null;
+  let folderNeedsBackfill = false;
   try {
-    folder = resolveProjectFolderById_(oldName) || findProjectFolder_(oldName);
+    const found = resolveExistingProjectFolder_(oldName);
+    if (found.state === PROJECT_FOLDER_RESOLVED) {
+      folder = found.folder;
+      folderNeedsBackfill = !!found.viaName; // found by name -> persist its id under the new name below
+    }
   } catch (e) { /* cosmetic only, see below */ }
 
   projetosSheet.getRange(rowIdx, 1).setValue(sanitizeCell_(newName));
@@ -1121,6 +1300,13 @@ function renameProject_(oldName, newName) {
   try {
     if (folder) folder.setName(newName);
   } catch (e) { /* cosmetic only */ }
+  // Self-healing backfill: a pre-ID-era project whose folder we just had to
+  // find by name gets its canonical id persisted now (under the NEW name, the
+  // row's current id), so nothing has to name-guess for it ever again — which
+  // is what the sweeper and the merge repair now depend on.
+  try {
+    if (folder && folderNeedsBackfill) persistProjectFolderId_(newName, folder.getId());
+  } catch (e) { /* best-effort backfill */ }
 }
 
 // One column read + (at most) one column write per sheet, regardless of row
@@ -1214,9 +1400,27 @@ function deleteProject_(name) {
   // its name (see auditProjectFolders() for surfacing name-collisions
   // instead of guessing which one is "right").
   let projectFolder = null;
+  let folderState = PROJECT_FOLDER_UNSET;
   try {
-    projectFolder = resolveProjectFolderById_(name) || findProjectFolder_(name);
+    const found = resolveExistingProjectFolder_(name);
+    folderState = found.state;
+    if (found.state === PROJECT_FOLDER_RESOLVED) projectFolder = found.folder;
   } catch (e) { /* best-effort, see step 4 below */ }
+
+  // Same ordering reasoning as renameProject_: a failure here has written
+  // nothing else yet, and a retry after a partial failure below is idempotent.
+  removeProjectFromUsuarios_(name);
+
+  // Stabilise ids BEFORE resolving what to delete. readSheet_ mints a FRESH
+  // random id for a blank-id row on every call, so the doomed-id set built
+  // from the read below would never match the ids the second read (inside
+  // deleteProjectRowsBulk_) invents — the row was reported as deleted and
+  // silently survived, pointing at a Drive file that had just been trashed
+  // along with the folder. Backfilling first makes every id stable and real.
+  // Safe here: deleteProject_ already runs inside the write lock.
+  ['fotos', 'notas', 'caixaObra', 'empreiteiro', 'tarefas', 'documentos'].forEach(function (k) {
+    backfillMissingIds_(k);
+  });
 
   // --- 1. Resolve what belongs to this project, parents still intact. ---
   const caixaObra = readSheet_('caixaObra');
@@ -1277,6 +1481,13 @@ function deleteProject_(name) {
   // half-undo) a delete that has already committed to the sheets. ---
   try {
     if (projectFolder) projectFolder.setTrashed(true);
+    else if (folderState === PROJECT_FOLDER_STALE || folderState === PROJECT_FOLDER_TRASHED) {
+      // A stored id we could not use. Deliberately NOT resolved by name — that
+      // could trash a folder belonging to something else entirely. Reported so
+      // the user is told the rows are gone but the Drive files may not be,
+      // rather than being left to assume everything was cleaned up.
+      report.driveFolderUnresolved = true;
+    }
   } catch (e) { /* rows are already gone; sweepOrphanFiles cleans up the rest */ }
 
   return report;
@@ -1427,6 +1638,13 @@ function doPost(e) {
       // row's `projeto` field.
       if (action === 'renameProject') {
         if (!can_(user, 'config', 'edit')) throw new Error('sem permissão para editar');
+        // Project scope, checked independently of the section/action above —
+        // the same two-axis rule deleteProject enforces below, and the one
+        // this action was silently missing. Without it a project-scoped user
+        // could rename a project they cannot even see, bulk-rewriting the
+        // projeto column across five sheets outside their scope (and, via
+        // renameProjectInUsuarios_, moving other people's access with it).
+        if (!hasProjectAccess_(user, String(body.oldName || '').trim())) throw new Error('sem acesso a este projeto');
         renameProject_(body.oldName, body.newName);
         return jsonOut_({ ok: true });
       }
@@ -1606,7 +1824,7 @@ function sweepOrphanFiles(commit) {
   readSheet_('documentos').forEach(function (r) { if (r.driveFileId) referenced[r.driveFileId] = true; });
 
   const cutoff = Date.now() - ORPHAN_MIN_AGE_MS;
-  const report = { scanned: 0, orphans: 0, trashed: 0, tooNew: 0, folders: [], committed: !!commit };
+  const report = { scanned: 0, orphans: 0, trashed: 0, tooNew: 0, folders: [], unresolved: [], committed: !!commit };
 
   function scanFolder(folder, label) {
     report.folders.push(label);
@@ -1621,9 +1839,18 @@ function sweepOrphanFiles(commit) {
     }
   }
 
-  readSheet_('projetos').forEach(function (p) {
-    const projectFolder = findProjectFolder_(p.id);
-    if (!projectFolder) return;
+  const projetosRows = readSheet_('projetos');
+  projetosRows.forEach(function (p) {
+    // BY ID, not by name. A project whose Drive folder was renamed by hand —
+    // the exact case driveFolderId exists to survive — used to fall out of a
+    // getFoldersByName lookup entirely, so the sweeper scanned nothing for it
+    // and reported a reassuring zero orphans while leftovers piled up.
+    const found = resolveExistingProjectFolder_(p.id, projetosRows);
+    if (found.state !== PROJECT_FOLDER_RESOLVED) {
+      if (found.state !== PROJECT_FOLDER_UNSET) report.unresolved.push({ project: p.id, reason: found.state });
+      return;
+    }
+    const projectFolder = found.folder;
     // Files sitting directly in the project root (not inside Fotos/
     // Documentos) — the uploadFile fallback for a missing/unrecognized `kind`
     // lands there deliberately, and it was invisible to this sweeper until
@@ -1680,7 +1907,21 @@ function mergeDuplicateProjectFoldersCommit() {
 // mergeDuplicateProjectFolders(true) to actually move anything.
 // ------------------------------------------------------------
 function mergeDuplicateProjectFolders(commit) {
-  const report = { projects: [], filesMoved: 0, foldersTrashed: 0, committed: !!commit };
+  const report = { projects: [], filesMoved: 0, foldersTrashed: 0, skipped: [], committed: !!commit };
+
+  // Every live project's canonical driveFolderId. Two rules come out of this
+  // set, and both exist because this function is a REPAIR tool — it must never
+  // be the thing that destroys the folder the sheet points at:
+  //   1. If a duplicate group contains a canonical folder, that folder is the
+  //      one kept, regardless of age. "Oldest wins" used to trash the stored
+  //      folder whenever the stored id happened to be a newer duplicate, and
+  //      since the sheet was never repointed, every later upload landed inside
+  //      a trashed tree and was purged 30 days later.
+  //   2. A canonical folder is never trashed as somebody else's duplicate.
+  const canonicalIds = {};
+  readSheet_('projetos').forEach(function (p) {
+    if (p.driveFolderId) canonicalIds[String(p.driveFolderId)] = p.id;
+  });
 
   function mergeSameNamed(parent, label) {
     const folders = [];
@@ -1696,8 +1937,25 @@ function mergeDuplicateProjectFolders(commit) {
       const group = byName[name];
       if (group.length < 2) return;
       group.sort(function (a, b) { return a.getDateCreated().getTime() - b.getDateCreated().getTime(); });
-      const canonical = group[0];
-      const dupes = group.slice(1);
+      // Prefer a folder the sheet actually points at over the merely-oldest one.
+      const canonicalOwned = group.filter(function (f) { return canonicalIds[f.getId()]; });
+      if (canonicalOwned.length > 1) {
+        // Two live projects' canonical folders share a name. Merging would
+        // destroy one project's files — never automate that; report it.
+        report.skipped.push({
+          where: label + '/' + name,
+          reason: 'multiple live projects claim same-named folders',
+          projects: canonicalOwned.map(function (f) { return canonicalIds[f.getId()]; }),
+        });
+        return;
+      }
+      const canonical = canonicalOwned.length === 1 ? canonicalOwned[0] : group[0];
+      const dupes = group.filter(function (f) {
+        if (f === canonical) return false;
+        if (canonicalIds[f.getId()]) return false; // another project's canonical folder — never touch it
+        return true;
+      });
+      if (!dupes.length) return;
       let moved = 0;
       dupes.forEach(function (dupe) {
         const files = dupe.getFiles();
@@ -1723,10 +1981,14 @@ function mergeDuplicateProjectFolders(commit) {
     });
   }
 
-  readSheet_('projetos').forEach(function (p) {
-    const projectFolder = findProjectFolder_(p.id);
-    if (!projectFolder) return;
-    mergeSameNamed(projectFolder, p.id);
+  const projetosRows = readSheet_('projetos');
+  projetosRows.forEach(function (p) {
+    const found = resolveExistingProjectFolder_(p.id, projetosRows); // BY ID — same reason as the sweeper above
+    if (found.state !== PROJECT_FOLDER_RESOLVED) {
+      if (found.state !== PROJECT_FOLDER_UNSET) report.skipped.push({ where: p.id, reason: found.state });
+      return;
+    }
+    mergeSameNamed(found.folder, p.id);
   });
   // The project folders themselves, one level up, share the same bug window.
   mergeSameNamed(DriveApp.getFolderById(FALLBACK_FOLDER_ID), '(projeto)');
@@ -1763,10 +2025,18 @@ function mergeDuplicateProjectFolders(commit) {
 function auditProjectFolders() {
   const liveProjects = readSheet_('projetos');
   const canonicalIdToProject = {};
+  const unresolved = []; // projects whose stored driveFolderId is stale or trashed
   liveProjects.forEach(function (p) {
     let folder = null;
     try {
-      folder = resolveProjectFolderById_(p.id) || findProjectFolder_(p.id);
+      const found = resolveExistingProjectFolder_(p.id, liveProjects);
+      if (found.state === PROJECT_FOLDER_RESOLVED) folder = found.folder;
+      else if (found.state === PROJECT_FOLDER_STALE || found.state === PROJECT_FOLDER_TRASHED) {
+        unresolved.push({ project: p.id, storedId: found.storedId, reason: found.state });
+        // Its stored id still names a real (if trashed) folder, so keep that id
+        // out of the duplicate/orphan buckets — it is not an unrelated folder.
+        if (found.storedId) canonicalIdToProject[found.storedId] = p.id;
+      }
     } catch (e) { /* left unresolved; its Drive folder (if any) reports as an orphan below */ }
     if (folder) canonicalIdToProject[folder.getId()] = p.id;
   });
@@ -1819,7 +2089,7 @@ function auditProjectFolders() {
   // canonicalCount alone (not the full list) confirms the scan actually ran
   // and saw the expected number of live projects' folders — there's nothing
   // suspicious about a canonical folder worth listing in full here.
-  const report = { canonicalCount: canonicalCount, duplicates: duplicates, orphaned: orphaned };
+  const report = { canonicalCount: canonicalCount, unresolved: unresolved, duplicates: duplicates, orphaned: orphaned };
   Logger.log(JSON.stringify(report));
   return report;
 }
@@ -1832,11 +2102,19 @@ function getOrCreateBackupFolder_() {
 }
 
 function backupSpreadsheet_() {
-  const ss = ss_();
-  const file = DriveApp.getFileById(ss.getId());
   const backupFolder = getOrCreateBackupFolder_();
   const dateStr = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd_HHmm');
-  file.makeCopy('Backup ' + dateStr, backupFolder);
+  DriveApp.getFileById(ss_().getId()).makeCopy('Backup ' + dateStr, backupFolder);
+  // The Usuarios/Papeis spreadsheet is the entire access-control configuration
+  // and lives in a DIFFERENT file, so the business-data copy above never
+  // covered it. Losing or corrupting it locks everyone out (correctly, since
+  // every check fails closed) with nothing to restore from. Best-effort and
+  // separate, so a failure to copy it can never cost us the business backup.
+  try {
+    DriveApp.getFileById(AUTH_SHEET_ID).makeCopy('Backup Usuarios ' + dateStr, backupFolder);
+  } catch (e) {
+    Logger.log('auth spreadsheet backup failed: ' + (e && e.message));
+  }
 
   // Keep the last 30 days of backups, delete anything older.
   const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);

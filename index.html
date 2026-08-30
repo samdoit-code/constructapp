@@ -1957,12 +1957,57 @@
   function rebaseConflictsAgainstServer_(conflicts){
     let rebased = false;
     (conflicts||[]).forEach(c=>{
+      if(c.deleted) return;                      // gone, not stale — see dropDeletedRows_
       if(c.currentLastModified === undefined) return;
       const rows = sheetSnapshot[c.sheet];
       const row = rows && rows.find(r=>String(r.id)===String(c.id));
       if(row){ row.lastModified = c.currentLastModified; rebased = true; }
     });
     return rebased;
+  }
+  // A conflict flagged `deleted` means the row no longer exists server-side —
+  // someone else deleted it (or the whole project it belonged to). The old
+  // backend behaviour was to treat a vanished row as new and silently
+  // re-append it, so a device holding stale state could resurrect deleted
+  // records. Re-sending it is therefore exactly the wrong response: the row
+  // has to be removed from local state, from the diff baseline, AND from the
+  // payload about to be retried, or the next diff just recreates it.
+  //
+  // Ids are unique across every sheet (prefix_timestamp_random), so one flat
+  // set and one pass over every array — including the nested .notas[]/.fotos[]
+  // the Notas/Fotos rows actually live in — reaches wherever the record sits,
+  // exactly like applyServerLastModified_.
+  function dropDeletedRows_(conflicts){
+    const gone = new Set();
+    (conflicts||[]).forEach(c=>{ if(c.deleted) gone.add(String(c.id)); });
+    if(!gone.size) return gone;
+    const keep = (list)=> list.filter(r => !gone.has(String(r.id)));
+    const keepNested = (rec)=>{
+      if(rec.notas) rec.notas = keep(rec.notas);
+      if(rec.fotos) rec.fotos = keep(rec.fotos);
+      return rec;
+    };
+    caixaObra = keep(caixaObra).map(keepNested);
+    empreiteiro = keep(empreiteiro).map(keepNested);
+    tasks = keep(tasks).map(keepNested);
+    notes = keep(notes).map(keepNested);
+    documentos = keep(documentos);
+    projectFotos = keep(projectFotos);
+    Object.keys(sheetSnapshot).forEach(sheetName=>{
+      sheetSnapshot[sheetName] = keep(sheetSnapshot[sheetName] || []);
+    });
+    gone.forEach(id=> pendingTaskChanges.delete(id));
+    return gone;
+  }
+  // Removes the same ids from a payload that is about to be retried, so the
+  // retry neither re-sends them as an upsert nor (because they are gone from
+  // the snapshot too) emits a delete for them.
+  function stripIdsFromPayload_(sheetRowsMap, gone){
+    const out = {};
+    Object.keys(sheetRowsMap).forEach(sheetName=>{
+      out[sheetName] = sheetRowsMap[sheetName].filter(r => !gone.has(String(r.id)));
+    });
+    return out;
   }
   // Writes the backend's authoritative lastModified back onto the LIVE state
   // objects (tasks/caixaObra/etc — not just sheetSnapshot's flat rows) after
@@ -2011,11 +2056,23 @@
     try{
       const resp = await sheetsPost({action:'batchMulti', ops});
       if(resp.conflict){
-        // One automatic retry with a rebased baseline — see
-        // rebaseConflictsAgainstServer_ above for why this is safe and why
-        // once is the right number of attempts.
-        if(!isRetry && rebaseConflictsAgainstServer_(resp.conflicts)){
-          return await syncSheetsNow_(sheetRowsMap, true);
+        // Two distinct situations arrive on this one branch, and they need
+        // opposite handling: a row that is merely STALE should be rebased and
+        // retried; a row the server says is DELETED must be dropped, never
+        // re-sent (re-sending it is what used to resurrect it).
+        const gone = dropDeletedRows_(resp.conflicts);
+        const rebased = rebaseConflictsAgainstServer_(resp.conflicts);
+        if(!isRetry && (gone.size || rebased)){
+          if(gone.size){
+            // Someone's edit just evaporated because the record itself is gone.
+            // Saying so is the honest outcome — silently discarding it would
+            // look identical to a successful save.
+            showToast(gone.size === 1
+              ? 'Um registro foi excluído por outra pessoa e foi removido daqui.'
+              : `${gone.size} registros foram excluídos por outra pessoa e foram removidos daqui.`, false, 4500);
+            renderAll();
+          }
+          return await syncSheetsNow_(stripIdsFromPayload_(sheetRowsMap, gone), true);
         }
         showToast('Alguns dados foram alterados por outra pessoa. Recarregue a página antes de salvar de novo.', false, 4500);
         return false;
@@ -2229,6 +2286,12 @@
       setTimeout(()=>{
         googleIdToken = null;
         clearSessionHint();
+        // Purge the local data cache on this path too. The other two
+        // revocation paths (onGoogleSignIn's catch and the manual sync button)
+        // already did; this one didn't, so a user deactivated mid-session left
+        // the business data sitting on the device. Same reasoning as there —
+        // a revoked device shouldn't keep old business data around.
+        try{ localStorage.removeItem(CACHE_KEY); }catch(e){}
         showAuthGate(String(err.message || err), true);
         renderGoogleButton(); // the slot may still hold the "Entrando..." spinner from original sign-in — must restore the actual button or there's nothing left to click
       }, 800);
@@ -2811,7 +2874,14 @@
   }
   function applyServerData_(data){
       projects = (data.projetos||[]).filter(p => p.ativo !== false).map(p => ({id: p.id, name: p.id}));
-      if(projects.length === 0) projects = [{id:'Obra Gavião', name:'Obra Gavião'}, {id:'Obra Boreal', name:'Obra Boreal'}];
+      // NO invented fallback here. There used to be a hardcoded
+      // [Obra Gavião, Obra Boreal] default for the empty case, from back when
+      // reaching zero projects was impossible. deleteProject_ made it
+      // reachable, and the result was worse than an empty screen: the app
+      // showed two projects that did not exist, and the next whole-tab
+      // Projetos save (adding a project sends the ENTIRE array) wrote both of
+      // them into the sheet for real. An empty project list is a legitimate
+      // state — every consumer below handles it (see finishLoadSetup).
 
       const fotosByRef = {};
       (data.fotos||[]).forEach(f=>{
@@ -2968,7 +3038,15 @@
   function finishLoadSetup(){
     let savedActiveId = null;
     try{ savedActiveId = JSON.parse(localStorage.getItem('cmoreira_activeProjectId') || 'null'); }catch(e){}
-    activeProjectId = (savedActiveId && projects.find(p=>p.id===savedActiveId)) ? savedActiveId : projects[0].id;
+    // projects can legitimately be empty — the last project was deleted, or
+    // this user's project scope currently matches nothing. `projects[0].id`
+    // threw a TypeError here, which propagated out of loadAll() and was caught
+    // by onGoogleSignIn as a generic "Não consegui entrar. Tente novamente." —
+    // a permanent, unrecoverable sign-in loop, because the cache that caused
+    // it was never cleared. An empty list is a state to render, not a crash.
+    activeProjectId = (savedActiveId && projects.find(p=>p.id===savedActiveId))
+      ? savedActiveId
+      : (projects.length ? projects[0].id : '');
     renderProjectPills();
     populateTipoSelect();
     populateUnidadeSelect();
@@ -4463,12 +4541,14 @@
     if(act === 'retry'){
       jobs.filter(j=>j.status==='failed'||j.status==='save-failed').forEach(j=> retryUpload_(j.id));
     } else if(act === 'discard'){
-      // Only jobs with NO Drive file are safe to drop outright. One that
-      // already reached Drive is left alone — silently forgetting it is
-      // exactly how a file becomes an orphan nobody can account for.
-      jobs.filter(j=>j.status==='failed').forEach(j=>{ discardUploadRecord_(j.id); });
-      const stillThere = Array.from(pendingUploads.values()).filter(j=>j.status==='save-failed').length;
-      if(stillThere) showToast(`${stillThere} já ${stillThere===1?'está':'estão'} no Drive — use "Reenviar" para salvar.`, false, 4200);
+      // Jobs with no Drive file are dropped outright. One that already reached
+      // Drive is dropped too, but only on an explicit discard (force) — this
+      // used to refuse, which made a permanently-failing job impossible to get
+      // rid of. Its Drive file is reclaimed by the backend's orphan sweeper.
+      const withFile = jobs.filter(j=>j.status==='save-failed').length;
+      jobs.filter(j=>j.status==='failed'||j.status==='save-failed')
+          .forEach(j=>{ discardUploadRecord_(j.id, true); });
+      if(withFile) showToast(`${withFile} ${withFile===1?'arquivo já enviado ao Drive foi descartado':'arquivos já enviados ao Drive foram descartados'} — a limpeza automática remove o que sobrou.`, false, 4200);
       refreshPhotoSurfaces_(); renderAll(); renderUploadTray_();
     } else if(act === 'cancel-queued'){
       jobs.filter(j=>j.status==='pending').forEach(j=>{ discardUploadRecord_(j.id); });
@@ -4478,9 +4558,17 @@
   // Drops a job that has no Drive file, and removes its placeholder from
   // whatever state array is holding it. Never used on a job that already
   // uploaded.
-  function discardUploadRecord_(id){
+  // `force` is for a job that already reached Drive (status 'save-failed').
+  // Normally those are protected — silently forgetting one is how a file
+  // becomes an orphan nobody can account for — but "protected" turned into
+  // "unkillable" for a job that can never succeed, so the user needs an
+  // explicit way out. The Drive file it leaves behind is precisely what
+  // sweepOrphanFiles exists to reclaim.
+  function discardUploadRecord_(id, force){
     const rec = pendingUploads.get(id);
-    if(!rec || rec.driveFileId) return false;
+    if(!rec) return false;
+    if(rec.driveFileId && !force) return false;
+    if(rec.status === 'uploading') return false; // still in flight — let it settle first
     const home = findUploadHome_(id);
     if(home){
       if(home.key === 'documentos') documentos = documentos.filter(d=>d.id!==id);
@@ -4600,6 +4688,23 @@
     if(rec.status === 'save-failed' || rec.status === 'saving'){
       const home = findUploadHome_(rec.id);
       if(home && home.target.driveFileId){ await persistUploadedRecord_(rec, home); return; }
+      // No home any more — the parent lançamento/tarefa/nota was deleted (here
+      // or on another device) while this row write was outstanding. A resumed
+      // job carries no File: the journal stores metadata only, because by then
+      // the bytes are already in Drive. Falling through to the re-upload path
+      // below would hand compressImageFile(null) to a FileReader, throw, and
+      // re-journal the job — so it came back and failed again on EVERY launch,
+      // forever, with no way to dismiss it. There is genuinely nothing left to
+      // do here: the Drive file has no record to belong to, and the backend's
+      // orphan sweeper reclaims exactly that.
+      if(!rec.file){
+        console.warn('upload resumido descartado: registro pai não existe mais', rec.id);
+        uploadBatch.cancelled++;
+        forgetUpload_(rec);   // also drops it from the journal
+        patchPhotoThumbState_(rec.id);
+        renderUploadTray_();
+        return;
+      }
     }
     rec.status = 'uploading';
     patchPhotoThumbState_(rec.id);
@@ -5731,6 +5836,16 @@
     currentUser = null;
     clearSessionHint();
     try{ localStorage.removeItem(CACHE_KEY); }catch(e){}
+    // The upload journal is per-device, not per-account, and survived sign-out
+    // — so the next person to sign in on a shared device resumed the previous
+    // user's photo job under their own token. Cancel anything still in flight
+    // and drop the journal with the rest of the session.
+    pendingUploads.forEach(rec=>{ rec.cancelled = true; releasePreview_(rec); });
+    pendingUploads.clear();
+    uploadQueue.length = 0;
+    uploadBatch = {total:0, done:0, failed:0, cancelled:0};
+    try{ localStorage.removeItem(UPLOAD_JOURNAL_KEY); }catch(e){}
+    renderUploadTray_();
     if(window.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect();
     $('#settingsModal').classList.remove('open');
     showAuthGate();
@@ -6411,9 +6526,15 @@
       googleIdToken = null;
       clearSessionHint();
       const msg = isAuthError(err) ? String(err.message) : 'Não consegui entrar. Tente novamente.';
-      if(isAuthError(err)){
-        try{ localStorage.removeItem(CACHE_KEY); }catch(e){} // don't let a revoked device keep old business data around
-      }
+      // Drop the local cache on ANY sign-in failure, not just an auth one.
+      // For an auth error the reason is "don't let a revoked device keep old
+      // business data around". For every other failure the reason is
+      // recovery: if something about the cached data itself is what broke
+      // this boot, keeping it guarantees the next attempt breaks identically,
+      // and a non-technical user has no way out short of reinstalling the
+      // app. The cache is a performance store — throwing it away costs one
+      // slower sign-in and can never lose data.
+      try{ localStorage.removeItem(CACHE_KEY); }catch(e){}
       showAuthGate(msg, true);
       renderGoogleButton();
     }
