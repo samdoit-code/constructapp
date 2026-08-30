@@ -521,12 +521,18 @@
   #activityHub.open .ah-body{display:block;}
   #activityHub .ah-prog{height:3px; background:rgba(255,255,255,0.16); border-radius:16px 16px 0 0; overflow:hidden;}
   #activityHub .ah-prog i{display:block; height:100%; background:var(--orange); transition:width .25s var(--ease);}
-  #activityHub .ah-actions{display:flex; gap:8px; padding:9px 12px 4px; flex-wrap:wrap;}
+  #activityHub .ah-actions{display:flex; gap:6px; padding:8px 10px 2px; flex-wrap:wrap;}
+  /* Small, fully-rounded pills — matching the pill/card language everywhere
+     else in the hub — instead of a solid, sharp-cornered block. A ghost
+     (outline, translucent fill) treatment reads far lighter than a filled
+     button here, where these are secondary/bulk actions, not the primary
+     thing on screen. */
   #activityHub .ah-actions button{
-    background:rgba(255,255,255,0.12); border:none; color:#fff; font-family:'Inter',sans-serif;
-    font-size:11.5px; font-weight:600; padding:7px 11px; border-radius:7px; cursor:pointer;
+    background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.18); color:rgba(255,255,255,0.85);
+    font-family:'Inter',sans-serif; font-size:10.5px; font-weight:600;
+    padding:5px 10px; border-radius:999px; cursor:pointer;
   }
-  #activityHub .ah-actions button.danger{background:rgba(179,64,47,0.55);}
+  #activityHub .ah-actions button.danger{background:rgba(179,64,47,0.14); border-color:rgba(255,140,120,0.4); color:#ffb4a2;}
   #activityHub .ah-row{display:flex; align-items:center; gap:9px; padding:6px 12px; font-size:12px;}
   #activityHub .ah-row .n{flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:rgba(255,255,255,0.82);}
   #activityHub .ah-row .s{flex:0 0 auto; font-size:10.5px; font-weight:600; letter-spacing:0.06em; text-transform:uppercase; color:rgba(255,255,255,0.55);}
