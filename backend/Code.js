@@ -719,6 +719,25 @@ function fmtDate_(val) {
   return val || '';
 }
 
+// A criadoEm/lastModified cell should always hold a plain millisecond
+// timestamp (Date.now()), never a calendar date — but Sheets can still
+// silently reinterpret ANY numeric cell as a Date if that column ever
+// inherits a date/time number format (manual reformatting, or Sheets'
+// fill-pattern extending a format from a neighboring column). If that
+// happens, getValues() hands back a Date object instead of the raw number,
+// and left alone it serializes to an ISO string over JSON — breaking
+// arithmetic sort order (`a.criadoEm - b.criadoEm` → NaN) and, for
+// lastModified specifically, permanently spurious conflict errors from
+// buildRowIndexes_'s String(current) !== String(expected) check, since a
+// Date's default String() ("Mon Sep 01 2026 ...") can never equal the
+// client's numeric baseline. Coercing via getTime() is safe unconditionally
+// — a legitimate numeric cell is never `instanceof Date`, so this only ever
+// fires on the corrupted case. Same defensive shape as fmtDate_ above, just
+// for a field that must stay a number, never become a 'yyyy-MM-dd' string.
+function coerceTimestamp_(v) {
+  return v instanceof Date ? v.getTime() : v;
+}
+
 // Reads a sheet fully into an array of objects, using the header row as keys.
 // Any row missing an "id" gets one assigned AND written back to the sheet,
 // so IDs stay stable across every future read — this is what lets you leave
@@ -739,8 +758,15 @@ function readSheet_(key) {
     const obj = {};
     cfg.cols.forEach((col, c) => {
       let v = row[c];
-      if (col === 'data') v = fmtDate_(v);
-      if (col === 'criadoEm' || col === 'lastModified') v = v || Date.now();
+      // 'prazo' (Tarefas' deadline) is exactly as date-shaped as 'data' —
+      // same fmtDate_ treatment, for the same reason: a plain 'yyyy-MM-dd'
+      // string written into a cell with no explicit text format gets
+      // silently reinterpreted by Sheets as a real date, and without this
+      // it would come back as a raw Date object → a full ISO timestamp over
+      // JSON → an Invalid Date the moment the frontend's parseDateLocal()
+      // (which expects exactly 3 '-'-separated parts) tries to parse it.
+      if (col === 'data' || col === 'prazo') v = fmtDate_(v);
+      if (col === 'criadoEm' || col === 'lastModified') v = coerceTimestamp_(v) || Date.now();
       if (col === 'feito' || col === 'ativo') v = (v === true || String(v).toUpperCase() === 'SIM' || String(v).toUpperCase() === 'TRUE');
       obj[col] = v;
     });
@@ -882,7 +908,13 @@ function buildRowIndexes_(ops) {
         if (v === '' || v === null || v === undefined) continue;
         const rowNum = i + 2;
         map[String(v)] = rowNum;
-        if (lms) lastModifiedByRow[rowNum] = lms[i][0];
+        // This reads lastModified straight off the sheet, bypassing
+        // readSheet_ entirely — coerceTimestamp_ has to be applied here too,
+        // or a Date-typed lastModified cell would flow into findConflicts_'s
+        // String(current) !== String(expected) check as a Date's default
+        // String() (e.g. "Mon Sep 01 2026 ...") and never match the client's
+        // numeric baseline, permanently conflicting every write to that row.
+        if (lms) lastModifiedByRow[rowNum] = coerceTimestamp_(lms[i][0]);
       }
     }
     indexes[op.sheet] = { sheet: sheet, map: map, lastModifiedByRow: lastModifiedByRow };
