@@ -548,12 +548,15 @@ const FALLBACK_FOLDER_ID = '1BN2no3X5zHks6F94X6elC7j1kMROH7yT'; // "Construtora 
 // the picker, so this only ever catches something abnormal.
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
-// Resolves a project's Drive folder BY NAME rather than relying only on the
-// hardcoded map above — a project added or renamed through the app's own
-// Settings screen has no entry there, and previously fell through to the
-// shared FALLBACK_FOLDER_ID silently, forever. findProjectFolder_ looks for
-// an existing same-named subfolder under the parent; resolveOrCreateProjectFolder_
-// (used by uploadFile) creates one on first use if none exists yet.
+// Resolves a project's Drive folder BY NAME — the FALLBACK path, used only
+// when a project has no stored driveFolderId yet (never touched by
+// resolveOrCreateProjectFolder_ below) or when a caller explicitly wants the
+// name-based lookup regardless of the sheet (renameProject_'s pre-ID-era
+// callers). PROJECT_FOLDERS is the same legacy map as before — those two
+// projects are just pre-seeded name lookups, not exempt from anything.
+// getFoldersByName only ever returns the FIRST match if there happen to be
+// duplicates; see auditProjectFolders() for surfacing that ambiguity instead
+// of silently picking one.
 function findProjectFolder_(projectName) {
   if (!projectName) return null;
   if (PROJECT_FOLDERS[projectName]) return DriveApp.getFolderById(PROJECT_FOLDERS[projectName]);
@@ -561,23 +564,74 @@ function findProjectFolder_(projectName) {
   const existing = parent.getFoldersByName(projectName);
   return existing.hasNext() ? existing.next() : null;
 }
+
+// Column index computed lazily (not at module top-level, which runs before
+// SHEETS below is defined) — cheap, and cols never changes at runtime.
+function projetosFolderIdCol_() {
+  return SHEETS.projetos.cols.indexOf('driveFolderId') + 1;
+}
+// Single-cell, single-row write — never writeSheet_, which would read-modify-
+// write the WHOLE tab and race a concurrent add/rename of a different
+// project. Silently a no-op if the row is gone (project deleted between the
+// lookup and this write) or the column is somehow missing.
+function persistProjectFolderId_(projectName, folderId) {
+  const sheet = ss_().getSheetByName(SHEETS.projetos.name);
+  const col = projetosFolderIdCol_();
+  if (!sheet || col < 1) return;
+  const rowIdx = findRowIndexById_(sheet, projectName);
+  if (rowIdx === -1) return;
+  sheet.getRange(rowIdx, col).setValue(folderId);
+}
+
+// THE canonical resolver — ID-first, so a folder renamed directly in Drive
+// (by a person, outside the app) has ZERO effect on finding it again: the id
+// doesn't care what the folder is currently called. Falls back to the old
+// name-based lookup only for a project that has never had its folder
+// resolved through this function before (driveFolderId still blank), and
+// self-heals by persisting whatever it finds/creates — so there is no
+// separate migration step; the existing fleet of projects backfills itself
+// the next time anything touches their folder (an upload, a rename, a
+// delete). A stored id that no longer resolves (folder trashed/deleted
+// directly in Drive) is deliberately NOT treated as "unresolved and eligible
+// for a fresh name-based guess" — that would silently create a second,
+// unrelated folder under a name that might now belong to something else.
+// It surfaces as a null folder to the caller, same as "never had one".
+function resolveProjectFolderById_(projectName) {
+  if (!projectName) return null;
+  const rows = readSheet_('projetos');
+  const row = rows.find(function (p) { return p.id === projectName; });
+  const storedId = row && row.driveFolderId;
+  if (!storedId) return null;
+  try {
+    return DriveApp.getFolderById(storedId);
+  } catch (e) {
+    return null; // stale id — never silently fall back to a name guess here
+  }
+}
 // Same check-then-create race as resolveOrCreateSubfolderLocked_ below, one
 // level up: the first upload ever made to a brand-new project (one without a
-// PROJECT_FOLDERS entry) could race two concurrent uploadFile calls into
+// stored driveFolderId yet) could race two concurrent uploadFile calls into
 // creating two same-named project folders. Locked for the same reason and the
-// same way — only the cheap lookup-or-create, never the upload.
+// same way — only the cheap lookup-or-create-or-backfill, never the upload.
 function resolveOrCreateProjectFolder_(projectName) {
   if (!projectName) return DriveApp.getFolderById(FALLBACK_FOLDER_ID);
-  const found = findProjectFolder_(projectName);
-  if (found) return found;
+  const byId = resolveProjectFolderById_(projectName);
+  if (byId) return byId;
   const lock = LockService.getScriptLock();
   try {
     lock.waitLock(15000);
   } catch (e) { /* losing this race is fine — re-check below finds the winner's folder */ }
   try {
-    const recheck = findProjectFolder_(projectName);
-    if (recheck) return recheck;
-    return DriveApp.getFolderById(FALLBACK_FOLDER_ID).createFolder(projectName);
+    // Re-check by id first (another request may have just backfilled it
+    // while we waited for the lock), THEN fall back to name/create — all
+    // still under the lock, so the eventual persistProjectFolderId_ below
+    // can't race a concurrent resolution for the same project.
+    const recheckById = resolveProjectFolderById_(projectName);
+    if (recheckById) return recheckById;
+    let folder = findProjectFolder_(projectName);
+    if (!folder) folder = DriveApp.getFolderById(FALLBACK_FOLDER_ID).createFolder(projectName);
+    persistProjectFolderId_(projectName, folder.getId());
+    return folder;
   } finally {
     lock.releaseLock();
   }
@@ -627,7 +681,14 @@ function resolveOrCreateSubfolder_(parentFolder, name) {
 // flow and need a trailing "lastModified" column; the other three (small
 // reference lists, rarely edited concurrently) still use simple whole-tab saves.
 const SHEETS = {
-  projetos:    { name: 'Projetos',    cols: ['id', 'ativo'] },
+  // driveFolderId is BACKEND-OWNED: the canonical id of this project's Drive
+  // folder, so folder resolution never depends on the folder's current NAME
+  // (which a person can change in Drive at any time, silently breaking a
+  // name lookup). It is resolved lazily and self-heals — see
+  // resolveOrCreateProjectFolder_ — and is deliberately never sent by, or
+  // accepted from, the client: the frontend's whole-tab Projetos save has no
+  // concept of it and must not be able to blank it (see saveProjetos_).
+  projetos:    { name: 'Projetos',    cols: ['id', 'ativo', 'driveFolderId'] },
   caixaObra:   { name: 'CaixaObra',   cols: ['id','projeto','data','nome','tipo','qtd','unidade','valor','fornecedor','socio','criadoEm','lastModified'], rowLevel: true },
   empreiteiro: { name: 'Empreiteiro', cols: ['id','projeto','data','nome','qtd','unidade','valor','fornecedor','socio','criadoEm','lastModified'], rowLevel: true },
   tarefas:     { name: 'Tarefas',     cols: ['id','projeto','texto','prazo','prioridade','feito','criadoEm','lastModified'], rowLevel: true },
@@ -943,14 +1004,31 @@ function doGet(e) {
 // adding a new project working without that blast radius. Renaming an
 // EXISTING project no longer goes through this path at all — see
 // renameProject_ below.
+// driveFolderId is backend-owned (see the SHEETS.projetos comment) and the
+// client has no concept of it — toSheetRows('projects', ...) on the frontend
+// only ever sends {id, ativo}. Whatever the client sends for an id that
+// already exists in the sheet gets its CURRENT driveFolderId stamped back on
+// before writing, so adding or renaming one project can never blank another
+// project's (or even its own) already-resolved folder id. A brand-new id
+// correctly starts blank — resolveOrCreateProjectFolder_ fills it in lazily
+// on first use, same as it always has for a project with no folder yet.
+function preserveProjectFolderIds_(rows) {
+  const existing = readSheet_('projetos');
+  const folderById = {};
+  existing.forEach(function (p) { folderById[p.id] = p.driveFolderId || ''; });
+  return (rows || []).map(function (r) {
+    return Object.assign({}, r, { driveFolderId: folderById[r.id] || '' });
+  });
+}
 function saveProjetos_(user, rows) {
+  const merged = preserveProjectFolderIds_(rows);
   if (user.projects === '*') {
-    writeSheet_('projetos', rows);
+    writeSheet_('projetos', merged);
     return;
   }
   const existing = readSheet_('projetos');
   const outOfScope = existing.filter(p => !hasProjectAccess_(user, p.id));
-  writeSheet_('projetos', outOfScope.concat(rows || []));
+  writeSheet_('projetos', outOfScope.concat(merged));
 }
 
 // Renames a project as ONE atomic, bulk operation — a fixed handful of
@@ -978,6 +1056,17 @@ function renameProject_(oldName, newName) {
   if (!projetosSheet) throw new Error('Aba não encontrada: ' + SHEETS.projetos.name);
   const rowIdx = findRowIndexById_(projetosSheet, oldName);
   if (rowIdx === -1) throw new Error('projeto não encontrado');
+
+  // Resolve the Drive folder BY ID (falling back to name only for a project
+  // never backfilled yet — see resolveProjectFolderById_) BEFORE renaming the
+  // row's id below, since the id lookup only works while the row still says
+  // oldName. A manually-renamed-in-Drive folder is found correctly either
+  // way, because the id — once known — doesn't care what it's called.
+  let folder = null;
+  try {
+    folder = resolveProjectFolderById_(oldName) || findProjectFolder_(oldName);
+  } catch (e) { /* cosmetic only, see below */ }
+
   projetosSheet.getRange(rowIdx, 1).setValue(sanitizeCell_(newName));
 
   ['caixaObra', 'empreiteiro', 'tarefas', 'documentos', 'notas'].forEach(function (key) {
@@ -990,12 +1079,14 @@ function renameProject_(oldName, newName) {
   // function ever touches the Fotos sheet.
   renameProjectFotoRefsBulk_(oldName, newName);
 
-  // Best-effort cosmetic rename of the Drive folder too, so it keeps matching
-  // the project by name (see findProjectFolder_/resolveOrCreateProjectFolder_
-  // above) — Drive is never the source of truth for the project name, so a
-  // failure here must not fail (or partially undo) the rename itself.
+  // Best-effort cosmetic rename of the Drive folder too, so it keeps LOOKING
+  // like the project even though the app no longer depends on its name to
+  // find it. Drive is never the source of truth for the project name, so a
+  // failure here must not fail (or partially undo) the rename itself. The
+  // row's own driveFolderId cell is untouched by this whole function (only
+  // column 1, the id, is written above) so it survives the rename intact —
+  // no re-persistence needed.
   try {
-    const folder = findProjectFolder_(oldName);
     if (folder) folder.setName(newName);
   } catch (e) { /* cosmetic only */ }
 }
@@ -1083,6 +1174,18 @@ function deleteProject_(name) {
   if (!projetosSheet) throw new Error('Aba não encontrada: ' + SHEETS.projetos.name);
   if (findRowIndexById_(projetosSheet, name) === -1) throw new Error('projeto não encontrado');
 
+  // Resolve the Drive folder BY ID now, while the Projetos row still exists
+  // (step 3 below deletes it) — falls back to name only for a project never
+  // backfilled yet. A folder renamed directly in Drive has zero effect on
+  // this once an id is known: deleteProject_ trashes exactly the one folder
+  // this project owns, never every folder that currently happens to share
+  // its name (see auditProjectFolders() for surfacing name-collisions
+  // instead of guessing which one is "right").
+  let projectFolder = null;
+  try {
+    projectFolder = resolveProjectFolderById_(name) || findProjectFolder_(name);
+  } catch (e) { /* best-effort, see step 4 below */ }
+
   // --- 1. Resolve what belongs to this project, parents still intact. ---
   const caixaObra = readSheet_('caixaObra');
   const empreiteiro = readSheet_('empreiteiro');
@@ -1141,8 +1244,7 @@ function deleteProject_(name) {
   // Drive is never the source of truth, so a failure here must not fail (or
   // half-undo) a delete that has already committed to the sheets. ---
   try {
-    const folder = findProjectFolder_(name);
-    if (folder) folder.setTrashed(true);
+    if (projectFolder) projectFolder.setTrashed(true);
   } catch (e) { /* rows are already gone; sweepOrphanFiles cleans up the rest */ }
 
   return report;
@@ -1597,6 +1699,95 @@ function mergeDuplicateProjectFolders(commit) {
   // The project folders themselves, one level up, share the same bug window.
   mergeSameNamed(DriveApp.getFolderById(FALLBACK_FOLDER_ID), '(projeto)');
 
+  Logger.log(JSON.stringify(report));
+  return report;
+}
+
+// ------------------------------------------------------------
+// Read-only reconciliation report for project-level Drive folders. STRICTLY
+// dry-run — there is no commit argument, and nothing in this function calls
+// setTrashed/deleteRow/setValue/createFolder/addFile/removeFile or any other
+// mutation. It exists to surface two things nothing else does:
+//   - a DUPLICATE: a folder sharing a live project's NAME but not its
+//     canonical driveFolderId — a leftover from the pre-lock creation race
+//     (see resolveOrCreateProjectFolder_'s history), or a second folder a
+//     person created by hand with the same name.
+//   - an ORPHAN: a folder matching no live project at all, by id or by
+//     name — almost always the Drive folder of a project deleted before
+//     deleteProject_ existed, or a project's folder left behind after a
+//     rename it predates.
+// deleteProject_ deliberately only ever trashes the ONE folder it resolves
+// by id, so it can never widen into deleting an unrelated duplicate — which
+// means duplicates and orphans accumulate here for a human to act on,
+// instead of the sweep functions guessing which folder is "right" from a
+// name match alone (see the deleteProject_ ordering note in CLAUDE.md for
+// why "looks like a match" isn't sufficient signal to automate).
+// Resolution reuses resolveProjectFolderById_/findProjectFolder_ — the same
+// read-only lookups resolveOrCreateProjectFolder_ uses before it creates or
+// persists anything — so a project that has never been backfilled is still
+// correctly recognized as "canonical" here without this function being the
+// one to backfill it.
+// ------------------------------------------------------------
+function auditProjectFolders() {
+  const liveProjects = readSheet_('projetos');
+  const canonicalIdToProject = {};
+  liveProjects.forEach(function (p) {
+    let folder = null;
+    try {
+      folder = resolveProjectFolderById_(p.id) || findProjectFolder_(p.id);
+    } catch (e) { /* left unresolved; its Drive folder (if any) reports as an orphan below */ }
+    if (folder) canonicalIdToProject[folder.getId()] = p.id;
+  });
+
+  // Immediate contents only (name + file count), not a recursive walk — this
+  // is meant to give an admin enough to decide, not to enumerate every file.
+  function describeFolder(folder) {
+    const files = folder.getFiles();
+    let fileCountInRoot = 0;
+    while (files.hasNext()) { files.next(); fileCountInRoot++; }
+    const subfolders = [];
+    const subs = folder.getFolders();
+    while (subs.hasNext()) {
+      const sub = subs.next();
+      const subFiles = sub.getFiles();
+      let subCount = 0;
+      while (subFiles.hasNext()) { subFiles.next(); subCount++; }
+      subfolders.push({ name: sub.getName(), id: sub.getId(), fileCount: subCount });
+    }
+    return {
+      name: folder.getName(),
+      id: folder.getId(),
+      createdAt: folder.getDateCreated().toISOString(),
+      fileCountInRoot: fileCountInRoot,
+      subfolders: subfolders,
+    };
+  }
+
+  const duplicates = [];
+  const orphaned = [];
+  let canonicalCount = 0;
+
+  const parent = DriveApp.getFolderById(FALLBACK_FOLDER_ID);
+  const it = parent.getFolders();
+  while (it.hasNext()) {
+    const folder = it.next();
+    const id = folder.getId();
+    const name = folder.getName();
+    if (name === 'Backups') continue; // not a project folder at all
+
+    if (canonicalIdToProject[id]) { canonicalCount++; continue; }
+    const suspectedOwner = liveProjects.find(function (p) { return p.id === name; });
+    if (suspectedOwner) {
+      duplicates.push(Object.assign({ suspectedProject: suspectedOwner.id }, describeFolder(folder)));
+    } else {
+      orphaned.push(describeFolder(folder));
+    }
+  }
+
+  // canonicalCount alone (not the full list) confirms the scan actually ran
+  // and saw the expected number of live projects' folders — there's nothing
+  // suspicious about a canonical folder worth listing in full here.
+  const report = { canonicalCount: canonicalCount, duplicates: duplicates, orphaned: orphaned };
   Logger.log(JSON.stringify(report));
   return report;
 }
