@@ -47,7 +47,7 @@
     --fs-heading:19px;    /* modal + page headings */
     --fs-num:17.5px;      /* important numeric (entry values) */
     --fs-num-lg:19.5px;   /* headline numeric (stat cards) */
-    --fs-display:30px;    /* the one big total on Painel */
+    --fs-display:25px;    /* the one big total on Painel */
     /* Numeric text: Inter with tabular figures, NOT Oswald. Oswald is a
        condensed display face — fine for headings and the big stamp total,
        genuinely hard to scan for currency at list sizes, which is what made
@@ -194,51 +194,50 @@
   .section-title .link{font-size:var(--fs-meta); color:var(--orange-dark); letter-spacing:0.01em; text-transform:none; font-weight:600; cursor:pointer;}
 
   /* Dashboard */
-  /* The Painel hero card: solid orange rather than the same cream card every
-     other component uses, so "this is the one number that matters" reads
-     instantly instead of the total needing to compete on tone with the four
-     stat cards right below it — a plain modern-SaaS "hero stat" treatment
-     (Stripe/Linear-style gradient tile), not a bigger version of .stat-card. */
+  /* The Painel hero card: still the same cream card as everywhere else in
+     the app, highlighted by a left accent bar and orange-dark number rather
+     than a filled orange block — a solid-orange version was tried first and
+     read as too aggressive/loud for a number the user looks at constantly.
+     This is the "modern SaaS minimal" version of the same idea: highlight
+     via color/weight on an otherwise-quiet card, not a second background
+     color competing with the four stat cards right below it. */
   .stamp{
     position:relative;
-    background: linear-gradient(155deg, #e8722b 0%, var(--orange) 45%, var(--orange-dark) 100%);
-    border:none;
+    background: var(--card);
+    border:1.5px solid var(--line);
+    border-left:4px solid var(--orange);
     border-radius: var(--radius);
-    box-shadow: 0 10px 26px -10px rgba(184,78,21,0.5), var(--shadow);
-    padding: 20px 18px 18px;
+    box-shadow: var(--shadow);
+    padding: 18px 18px 16px 16px;
     text-align:center;
     overflow:hidden;
   }
   .stamp::before{
     content:"";
     position:absolute; inset:0;
-    background: radial-gradient(120% 130% at 12% -15%, rgba(255,255,255,0.24), transparent 55%);
+    background: linear-gradient(135deg, rgba(224,101,31,0.07), transparent 55%);
   }
   /* The horizontal padding keeps the centred project name clear of the
      absolutely-positioned "Total geral" badge in the corner — without it the
      two collide as soon as either the label or the badge grows. */
   .stamp .label{
-    font-size:var(--fs-meta); color:rgba(255,255,255,0.88); font-weight:700; letter-spacing:0.1em; text-transform:uppercase;
+    font-size:var(--fs-meta); color:var(--ink-soft); font-weight:700; letter-spacing:0.1em; text-transform:uppercase;
     position:relative; display:flex; align-items:center; justify-content:center; gap:7px;
     padding:0 78px; min-width:0;
   }
   .stamp .label > span:last-child{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
-  .proj-dot-inline{width:9px;height:9px;border-radius:50%; flex:0 0 auto; box-shadow:0 0 0 2px rgba(255,255,255,0.3); background:#fff;}
+  .proj-dot-inline{width:9px;height:9px;border-radius:50%; flex:0 0 auto; box-shadow:0 0 0 2px rgba(0,0,0,0.05); background:var(--orange);}
   .stamp .amount{
-    font-family:'Oswald',sans-serif; font-weight:700; font-size:var(--fs-display); color:#fff;
+    font-family:'Oswald',sans-serif; font-weight:700; font-size:var(--fs-display); color:var(--orange-dark);
     margin:5px 0 0; position:relative; letter-spacing:0.01em; line-height:1.1;
-    text-shadow:0 1px 2px rgba(120,50,10,0.25);
   }
-  /* A plain translucent pill instead of the old rotated corner stamp — the
-     rotation read as a printed "stamp" gimmick against a flat cream card,
-     but against a saturated hero tile it just looked noisy. */
   .badge{
     display:inline-block; position:absolute; top:14px; right:14px;
-    border:1px solid rgba(255,255,255,0.4); color:#fff;
+    border:1.5px solid var(--orange); color:var(--orange-dark);
     font-family:'Inter',sans-serif; font-weight:700; font-size:var(--fs-eyebrow);
     letter-spacing:0.07em; text-transform:uppercase;
     padding:4px 10px; border-radius:20px; transform:none;
-    background:rgba(255,255,255,0.16);
+    background:rgba(224,101,31,0.08);
   }
 
   /* margin-bottom matches the 8px every other list item (.task-row, .entry-card
