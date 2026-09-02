@@ -557,6 +557,13 @@
   /* Capped so a large draft batch can't grow the composer over the whole page. */
   .note-composer .photo-thumbs{margin-top:0; margin-bottom:9px; max-height:150px; overflow-y:auto;}
   .note-composer .photo-select-wrap:not(:empty){margin-bottom:6px;}
+  /* .link-btn is --orange-dark, which is near-invisible on the dark bar. The
+     .photo-selbar itself carries its own cream background, so only the bare
+     "Selecionar" link needs lifting. */
+  .note-composer .photo-select-wrap .photo-select-btn{color:#f0a06a;}
+  /* The empty feed should own the space between the header and the composer,
+     not sit stranded at the top of a blank page. */
+  #notesFeed.is-empty{display:flex; flex-direction:column; justify-content:center; min-height:52vh;}
   /* While the note field has focus the iOS keyboard is up and the tab bar is
      both unreachable and stealing ~62px of the little room the keyboard
      leaves — so it's hidden for the duration and the composer drops to the
@@ -3605,6 +3612,10 @@
     // flag is set BEFORE renderAll() so renderNotesFeed() consumes it in the
     // same pass that builds the list it has to scroll to.
     if(name === 'notes') notesScrollToBottom_ = true;
+    // The tab bar is hidden by focus, restored by blur — but a navigation that
+    // happens without a blur (a programmatic switchView, a modal action) would
+    // leave it hidden with no way back. Cheap insurance against a dead end.
+    document.body.classList.remove('composing-note');
     renderAll();
     if(name !== 'notes') scrollTopNow();
   }
@@ -4261,9 +4272,14 @@
     if(!notasList || notasList.length === 0){
       return '<div style="font-size:var(--fs-body); color:var(--ink-soft); padding:4px 0 8px;">Nenhuma nota ainda.</div>';
     }
-    const sorted = [...notasList].sort((a,b)=>b.criadoEm-a.criadoEm);
+    // Same normalization the Notas feed uses, for the same reason: subtracting
+    // two date-shaped STRINGS yields NaN, and a NaN comparator silently leaves
+    // the thread in array order instead of time order. This thread stays
+    // newest-first (unlike the Notas page, which is a bottom-anchored
+    // timeline) — only the comparison is being made trustworthy here.
+    const sorted = [...notasList].sort((a,b)=> noteTs_(b.criadoEm) - noteTs_(a.criadoEm));
     return sorted.map(n => {
-      const dt = new Date(n.criadoEm);
+      const dt = new Date(noteTs_(n.criadoEm));
       const actions = [
         perms.edit ? `<button class="n-edit" data-note-edit="${n.id}">Editar</button>` : '',
         perms.delete ? `<button class="n-del" data-note-del="${n.id}">Excluir</button>` : '',
@@ -6007,6 +6023,25 @@
     return d.toLocaleDateString('pt-BR', {day:'2-digit', month:'long', year: d.getFullYear()!==n.getFullYear() ? 'numeric' : undefined});
   }
 
+  // A note's criadoEm is not guaranteed to be a number. It is normally the
+  // milliseconds the backend wrote, but a cell someone formatted as a date in
+  // the spreadsheet comes back as an ISO string, a hand-typed cell can be any
+  // text, and a blank one is stamped with Date.now() on every read. Subtracting
+  // two strings yields NaN, and a comparator that returns NaN leaves the array
+  // in whatever order it was built in — which is exactly how a feed sorted by
+  // time can silently render in sheet-insertion order instead. Normalizing once,
+  // here, is what makes the single ascending sort below trustworthy for every
+  // shape the sheet can produce.
+  function noteTs_(v){
+    if(typeof v === 'number') return isFinite(v) ? v : 0;
+    if(v instanceof Date){ const t = v.getTime(); return isFinite(t) ? t : 0; }
+    if(v === null || v === undefined || v === '') return 0;
+    const n = Number(v);
+    if(isFinite(n)) return n;             // numeric string ("1756312345678")
+    const p = Date.parse(v);              // ISO / date-shaped string
+    return isFinite(p) ? p : 0;
+  }
+
   const NOTES_PAGE_SIZE = 60;
   let notesPage = 1;
   // Set only by the two moments that should jump to the newest note — entering
@@ -6019,12 +6054,25 @@
     const view = document.getElementById('view-notes');
     if(!view || !view.classList.contains('active')) return; // switchView() re-renders fresh on entry, same guard as renderEntries()/renderDocsView()
     const items = [];
-    projEntries(notes).forEach(n => items.push({texto:n.texto, criadoEm:n.criadoEm, origin:'Nota geral', entryRef:null, ref:{origin:'standalone', id:n.id}, noteObj:n}));
-    projEntries(caixaObra).forEach(e => (e.notas||[]).forEach(n => items.push({texto:n.texto, criadoEm:n.criadoEm, origin:'Caixa da obra: ' + e.nome, entryRef:{kind:'caixa', id:e.id}, ref:{origin:'caixa', entryId:e.id, noteId:n.id}})));
-    projEntries(empreiteiro).forEach(e => (e.notas||[]).forEach(n => items.push({texto:n.texto, criadoEm:n.criadoEm, origin:'Empreiteiro: ' + e.nome, entryRef:{kind:'emp', id:e.id}, ref:{origin:'emp', entryId:e.id, noteId:n.id}})));
-    items.sort((a,b)=> b.criadoEm - a.criadoEm);
+    const push_ = (o)=>{ o.ts = noteTs_(o.criadoEm); o.seq = items.length; items.push(o); };
+    projEntries(notes).forEach(n => push_({texto:n.texto, criadoEm:n.criadoEm, origin:'Nota geral', entryRef:null, ref:{origin:'standalone', id:n.id}, noteObj:n}));
+    projEntries(caixaObra).forEach(e => (e.notas||[]).forEach(n => push_({texto:n.texto, criadoEm:n.criadoEm, origin:'Caixa da obra: ' + e.nome, entryRef:{kind:'caixa', id:e.id}, ref:{origin:'caixa', entryId:e.id, noteId:n.id}})));
+    projEntries(empreiteiro).forEach(e => (e.notas||[]).forEach(n => push_({texto:n.texto, criadoEm:n.criadoEm, origin:'Empreiteiro: ' + e.nome, entryRef:{kind:'emp', id:e.id}, ref:{origin:'emp', entryId:e.id, noteId:n.id}})));
+    // ONE ordering rule for this whole feed: ascending by normalized timestamp,
+    // so the array order IS the render order, top to bottom, oldest to newest.
+    // Nothing downstream reverses it. The `seq` tiebreak is what stops two
+    // notes that share a timestamp — routine, since a blank criadoEm in the
+    // sheet is read as Date.now() and a whole sheet read stamps many rows with
+    // the same millisecond — from swapping places between renders, which on
+    // screen reads as notes spontaneously reordering.
+    items.sort((a,b)=> (a.ts - b.ts) || (a.seq - b.seq));
 
     const box = $('#notesFeed');
+    // is-empty makes the feed fill the area between the header and the composer
+    // and centres the card in it, instead of leaving it stranded at the top of
+    // an otherwise blank page. Toggled (not only set) so it is always cleared
+    // again the moment the first note exists.
+    box.classList.toggle('is-empty', items.length === 0);
     if(items.length === 0){
       box.innerHTML = emptyStateHTML('Nenhuma nota ainda.', 'Escreva abaixo para adicionar a primeira.');
       syncNoteComposer_();
@@ -6032,24 +6080,23 @@
       return;
     }
 
-    // Same pagination approach as Lançamentos: render only what's visible, load
-    // more on demand. `items` stays newest-first so a page is always the N most
-    // RECENT notes; rendering then walks it backwards, so the oldest of the
-    // visible set is at the top and the newest sits directly above the
-    // composer — a messaging timeline, where "carregar mais" reaches further
-    // back in time and therefore belongs at the TOP, not the bottom.
+    // A page is the N most RECENT notes, which in an ascending array is the
+    // TAIL, not the head — so pagination slices from firstIdx to the end and
+    // renders in plain array order. "Carregar mais" reaches further back in
+    // time, so it sits at the TOP, above the oldest note on screen.
     const visibleCount = Math.min(notesPage * NOTES_PAGE_SIZE, items.length);
+    const firstIdx = items.length - visibleCount;
     let html = '';
     let lastLabel = null;
-    if(visibleCount < items.length){
-      html += `<button class="btn btn-ghost btn-block" id="loadMoreNotesBtn" style="margin-bottom:8px;">Carregar mais (${items.length - visibleCount} restantes)</button>`;
+    if(firstIdx > 0){
+      html += `<button class="btn btn-ghost btn-block" id="loadMoreNotesBtn" style="margin-bottom:8px;">Carregar mais (${firstIdx} restantes)</button>`;
     }
-    for(let idx=visibleCount-1; idx>=0; idx--){
+    for(let idx=firstIdx; idx<items.length; idx++){
       const it = items[idx];
       const isStandalone = it.ref.origin === 'standalone';
-      const label = dateGroupLabel(it.criadoEm);
+      const label = dateGroupLabel(it.ts);
       if(label !== lastLabel){ html += `<div class="date-group-header">${label}</div>`; lastLabel = label; }
-      const dt = new Date(it.criadoEm);
+      const dt = new Date(it.ts);
       const ts = dt.toLocaleTimeString('pt-BR', {hour:'2-digit', minute:'2-digit'});
       // A standalone note is governed by 'notas'; one attached to a
       // Lançamento (shown here too, labeled "Caixa da obra: X" / "Empreiteiro:
@@ -6106,7 +6153,7 @@
     box.querySelectorAll('.note-photo-input').forEach(el=>{
       el.addEventListener('change', (e)=> onExistingNotePhotoInputChange_(e.target.dataset.noteId, e));
     });
-    for(let idx=0; idx<visibleCount; idx++){
+    for(let idx=firstIdx; idx<items.length; idx++){
       if(items[idx].noteObj) renderExistingNotePhotoThumbs(items[idx].noteObj);
     }
     const loadMoreNotesBtn = $('#loadMoreNotesBtn');
