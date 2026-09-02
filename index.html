@@ -211,7 +211,7 @@
   /* Entry card */
   .entry-card{
     background:var(--card); border:1px solid var(--line); border-radius:12px;
-    padding:12px 14px; display:flex; align-items:center; gap:12px;
+    padding:14px 16px; display:flex; align-items:center; gap:13px;
     box-shadow: var(--shadow); cursor:pointer; transition: transform .15s var(--ease), box-shadow .15s var(--ease);
   }
   .entry-card:active{transform:scale(0.98);}
@@ -226,16 +226,16 @@
     flex:0 0 auto; width:50px; text-align:center; background:var(--paper-2);
     border-radius:9px; padding:6px 2px; border:1px solid var(--line);
   }
-  .entry-card .datechip .d{font-family:'Oswald',sans-serif; font-size:15px; font-weight:700; line-height:1;}
-  .entry-card .datechip .m{font-size:8.3px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.02em; margin-top:2px; white-space:nowrap;}
+  .entry-card .datechip .d{font-family:'Oswald',sans-serif; font-size:17px; font-weight:700; line-height:1;}
+  .entry-card .datechip .m{font-size:9.5px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.02em; margin-top:3px; white-space:nowrap;}
   .entry-card .info{flex:1; min-width:0;}
-  .entry-card .nome{font-weight:600; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; gap:6px;}
-  .entry-card .tag{font-size:9.5px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--blue); background:rgba(44,92,115,0.09); padding:2px 6px; border-radius:5px; flex:0 0 auto;}
-  .entry-card .meta{font-size:11.5px; color:var(--ink-soft); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; gap:5px;}
+  .entry-card .nome{font-weight:600; font-size:16px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; gap:6px;}
+  .entry-card .tag{font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--blue); background:rgba(44,92,115,0.09); padding:2px 6px; border-radius:5px; flex:0 0 auto;}
+  .entry-card .meta{font-size:13px; color:var(--ink-soft); margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; gap:5px;}
   .notedot{display:inline-flex; align-items:center; gap:2px; color:var(--amber); font-weight:700; flex-shrink:0;}
-  .notedot svg{width:11px;height:11px; stroke:var(--amber); fill:none; stroke-width:2.4; flex-shrink:0;}
-  .entry-card .valor{flex:0 0 auto; font-family:'Oswald',sans-serif; font-weight:600; font-size:14.5px; color:var(--ink); text-align:right;}
-  .entry-card .valor .who{display:block; font-family:'Inter',sans-serif; font-size:9.5px; font-weight:600; color:var(--ink-soft); text-transform:none; margin-top:1px;}
+  .notedot svg{width:12px;height:12px; stroke:var(--amber); fill:none; stroke-width:2.4; flex-shrink:0;}
+  .entry-card .valor{flex:0 0 auto; font-family:'Oswald',sans-serif; font-weight:600; font-size:17px; color:var(--ink); text-align:right;}
+  .entry-card .valor .who{display:block; font-family:'Inter',sans-serif; font-size:10.5px; font-weight:600; color:var(--ink-soft); text-transform:none; margin-top:2px;}
 
   /* Buttons */
   .btn{
@@ -394,11 +394,11 @@
   .note-actions .n-del{color:var(--red);}
 
   .notes-thread{margin-top:4px;}
-  .notes-thread .n-item{background:var(--paper-2); border-radius:9px; padding:9px 11px; margin-bottom:7px; font-size:13px; line-height:1.4;}
+  .notes-thread .n-item{background:var(--paper-2); border-radius:9px; padding:10px 12px; margin-bottom:7px; font-size:14.5px; line-height:1.45;}
   .notes-thread .n-item .n-item-actions{display:flex; justify-content:space-between; align-items:center; margin-top:6px;}
-  .notes-thread .n-item .n-ts{font-size:10.5px; color:var(--ink-soft);}
+  .notes-thread .n-item .n-ts{font-size:12px; color:var(--ink-soft);}
   .notes-thread .n-item .n-actions{display:flex; gap:12px;}
-  .notes-thread .n-item .n-actions button{background:none; border:none; font-size:11px; font-weight:700; cursor:pointer; padding:2px 0;}
+  .notes-thread .n-item .n-actions button{background:none; border:none; font-size:12.5px; font-weight:700; cursor:pointer; padding:2px 0;}
   .notes-thread .n-item .n-actions .n-edit{color:var(--blue);}
   .notes-thread .n-item .n-actions .n-del{color:var(--red);}
   .add-note-row{display:flex; gap:8px; margin-top:8px;}
@@ -650,12 +650,12 @@
   }
   @keyframes slideup{from{transform:translateY(24px); opacity:0.4;} to{transform:translateY(0); opacity:1;}}
   .modal-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:14px;}
-  .modal-head h2{font-size:17px; margin:0;}
+  .modal-head h2{font-size:19px; margin:0;}
   .modal-close{background:var(--paper-2); border:none; width:32px;height:32px;border-radius:50%; display:flex; align-items:center; justify-content:center; cursor:pointer;}
   .modal-close svg{width:16px;height:16px; stroke:var(--ink); stroke-width:2.4;}
-  .detail-row{display:flex; justify-content:space-between; gap:12px; padding:8px 0; border-bottom:1px solid var(--line); font-size:13.5px;}
+  .detail-row{display:flex; justify-content:space-between; gap:12px; padding:11px 0; border-bottom:1px solid var(--line); font-size:15.5px;}
   .detail-row .k{color:var(--ink-soft); font-weight:600;}
-  .detail-row .v{text-align:right;}
+  .detail-row .v{text-align:right; font-weight:600;}
 
   .settings-block{margin-bottom:20px;}
   .settings-block h3{font-size:12.5px; color:var(--ink-soft); margin:0 0 10px; letter-spacing:0.06em;}
@@ -3999,7 +3999,7 @@
     rows.push(['Fornecedor', toDisplayCase(e.fornecedor) || '—']);
     rows.push(['Pago por sócio', toDisplayCase(e.socio) || '—']);
 
-    $('#modalBody').innerHTML = `<h3 style="margin:0 0 12px; font-size:16px; text-transform:none; font-family:'Inter',sans-serif; font-weight:700;">${escapeHTML(toDisplayCase(e.nome))}</h3>` +
+    $('#modalBody').innerHTML = `<h3 style="margin:0 0 12px; font-size:18px; text-transform:none; font-family:'Inter',sans-serif; font-weight:700;">${escapeHTML(toDisplayCase(e.nome))}</h3>` +
       rows.map(r => `<div class="detail-row"><span class="k">${r[0]}</span><span class="v">${escapeHTML(r[1])}</span></div>`).join('');
 
     renderModalNotes(e.notas || []);
@@ -4016,7 +4016,7 @@
   function notesThreadHTML(notasList, perms){
     perms = perms || {edit:true, delete:true};
     if(!notasList || notasList.length === 0){
-      return '<div style="font-size:12.5px; color:var(--ink-soft); padding:4px 0 8px;">Nenhuma nota ainda.</div>';
+      return '<div style="font-size:14px; color:var(--ink-soft); padding:4px 0 8px;">Nenhuma nota ainda.</div>';
     }
     const sorted = [...notasList].sort((a,b)=>b.criadoEm-a.criadoEm);
     return sorted.map(n => {
