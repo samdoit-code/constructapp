@@ -479,8 +479,14 @@
     background:#fffbe9; border:1px solid #ecdfa8; border-left:4px solid var(--orange);
     border-radius:10px; padding:12px 14px; margin-bottom:9px; box-shadow:var(--shadow);
   }
-  .note-card .txt{font-size:var(--fs-body); white-space:pre-wrap; line-height:1.5;}
-  .note-card .meta-row{display:flex; justify-content:space-between; align-items:center; margin-top:9px; gap:8px;}
+  /* `pre-wrap` alone only wraps at whitespace, so a single unbroken token — a
+     pasted URL, a long product code, a run of characters typed without a space
+     — has nowhere to break and spills straight out of the card. overflow-wrap
+     lets the break happen mid-token as a last resort; min-width:0 is what
+     allows this block to shrink below its content's intrinsic width at all. */
+  .note-card .txt{font-size:var(--fs-body); white-space:pre-wrap; line-height:1.5; min-width:0; overflow-wrap:anywhere; word-break:break-word;}
+  .note-card .meta-row{display:flex; justify-content:space-between; align-items:center; margin-top:9px; gap:8px; min-width:0;}
+  .note-card .ts{flex:0 0 auto;}
   .note-card .ts{font-size:var(--fs-caption); color:var(--ink-soft);}
   .note-card .origin{font-size:var(--fs-eyebrow); font-weight:700; color:var(--blue); background:rgba(44,92,115,0.09); padding:2px 7px; border-radius:6px; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:150px;}
   .note-card .del{background:none; border:none; color:var(--red); font-size:var(--fs-caption); font-weight:600; cursor:pointer; padding:4px 2px; flex:0 0 auto;}
@@ -511,8 +517,11 @@
     /* Real value is measured by syncNoteComposer_() into --tabbar-h; the
        fallback is only for the very first paint, before it has run. */
     bottom:var(--tabbar-h, 62px);
-    background:var(--card); border-top:1px solid var(--line);
-    box-shadow:0 -3px 14px rgba(0,0,0,0.07);
+    /* Same --ink as the topbar: the iOS keyboard sits directly beneath this bar
+       and is itself dark, so a cream bar read as a bright stripe wedged between
+       the keyboard and the notes. Matching the header lets the two blend. */
+    background:var(--ink); border-top:1px solid rgba(255,255,255,0.10);
+    box-shadow:0 -3px 14px rgba(0,0,0,0.18);
     padding:9px 16px 10px;
   }
   .note-composer .nc-inner{max-width:640px; margin:0 auto;}
@@ -524,7 +533,7 @@
     /* 16px+ is a functional requirement, not a preference: iOS Safari zooms
        the whole page in on focus for anything smaller. */
     font-family:'Inter',sans-serif; font-size:var(--fs-title); line-height:1.4; color:var(--ink);
-    background:#fff; border:1.5px solid var(--line); border-radius:20px;
+    background:#fff; border:1.5px solid rgba(255,255,255,0.14); border-radius:20px;
     padding:9px 14px; margin:0;
     min-height:42px; max-height:132px;
     transition:border-color .12s ease;
@@ -539,9 +548,9 @@
     display:flex; align-items:center; justify-content:center;
     cursor:pointer; padding:0; border:none; touch-action:manipulation;
   }
-  .note-composer .nc-icon-btn{background:var(--paper-2); border:1.5px solid var(--line);}
-  .note-composer .nc-icon-btn svg{width:20px; height:20px; stroke:var(--ink-soft); fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round;}
-  .note-composer .nc-icon-btn:active{background:#ece5d8;}
+  .note-composer .nc-icon-btn{background:rgba(255,255,255,0.10); border:1.5px solid rgba(255,255,255,0.14);}
+  .note-composer .nc-icon-btn svg{width:20px; height:20px; stroke:#cfc8ba; fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round;}
+  .note-composer .nc-icon-btn:active{background:rgba(255,255,255,0.20);}
   .note-composer .nc-send{background:var(--orange); box-shadow:0 2px 6px rgba(224,101,31,0.35);}
   .note-composer .nc-send svg{width:20px; height:20px; stroke:#fff; fill:none; stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round;}
   .note-composer .nc-send:active{transform:translateY(1px); box-shadow:0 1px 3px rgba(224,101,31,0.35);}
@@ -553,7 +562,13 @@
      leaves — so it's hidden for the duration and the composer drops to the
      bottom edge. Purely visual: nothing about navigation state changes. */
   body.composing-note nav.tabbar{display:none;}
-  body.composing-note .note-composer{bottom:0; padding-bottom:calc(10px + var(--safe-bottom));}
+  /* NO safe-area padding here, deliberately. --safe-bottom is the home-indicator
+     inset, and while the keyboard is up the keyboard occupies that space — the
+     indicator is not drawn over the composer, so reserving room for it just
+     leaves a visible strip between the bar and the top of the keyboard. The
+     inset is only needed when the keyboard is DOWN, which is exactly when the
+     tab bar (which carries its own --safe-bottom) is back and this rule is off. */
+  body.composing-note .note-composer{bottom:0; padding-bottom:9px;}
 
   /* "Notas" / "Fotos do recibo" / "Fotos" — the sub-section labels inside the
      entry and task modals. Previously three copies of the same inline style
@@ -561,7 +576,7 @@
   .modal-sublabel{display:block; font-size:var(--fs-meta); font-weight:700; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px;}
 
   .notes-thread{margin-top:4px;}
-  .notes-thread .n-item{background:var(--paper-2); border-radius:9px; padding:11px 12px; margin-bottom:7px; font-size:var(--fs-body); line-height:1.5;}
+  .notes-thread .n-item{background:var(--paper-2); border-radius:9px; padding:11px 12px; margin-bottom:7px; font-size:var(--fs-body); line-height:1.5; min-width:0; overflow-wrap:anywhere; word-break:break-word;}
   .notes-thread .n-item .n-item-actions{display:flex; justify-content:space-between; align-items:center; margin-top:7px;}
   .notes-thread .n-item .n-ts{font-size:var(--fs-caption); color:var(--ink-soft);}
   .notes-thread .n-item .n-actions{display:flex; gap:14px;}
@@ -6062,6 +6077,18 @@
         </div>
       </div>`;
     }
+    // Chat-style stickiness: if the reader was already parked at the bottom
+    // (which is where entering the page and posting both leave them), keep them
+    // there across this re-render. Without it, ANY later repaint that changes
+    // the feed's height — a background getAll landing, a photo thumbnail
+    // resolving, an upload status patch — silently leaves the newest note
+    // below the fold, which reads exactly like "my note was posted somewhere
+    // else". Measured BEFORE innerHTML is replaced, since that is what changes
+    // the height. A reader who has scrolled up to read older notes is more
+    // than SCROLL_STICK_PX from the bottom and is deliberately left alone.
+    const scEl = document.getElementById('appScroll');
+    const SCROLL_STICK_PX = 60;
+    const wasAtBottom = !!scEl && (scEl.scrollHeight - scEl.scrollTop - scEl.clientHeight) <= SCROLL_STICK_PX;
     box.innerHTML = html;
     box.querySelectorAll('.origin[data-ref-id]').forEach(el=>{
       el.addEventListener('click', ()=> openDetail(el.dataset.refKind, el.dataset.refId));
@@ -6099,7 +6126,7 @@
     // The composer is only measurable once #view-notes is actually visible,
     // and renderNotesFeed() already runs on every entry to this page.
     syncNoteComposer_();
-    if(notesScrollToBottom_){ notesScrollToBottom_ = false; scrollNotesToBottom_(); }
+    if(notesScrollToBottom_ || wasAtBottom){ notesScrollToBottom_ = false; scrollNotesToBottom_(); }
   }
 
   // ---------- Settings ----------
