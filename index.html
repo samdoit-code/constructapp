@@ -490,6 +490,53 @@
   .note-actions .n-photo{color:var(--orange-dark);}
   .note-actions .n-del{color:var(--red);}
 
+  /* Chat-style note composer, docked above the tab bar.
+     position:fixed inside #view-notes, so .view{display:none} hides it on every
+     other page without any extra JS. Its `bottom` (tab-bar height) and the
+     feed's own bottom padding (composer height) are both MEASURED by
+     syncNoteComposer_() rather than hardcoded — the tab bar grows with the
+     safe-area inset and the composer grows with the textarea and with any
+     draft photo thumbnails, so neither is a constant. */
+  .note-composer{
+    position:fixed; left:0; right:0; bottom:0; z-index:25;
+    background:var(--card); border-top:1px solid var(--line);
+    box-shadow:0 -3px 14px rgba(0,0,0,0.07);
+    padding:9px 16px 10px;
+  }
+  .note-composer .nc-inner{max-width:640px; margin:0 auto;}
+  /* align-items:flex-end keeps the two round buttons pinned to the last line
+     as the textarea grows upward, exactly like a messaging app. */
+  .note-composer .nc-row{display:flex; align-items:flex-end; gap:8px;}
+  .note-composer textarea#noteInput{
+    flex:1; min-width:0; resize:none; overflow-y:auto;
+    /* 16px+ is a functional requirement, not a preference: iOS Safari zooms
+       the whole page in on focus for anything smaller. */
+    font-family:'Inter',sans-serif; font-size:var(--fs-title); line-height:1.4; color:var(--ink);
+    background:#fff; border:1.5px solid var(--line); border-radius:20px;
+    padding:9px 14px; margin:0;
+    min-height:42px; max-height:132px;
+    transition:border-color .12s ease;
+  }
+  .note-composer textarea#noteInput:focus{outline:none; border-color:var(--orange);}
+  /* Both controls are 42px round — the same height as the collapsed textarea,
+     so the row reads as one bar, and comfortably past the 44px-with-padding
+     touch-target floor the rest of the app holds to. */
+  .note-composer .nc-icon-btn,
+  .note-composer .nc-send{
+    flex:0 0 auto; width:42px; height:42px; border-radius:50%;
+    display:flex; align-items:center; justify-content:center;
+    cursor:pointer; padding:0; border:none; touch-action:manipulation;
+  }
+  .note-composer .nc-icon-btn{background:var(--paper-2); border:1.5px solid var(--line);}
+  .note-composer .nc-icon-btn svg{width:20px; height:20px; stroke:var(--ink-soft); fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round;}
+  .note-composer .nc-icon-btn:active{background:#ece5d8;}
+  .note-composer .nc-send{background:var(--orange); box-shadow:0 2px 6px rgba(224,101,31,0.35);}
+  .note-composer .nc-send svg{width:20px; height:20px; stroke:#fff; fill:none; stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round;}
+  .note-composer .nc-send:active{transform:translateY(1px); box-shadow:0 1px 3px rgba(224,101,31,0.35);}
+  /* Capped so a large draft batch can't grow the composer over the whole page. */
+  .note-composer .photo-thumbs{margin-top:0; margin-bottom:9px; max-height:150px; overflow-y:auto;}
+  .note-composer .photo-select-wrap:not(:empty){margin-bottom:6px;}
+
   /* "Notas" / "Fotos do recibo" / "Fotos" — the sub-section labels inside the
      entry and task modals. Previously three copies of the same inline style
      at 12.5px; one class, one size, easy to keep in step. */
@@ -1198,23 +1245,29 @@
 
   <!-- NOTAS -->
   <div class="view" id="view-notes">
-    <div class="section-title">Nova nota</div>
-    <div class="form-card" style="margin-bottom:18px;">
-      <div class="field" style="margin-bottom:10px;">
-        <textarea id="noteInput" placeholder="Escreva um lembrete, recado ou anotação sobre a obra..." style="min-height:80px;"></textarea>
-      </div>
-      <div class="field">
-        <label for="notePhotoInputNew" class="btn btn-ghost btn-sm photo-pick-btn">
-          <svg viewBox="0 0 24 24"><path d="M4 8a2 2 0 012-2h1.2a1 1 0 00.9-.55L8.7 4.1A1 1 0 019.6 3.5h4.8a1 1 0 01.9.6l.6 1.35a1 1 0 00.9.55H18a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V8z"/><circle cx="12" cy="13" r="3.3"/></svg>
-          Adicionar foto
-        </label>
-        <input type="file" id="notePhotoInputNew" accept="image/*" multiple style="display:none;">
+    <div id="notesFeed"></div>
+    <!-- Chat-style composer, docked to the bottom of the viewport just above the
+         tab bar (see .note-composer CSS + syncNoteComposer_). It is
+         position:fixed but lives INSIDE #view-notes on purpose: .view{display:none}
+         then hides it on every other page for free, with no extra show/hide
+         wiring to keep in step with switchView(). Nothing about how a note is
+         created, saved or rendered changed — only where the controls sit. -->
+    <div class="note-composer" id="noteComposer">
+      <div class="nc-inner">
         <div class="photo-select-wrap" id="notePhotoSelectWrapNew"></div>
         <div class="photo-thumbs" id="notePhotoThumbsNew"></div>
+        <div class="nc-row">
+          <label for="notePhotoInputNew" class="nc-icon-btn" title="Adicionar foto" aria-label="Adicionar foto">
+            <svg viewBox="0 0 24 24"><path d="M4 8a2 2 0 012-2h1.2a1 1 0 00.9-.55L8.7 4.1A1 1 0 019.6 3.5h4.8a1 1 0 01.9.6l.6 1.35a1 1 0 00.9.55H18a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V8z"/><circle cx="12" cy="13" r="3.3"/></svg>
+          </label>
+          <input type="file" id="notePhotoInputNew" accept="image/*" multiple style="display:none;">
+          <textarea id="noteInput" rows="1" placeholder="Escrever uma nota..."></textarea>
+          <button class="nc-send" id="saveNoteBtn" title="Adicionar nota" aria-label="Adicionar nota">
+            <svg viewBox="0 0 24 24"><path d="M4 12h13"/><path d="M13 6l6 6-6 6"/></svg>
+          </button>
+        </div>
       </div>
-      <button class="btn btn-primary btn-block" id="saveNoteBtn">Adicionar nota</button>
     </div>
-    <div id="notesFeed"></div>
   </div>
 
   <!-- DOCUMENTOS -->
@@ -3421,15 +3474,41 @@
     if(!bar || !sc) return;
     sc.style.paddingTop = bar.offsetHeight + 'px';
   }
+  // The notes composer is docked above the tab bar, so it has to track the
+  // tab bar's measured height (which grows with the safe-area inset), and the
+  // notes feed has to be padded by the composer's own measured height (which
+  // grows with the textarea and with draft photo thumbnails). Both measured,
+  // never hardcoded — same reasoning as syncTopbarOffset above.
+  function syncNoteComposer_(){
+    const comp = document.getElementById('noteComposer');
+    const feed = document.getElementById('notesFeed');
+    if(!comp || !feed) return;
+    const bar = document.querySelector('nav.tabbar');
+    comp.style.bottom = (bar ? bar.offsetHeight : 0) + 'px';
+    feed.style.paddingBottom = (comp.offsetHeight + 14) + 'px';
+  }
+  // Grows the composer one line at a time up to the CSS max-height, then
+  // scrolls internally — the WhatsApp behaviour. Re-syncs the feed padding on
+  // every change, since the composer just got taller/shorter.
+  function autoGrowNoteInput_(){
+    const ta = document.getElementById('noteInput');
+    if(!ta) return;
+    ta.style.height = 'auto';
+    ta.style.height = ta.scrollHeight + 'px';
+    syncNoteComposer_();
+  }
+
   // The activity hub sits just below the topbar (see syncTrayOffset), so it
   // has to track the SAME measured height the content offset does — one
   // observer drives both.
   if(window.ResizeObserver){
     const bar = document.querySelector('.topbar');
     if(bar) new ResizeObserver(()=>{ syncTopbarOffset(); syncTrayOffset(); }).observe(bar);
+    const tabs = document.querySelector('nav.tabbar');
+    if(tabs) new ResizeObserver(()=> syncNoteComposer_()).observe(tabs);
   }
-  window.addEventListener('orientationchange', ()=> setTimeout(()=>{ syncTopbarOffset(); syncTrayOffset(); }, 150));
-  window.addEventListener('resize', ()=>{ syncTopbarOffset(); syncTrayOffset(); });
+  window.addEventListener('orientationchange', ()=> setTimeout(()=>{ syncTopbarOffset(); syncTrayOffset(); syncNoteComposer_(); }, 150));
+  window.addEventListener('resize', ()=>{ syncTopbarOffset(); syncTrayOffset(); syncNoteComposer_(); });
   syncTopbarOffset();
   $('#photoSelectToggle').addEventListener('click', ()=>{
     photoSelectMode = !photoSelectMode;
@@ -5676,6 +5755,9 @@
       onView: (id, dataUrl)=> openPhotoLightbox(id, dataUrl, ()=> deleteNoteDraftPhotoNow(id)),
       onDelete: (id)=> deleteNoteDraftPhotoWithConfirm(id),
     });
+    // Draft thumbnails live inside the docked composer, so adding/removing
+    // one changes its height — the feed's bottom padding has to follow.
+    syncNoteComposer_();
   }
   async function deleteNoteDraftPhotoNow(id){
     const ok = await removeOnePhoto_(id,
@@ -5798,6 +5880,7 @@
     });
   }
 
+  $('#noteInput').addEventListener('input', autoGrowNoteInput_);
   $('#saveNoteBtn').addEventListener('click', withGuard(async ()=>{
     const txt = $('#noteInput').value.trim();
     if(!txt){ showToast('Escreva algo antes de salvar.'); return; }
@@ -5808,7 +5891,11 @@
     if(saveOk10){
       draftNoteFotos = []; // now owned by the saved note — clear without deleting their blobs
       $('#noteInput').value = '';
+      autoGrowNoteInput_(); // collapse the composer back to one row
       notesPage = 1;
+      // The feed is newest-first (scroll DOWN for older notes), so the note
+      // just written lands at the top — bring it into view from the composer.
+      scrollTopNow();
       showToast('Nota adicionada.');
     } else {
       // Nothing was actually saved — keep the text and draft photos so the
@@ -5845,7 +5932,8 @@
 
     const box = $('#notesFeed');
     if(items.length === 0){
-      box.innerHTML = emptyStateHTML('Nenhuma nota ainda.', 'Escreva acima para adicionar a primeira.');
+      box.innerHTML = emptyStateHTML('Nenhuma nota ainda.', 'Escreva abaixo para adicionar a primeira.');
+      syncNoteComposer_();
       return;
     }
 
@@ -5916,6 +6004,9 @@
         renderNotesFeed();
       });
     }
+    // The composer is only measurable once #view-notes is actually visible,
+    // and renderNotesFeed() already runs on every entry to this page.
+    syncNoteComposer_();
   }
 
   // ---------- Settings ----------
