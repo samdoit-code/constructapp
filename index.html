@@ -497,8 +497,20 @@
      syncNoteComposer_() rather than hardcoded — the tab bar grows with the
      safe-area inset and the composer grows with the textarea and with any
      draft photo thumbnails, so neither is a constant. */
+  /* The .view fade animation animates `transform`, and ANY transformed ancestor
+     becomes the containing block for a position:fixed descendant — so on every
+     entry to this page the composer was laid out relative to #view-notes and
+     visibly slid down from the top to its real place. Disabling the entry
+     animation for this one page is what makes the composer genuinely fixed to
+     the viewport from the first frame. Reusable: a fixed-position child cannot
+     survive a transformed/animated ancestor; either the ancestor loses the
+     transform or the child has to move out of it. */
+  #view-notes{animation:none;}
   .note-composer{
-    position:fixed; left:0; right:0; bottom:0; z-index:25;
+    position:fixed; left:0; right:0; z-index:25;
+    /* Real value is measured by syncNoteComposer_() into --tabbar-h; the
+       fallback is only for the very first paint, before it has run. */
+    bottom:var(--tabbar-h, 62px);
     background:var(--card); border-top:1px solid var(--line);
     box-shadow:0 -3px 14px rgba(0,0,0,0.07);
     padding:9px 16px 10px;
@@ -536,6 +548,12 @@
   /* Capped so a large draft batch can't grow the composer over the whole page. */
   .note-composer .photo-thumbs{margin-top:0; margin-bottom:9px; max-height:150px; overflow-y:auto;}
   .note-composer .photo-select-wrap:not(:empty){margin-bottom:6px;}
+  /* While the note field has focus the iOS keyboard is up and the tab bar is
+     both unreachable and stealing ~62px of the little room the keyboard
+     leaves — so it's hidden for the duration and the composer drops to the
+     bottom edge. Purely visual: nothing about navigation state changes. */
+  body.composing-note nav.tabbar{display:none;}
+  body.composing-note .note-composer{bottom:0; padding-bottom:calc(10px + var(--safe-bottom));}
 
   /* "Notas" / "Fotos do recibo" / "Fotos" — the sub-section labels inside the
      entry and task modals. Previously three copies of the same inline style
@@ -3484,8 +3502,23 @@
     const feed = document.getElementById('notesFeed');
     if(!comp || !feed) return;
     const bar = document.querySelector('nav.tabbar');
-    comp.style.bottom = (bar ? bar.offsetHeight : 0) + 'px';
+    // Published as a CSS variable rather than an inline `bottom`, so the
+    // body.composing-note rule (which drops the composer to the bottom edge
+    // while the keyboard is up) can still win — an inline style could not be
+    // overridden by a class.
+    document.documentElement.style.setProperty('--tabbar-h', (bar ? bar.offsetHeight : 0) + 'px');
     feed.style.paddingBottom = (comp.offsetHeight + 14) + 'px';
+  }
+  // The feed is oldest-first with the newest note directly above the composer,
+  // so "the latest note" means the BOTTOM of the scroller, not the top. Not
+  // smooth-scrolled: this runs on page entry and right after posting, where an
+  // animated slide would read as the same drift the fixed-composer glitch did.
+  function scrollNotesToBottom_(){
+    const sc = document.getElementById('appScroll');
+    if(!sc) return;
+    const go = ()=> sc.scrollTo({top: sc.scrollHeight});
+    go();
+    requestAnimationFrame(go); // again after layout settles (thumbnails, measured padding)
   }
   // Grows the composer one line at a time up to the CSS max-height, then
   // scrolls internally — the WhatsApp behaviour. Re-syncs the feed padding on
@@ -3552,8 +3585,13 @@
     // explicit Cancel); a save success does too. Simply switching views is
     // not one of those cases.
     if(name !== 'add' && previousView !== 'add') resetForm();
+    // Notas is a bottom-anchored timeline (newest note directly above the
+    // composer), so entering it means jumping to the END, not the top. The
+    // flag is set BEFORE renderAll() so renderNotesFeed() consumes it in the
+    // same pass that builds the list it has to scroll to.
+    if(name === 'notes') notesScrollToBottom_ = true;
     renderAll();
-    scrollTopNow();
+    if(name !== 'notes') scrollTopNow();
   }
   $all('.tab-btn').forEach(btn=>{
     btn.addEventListener('click', ()=>{
@@ -5881,6 +5919,42 @@
   }
 
   $('#noteInput').addEventListener('input', autoGrowNoteInput_);
+  // While the field has focus the iOS keyboard covers the bottom of the screen
+  // and the tab bar is both unreachable and eating room the composer needs, so
+  // it is hidden for the duration (CSS only — no navigation state changes).
+  // syncNoteComposer_() re-measures afterwards and naturally reads the hidden
+  // bar as 0px high, so nothing here has to know the bar's height itself.
+  $('#noteInput').addEventListener('focus', ()=>{
+    document.body.classList.add('composing-note');
+    syncNoteComposer_();
+    // The keyboard animating up resizes the viewport; scroll after it settles
+    // so the newest note stays visible above the composer rather than being
+    // left behind the keyboard.
+    setTimeout(scrollNotesToBottom_, 300);
+  });
+  // Deferred by a tick and re-checked: tapping the send button (or the photo
+  // label) fires blur BEFORE the click, and restoring the tab bar right then
+  // reflows the composer ~62px downward out from under the finger — the tap
+  // lands on nothing. Bailing out when focus has moved somewhere else inside
+  // the composer keeps the bar hidden for the whole interaction.
+  $('#noteInput').addEventListener('blur', ()=>{
+    setTimeout(()=>{
+      const comp = document.getElementById('noteComposer');
+      if(comp && comp.contains(document.activeElement)) return;
+      document.body.classList.remove('composing-note');
+      syncNoteComposer_();
+    }, 0);
+  });
+  // Belt-and-braces for the same reflow: preventDefault on mousedown stops the
+  // button from stealing focus at all, so the keyboard stays up across a send
+  // (as in any messaging app) and the composer never moves mid-tap. It does
+  // NOT block the click — the save handler still runs normally.
+  $('#saveNoteBtn').addEventListener('mousedown', (e)=> e.preventDefault());
+  // iOS resizes the visual viewport as the keyboard opens/closes without
+  // firing a window resize, so the composer's own measurements need this too.
+  if(window.visualViewport){
+    window.visualViewport.addEventListener('resize', syncNoteComposer_);
+  }
   $('#saveNoteBtn').addEventListener('click', withGuard(async ()=>{
     const txt = $('#noteInput').value.trim();
     if(!txt){ showToast('Escreva algo antes de salvar.'); return; }
@@ -5893,9 +5967,9 @@
       $('#noteInput').value = '';
       autoGrowNoteInput_(); // collapse the composer back to one row
       notesPage = 1;
-      // The feed is newest-first (scroll DOWN for older notes), so the note
-      // just written lands at the top — bring it into view from the composer.
-      scrollTopNow();
+      // The note just written lands at the very bottom, directly above the
+      // composer — consumed by the renderAll() at the end of this handler.
+      notesScrollToBottom_ = true;
       showToast('Nota adicionada.');
     } else {
       // Nothing was actually saved — keep the text and draft photos so the
@@ -5920,6 +5994,11 @@
 
   const NOTES_PAGE_SIZE = 60;
   let notesPage = 1;
+  // Set only by the two moments that should jump to the newest note — entering
+  // the page, and posting one — and consumed by the next render. A background
+  // sync or a photo-status patch must never yank someone who has scrolled up
+  // to read older notes back down to the bottom.
+  let notesScrollToBottom_ = false;
 
   function renderNotesFeed(){
     const view = document.getElementById('view-notes');
@@ -5934,14 +6013,23 @@
     if(items.length === 0){
       box.innerHTML = emptyStateHTML('Nenhuma nota ainda.', 'Escreva abaixo para adicionar a primeira.');
       syncNoteComposer_();
+      notesScrollToBottom_ = false;
       return;
     }
 
-    // Same pagination approach as Lançamentos: render only what's visible, load more on demand.
+    // Same pagination approach as Lançamentos: render only what's visible, load
+    // more on demand. `items` stays newest-first so a page is always the N most
+    // RECENT notes; rendering then walks it backwards, so the oldest of the
+    // visible set is at the top and the newest sits directly above the
+    // composer — a messaging timeline, where "carregar mais" reaches further
+    // back in time and therefore belongs at the TOP, not the bottom.
     const visibleCount = Math.min(notesPage * NOTES_PAGE_SIZE, items.length);
     let html = '';
     let lastLabel = null;
-    for(let idx=0; idx<visibleCount; idx++){
+    if(visibleCount < items.length){
+      html += `<button class="btn btn-ghost btn-block" id="loadMoreNotesBtn" style="margin-bottom:8px;">Carregar mais (${items.length - visibleCount} restantes)</button>`;
+    }
+    for(let idx=visibleCount-1; idx>=0; idx--){
       const it = items[idx];
       const isStandalone = it.ref.origin === 'standalone';
       const label = dateGroupLabel(it.criadoEm);
@@ -5974,9 +6062,6 @@
         </div>
       </div>`;
     }
-    if(visibleCount < items.length){
-      html += `<button class="btn btn-ghost btn-block" id="loadMoreNotesBtn" style="margin-top:4px;">Carregar mais (${items.length - visibleCount} restantes)</button>`;
-    }
     box.innerHTML = html;
     box.querySelectorAll('.origin[data-ref-id]').forEach(el=>{
       el.addEventListener('click', ()=> openDetail(el.dataset.refKind, el.dataset.refId));
@@ -6000,13 +6085,21 @@
     const loadMoreNotesBtn = $('#loadMoreNotesBtn');
     if(loadMoreNotesBtn){
       loadMoreNotesBtn.addEventListener('click', ()=>{
+        const sc = document.getElementById('appScroll');
+        // Older notes are prepended ABOVE the current viewport, so without
+        // this the page the user was reading is pushed down by exactly the
+        // height of everything just inserted. Re-anchoring on the distance
+        // from the BOTTOM keeps the same notes under their eyes.
+        const fromBottom = sc ? (sc.scrollHeight - sc.scrollTop) : 0;
         notesPage += 1;
         renderNotesFeed();
+        if(sc) requestAnimationFrame(()=>{ sc.scrollTop = sc.scrollHeight - fromBottom; });
       });
     }
     // The composer is only measurable once #view-notes is actually visible,
     // and renderNotesFeed() already runs on every entry to this page.
     syncNoteComposer_();
+    if(notesScrollToBottom_){ notesScrollToBottom_ = false; scrollNotesToBottom_(); }
   }
 
   // ---------- Settings ----------
