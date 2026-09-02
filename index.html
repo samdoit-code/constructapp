@@ -284,8 +284,14 @@
      show an ellipsis — so a long name used to push the tag beside it off the
      edge and clip it mid-word ("MATERI…") instead of truncating itself. */
   .entry-card .nome .nome-txt{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  /* The tipo chip lives on the META line, not beside the name: it is
+     metadata, not part of the title, and next to the name it consumed ~80px
+     of the one row that has to show what the lançamento actually was. */
   .entry-card .tag{font-size:var(--fs-eyebrow); font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--blue); background:rgba(44,92,115,0.09); padding:2px 7px; border-radius:5px; flex:0 0 auto;}
-  .entry-card .meta{font-size:var(--fs-meta); color:var(--ink-soft); margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; gap:5px;}
+  .entry-card .meta{font-size:var(--fs-meta); color:var(--ink-soft); margin-top:4px; white-space:nowrap; overflow:hidden; display:flex; align-items:center; gap:6px;}
+  /* Same rule as .nome-txt: the free text needs its own element to ellipsize
+     rather than squashing the chip and counters beside it. */
+  .entry-card .meta .meta-txt{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
   .notedot{display:inline-flex; align-items:center; gap:2px; color:var(--amber); font-weight:700; flex-shrink:0;}
   .notedot svg{width:13px;height:13px; stroke:var(--amber); fill:none; stroke-width:2.4; flex-shrink:0;}
   .entry-card .valor{
@@ -318,6 +324,10 @@
   .btn-danger{background:#fbeae6; color:var(--red); border:1.5px solid #edc9bf;}
   .btn-secondary{background:var(--blue); color:#fff;}
   .btn-sm{padding:9px 13px; font-size:var(--fs-meta); border-radius:10px;}
+  /* btn-sm exists for compact inline chips (Filtros, the sort select, an
+     inline "Salvar"). Stretched full width — as in the Ajustes modal — there
+     is no space pressure at all, so it takes the normal button size. */
+  .btn-sm.btn-block{font-size:var(--fs-body); padding:11.5px 14px;}
 
   /* Segmented control — the tabs had a lot of dead space inside them, so the
      label grows to body size while the control's own height barely moves. */
@@ -662,7 +672,13 @@
   nav.tabbar{
     position:fixed; left:0; right:0; bottom:0; z-index:30; margin:0; border-radius:0;
     background:#fff; border-top:1px solid var(--line);
-    display:flex; padding:6px 4px calc(6px + var(--safe-bottom));
+    /* space-between + content-sized tabs (not flex:1) so the GAPS BETWEEN THE
+       LABELS are even. With equal-width columns the icons were evenly spaced
+       but the labels were not: a wide label like "Lançamentos" sat visually
+       closer to its wider neighbour ("Adicionar") than to its narrower one
+       ("Painel"), because each label was centred in a column whose width had
+       nothing to do with the text in it. */
+    display:flex; justify-content:space-between; padding:6px 14px calc(6px + var(--safe-bottom));
     box-shadow: 0 -2px 10px rgba(0,0,0,0.06);
   }
   /* Safety net: extends the same white background further past the bar's own bottom
@@ -672,7 +688,10 @@
     content:""; position:absolute; left:0; right:0; top:100%; height:50px; background:#fff;
   }
   nav.tabbar button.tab-btn{
-    flex:1; min-width:0; background:none; border:none; display:flex; flex-direction:column; align-items:center; gap:2px;
+    /* Sized to its own content. The .icon-wrap inside is ~42px wide, which
+       keeps even the narrowest tab ("Notas") at a usable tap size without a
+       min-width that would re-introduce uneven label gaps. */
+    flex:0 1 auto; min-width:0; background:none; border:none; display:flex; flex-direction:column; align-items:center; gap:2px;
     padding:0; color:#9c9385; cursor:pointer; border-radius:16px;
   }
   /* Every tab shares this exact same "badge" wrapper — active state is purely a
@@ -689,7 +708,7 @@
   nav.tabbar button.tab-btn.active .icon-wrap svg{stroke:#fff;}
   nav.tabbar button.tab-btn.active span.label{color:var(--orange-dark); font-weight:700;}
   @media (max-width:340px){
-    nav.tabbar{padding:6px 2px;}
+    nav.tabbar{padding:6px 6px calc(6px + var(--safe-bottom));}
     nav.tabbar .icon-wrap{padding:4px 6px;}
     nav.tabbar button.tab-btn span.label{font-size:9.5px;}
   }
@@ -832,12 +851,12 @@
     height:76px; display:flex; align-items:center; justify-content:center; margin-bottom:22px;
   }
   #authGate .mark picture, #authGate .mark img{height:76px; width:auto; display:block;}
-  #authGate h1{color:#fff; font-family:'Oswald',sans-serif; font-size:21px; margin:0 0 6px; text-transform:uppercase; letter-spacing:0.03em;}
-  #authGate p{color:#cfc8ba; font-size:var(--fs-body); max-width:290px; line-height:1.5; margin:0 0 26px;}
+  #authGate h1{color:#fff; font-family:'Oswald',sans-serif; font-size:25px; margin:0 0 8px; text-transform:uppercase; letter-spacing:0.03em;}
+  #authGate p{color:#d5cfc2; font-size:var(--fs-title); max-width:310px; line-height:1.5; margin:0 0 26px;}
   #authGate .g-signin-slot{min-height:44px;}
-  #authGate .auth-error{color:#f5a794; font-size:var(--fs-body); margin-top:16px; max-width:290px; line-height:1.5;}
-  .auth-gate-version{position:absolute; bottom:calc(16px + var(--safe-bottom)); left:0; right:0; text-align:center; font-size:var(--fs-eyebrow); color:rgba(255,255,255,0.32);}
-  #authGate .auth-spinner{color:#cfc8ba; font-size:var(--fs-body);}
+  #authGate .auth-error{color:#f5a794; font-size:var(--fs-title); margin-top:16px; max-width:310px; line-height:1.5;}
+  .auth-gate-version{position:absolute; bottom:calc(16px + var(--safe-bottom)); left:0; right:0; text-align:center; font-size:var(--fs-caption); color:rgba(255,255,255,0.34);}
+  #authGate .auth-spinner{color:#d5cfc2; font-size:var(--fs-title);}
 </style>
 </head>
 <body>
@@ -3524,8 +3543,8 @@
     return `<div class="entry-card" data-id="${e.id}" data-kind="${e.kind}">
       <div class="datechip"><div class="d">${d.getDate()}</div><div class="m">${MONTHS[d.getMonth()]}/${String(d.getFullYear()).slice(-2)}</div></div>
       <div class="info">
-        <div class="nome"><span class="nome-txt">${escapeHTML(toDisplayCase(e.nome))}</span>${e.kind==='caixa' && e.tipo ? `<span class="tag">${escapeHTML(e.tipo)}</span>` : ''}</div>
-        <div class="meta">${escapeHTML(metaParts.join(' · ') || '—')} ${noteCount ? `<span class="notedot"><svg viewBox="0 0 24 24"><path d="M4 4h16v13H8l-4 4V4z"/></svg>${noteCount}</span>` : ''} ${photoCount ? `<span class="notedot"><svg viewBox="0 0 24 24"><path d="M4 8a2 2 0 012-2h1.2a1 1 0 00.9-.55L8.7 4.1A1 1 0 019.6 3.5h4.8a1 1 0 01.9.6l.6 1.35a1 1 0 00.9.55H18a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V8z"/><circle cx="12" cy="13" r="3.3"/></svg>${photoCount}</span>` : ''}</div>
+        <div class="nome"><span class="nome-txt">${escapeHTML(toDisplayCase(e.nome))}</span></div>
+        <div class="meta">${e.kind==='caixa' && e.tipo ? `<span class="tag">${escapeHTML(e.tipo)}</span>` : ''}<span class="meta-txt">${escapeHTML(metaParts.join(' · ') || '—')}</span>${noteCount ? `<span class="notedot"><svg viewBox="0 0 24 24"><path d="M4 4h16v13H8l-4 4V4z"/></svg>${noteCount}</span>` : ''}${photoCount ? `<span class="notedot"><svg viewBox="0 0 24 24"><path d="M4 8a2 2 0 012-2h1.2a1 1 0 00.9-.55L8.7 4.1A1 1 0 019.6 3.5h4.8a1 1 0 01.9.6l.6 1.35a1 1 0 00.9.55H18a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V8z"/><circle cx="12" cy="13" r="3.3"/></svg>${photoCount}</span>` : ''}</div>
       </div>
       <div class="valor">${fmtBRL(e.valor)}<span class="who">${escapeHTML(toDisplayCase(e.socio))||''}</span></div>
     </div>`;
@@ -4077,7 +4096,7 @@
     rows.push(['Fornecedor', toDisplayCase(e.fornecedor) || '—']);
     rows.push(['Pago por sócio', toDisplayCase(e.socio) || '—']);
 
-    $('#modalBody').innerHTML = `<h3 style="margin:0 0 14px; font-size:19px; line-height:1.3; text-transform:none; font-family:'Inter',sans-serif; font-weight:700; letter-spacing:-0.01em;">${escapeHTML(toDisplayCase(e.nome))}</h3>` +
+    $('#modalBody').innerHTML = `<h3 style="margin:0 0 14px; font-size:var(--fs-heading); line-height:1.3; text-transform:none; font-family:'Inter',sans-serif; font-weight:700; letter-spacing:-0.01em;">${escapeHTML(toDisplayCase(e.nome))}</h3>` +
       rows.map(r => `<div class="detail-row"><span class="k">${r[0]}</span><span class="v">${escapeHTML(r[1])}</span></div>`).join('');
 
     renderModalNotes(e.notas || []);
@@ -5528,7 +5547,7 @@
       ['Projeto', t.projectId ? projName(t.projectId) : 'Geral'],
       ['Status', t.feito ? 'Concluída' : 'Pendente'],
     ];
-    $('#taskModalBody').innerHTML = `<h3 style="margin:0 0 14px; font-size:19px; line-height:1.3; text-transform:none; font-family:'Inter',sans-serif; font-weight:700; letter-spacing:-0.01em;">${escapeHTML(t.texto)}</h3>` +
+    $('#taskModalBody').innerHTML = `<h3 style="margin:0 0 14px; font-size:var(--fs-heading); line-height:1.3; text-transform:none; font-family:'Inter',sans-serif; font-weight:700; letter-spacing:-0.01em;">${escapeHTML(t.texto)}</h3>` +
       rows.map(r => `<div class="detail-row"><span class="k">${r[0]}</span><span class="v">${escapeHTML(r[1])}</span></div>`).join('');
     $('#toggleTaskBtn').textContent = t.feito ? 'Reabrir tarefa' : 'Marcar como concluída';
     renderTaskModalPhotoThumbs(t.fotos || []);
