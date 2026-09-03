@@ -76,6 +76,13 @@
     -moz-osx-font-smoothing:grayscale;
     padding-bottom: calc(80px + var(--safe-bottom));
   }
+  /* Notas reserves its OWN trailing space (composer + tab bar, whichever is
+     currently showing), computed by syncNoteComposer_ into --notes-bottom-
+     reserve — the generic 80px above is sized for the tab bar alone and,
+     left in place here too, stacked underneath that reservation as a second,
+     uncoordinated block of dead space. This is what made the gap between the
+     newest note and the composer far bigger than either number alone. */
+  body.notes-active #appScroll{padding-bottom: var(--notes-bottom-reserve, 96px);}
   h1,h2,h3,.display{font-family:'Oswald', sans-serif; text-transform:uppercase; letter-spacing:0.02em;}
   /* Every currency/count value in the app. Slight negative tracking because
      Inter's default spacing is set for text, not for figures sitting in a
@@ -490,11 +497,28 @@
   .note-card .ts{font-size:var(--fs-caption); color:var(--ink-soft);}
   .note-card .origin{font-size:var(--fs-eyebrow); font-weight:700; color:var(--blue); background:rgba(44,92,115,0.09); padding:2px 7px; border-radius:6px; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:150px;}
   .note-card .del{background:none; border:none; color:var(--red); font-size:var(--fs-caption); font-weight:600; cursor:pointer; padding:4px 2px; flex:0 0 auto;}
-  .note-actions{display:flex; gap:14px; margin-top:8px; padding-top:8px; border-top:1px dashed #ecdfa8;}
-  .note-actions button, .note-actions label{background:none; border:none; font-size:var(--fs-meta); font-weight:700; cursor:pointer; padding:2px 0; display:inline-block;}
-  .note-actions .n-edit{color:var(--blue);}
-  .note-actions .n-photo{color:var(--orange-dark);}
-  .note-actions .n-del{color:var(--red);}
+  /* Editar/Foto/Excluir used to be a permanently-visible text row under every
+     card (border-top dashed line + 3 buttons), costing ~34px per note. That
+     row is gone; the same three actions now live behind a press-and-hold (or
+     right-click on desktop) popover — see .note-action-menu below and the
+     long-press/contextmenu wiring near renderNotesFeed. Freed height is what
+     makes the feed noticeably more compact without losing any capability. */
+  .note-action-menu-backdrop{position:fixed; inset:0; z-index:60; background:transparent; display:none;}
+  .note-action-menu-backdrop.open{display:block;}
+  .note-action-menu{
+    position:fixed; z-index:61; display:none; gap:2px;
+    background:var(--ink); border-radius:14px; padding:6px; box-shadow:0 10px 28px rgba(0,0,0,0.38);
+  }
+  .note-action-menu.open{display:flex;}
+  .note-action-menu .nam-btn{
+    display:flex; flex-direction:column; align-items:center; gap:3px; background:none; border:none; color:#fff;
+    padding:8px 13px; border-radius:10px; cursor:pointer; font-family:'Inter',sans-serif; touch-action:manipulation;
+  }
+  .note-action-menu .nam-btn:active{background:rgba(255,255,255,0.16);}
+  .note-action-menu .nam-btn svg{width:19px; height:19px; stroke:#fff; fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round;}
+  .note-action-menu .nam-btn span{font-size:var(--fs-caption); font-weight:600; white-space:nowrap;}
+  .note-action-menu .nam-btn[data-nam="del"]{color:#ffb4a2;}
+  .note-action-menu .nam-btn[data-nam="del"] svg{stroke:#ffb4a2;}
 
   /* Chat-style note composer, docked above the tab bar.
      position:fixed inside #view-notes, so .view{display:none} hides it on every
@@ -512,6 +536,19 @@
      survive a transformed/animated ancestor; either the ancestor loses the
      transform or the child has to move out of it. */
   #view-notes{animation:none;}
+  /* Bottom-fill: when there are only a few notes, plain block flow leaves them
+     glued under the header with a large blank gap down to the composer — the
+     composer is position:fixed and contributes no height to the document, so
+     short content never gets "pushed down" by anything. #view-notes becomes a
+     flex column whose min-height is set by JS (syncNoteComposer_) to the
+     actual visible area below the header; #notesFeed's margin-top:auto then
+     collapses that slack to ABOVE the notes instead of below them, so the
+     newest note sits directly against the composer. For a feed tall enough to
+     scroll on its own, min-height is smaller than the content, margin-top:auto
+     resolves to 0, and everything behaves exactly like plain block flow. */
+  #view-notes.active{display:flex; flex-direction:column;}
+  #notesFeed{margin-top:auto;}
+  #notesFeed.is-empty{margin-top:0;}
   .note-composer{
     position:fixed; left:0; right:0; z-index:25;
     /* Real value is measured by syncNoteComposer_() into --tabbar-h; the
@@ -557,6 +594,13 @@
   /* Capped so a large draft batch can't grow the composer over the whole page. */
   .note-composer .photo-thumbs{margin-top:0; margin-bottom:9px; max-height:150px; overflow-y:auto;}
   .note-composer .photo-select-wrap:not(:empty){margin-bottom:6px;}
+  /* Without this, the empty <div class="photo-thumbs"> (no draft photos) still
+     took up its own margin-bottom as a block box with zero content — pushing
+     the input row down and off-center within the bar, and inflating the
+     composer's measured height (which syncNoteComposer_ turns directly into
+     the feed's reserved bottom padding). Collapsing it when empty fixes both
+     the off-center row and the oversized gap below the last note. */
+  .note-composer .photo-thumbs:empty{display:none; margin:0;}
   /* .link-btn is --orange-dark, which is near-invisible on the dark bar. The
      .photo-selbar itself carries its own cream background, so only the bare
      "Selecionar" link needs lifting. */
@@ -1563,6 +1607,26 @@
       <button type="button" class="btn btn-danger btn-block" id="confirmOkBtn">Confirmar</button>
     </div>
   </div>
+</div>
+
+<!-- Note action popover (Editar/Foto/Excluir), reached by press-and-hold or
+     right-click on a note card — see setupNoteActionGestures_. Backdrop is
+     transparent (not a dimming overlay like the other modals): a context menu
+     shouldn't visually block the note it's attached to. -->
+<div class="note-action-menu-backdrop" id="noteActionMenuBackdrop"></div>
+<div class="note-action-menu" id="noteActionMenu">
+  <button type="button" class="nam-btn" data-nam="edit" title="Editar nota">
+    <svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+    <span>Editar</span>
+  </button>
+  <button type="button" class="nam-btn" data-nam="photo" title="Adicionar foto">
+    <svg viewBox="0 0 24 24"><path d="M4 8a2 2 0 012-2h1.2a1 1 0 00.9-.55L8.7 4.1A1 1 0 019.6 3.5h4.8a1 1 0 01.9.6l.6 1.35a1 1 0 00.9.55H18a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V8z"/><circle cx="12" cy="13" r="3.3"/></svg>
+    <span>Foto</span>
+  </button>
+  <button type="button" class="nam-btn" data-nam="del" title="Excluir nota">
+    <svg viewBox="0 0 24 24"><path d="M4 7h16"/><path d="M9 7V5a1 1 0 011-1h4a1 1 0 011 1v2"/><path d="M6 7l1 13a2 2 0 002 2h6a2 2 0 002-2l1-13"/></svg>
+    <span>Excluir</span>
+  </button>
 </div>
 
 <!-- Generic text prompt dialog (replaces native prompt()) -->
@@ -3522,14 +3586,47 @@
   function syncNoteComposer_(){
     const comp = document.getElementById('noteComposer');
     const feed = document.getElementById('notesFeed');
-    if(!comp || !feed) return;
+    const view = document.getElementById('view-notes');
+    if(!comp || !feed || !view) return;
     const bar = document.querySelector('nav.tabbar');
     // Published as a CSS variable rather than an inline `bottom`, so the
     // body.composing-note rule (which drops the composer to the bottom edge
     // while the keyboard is up) can still win — an inline style could not be
     // overridden by a class.
     document.documentElement.style.setProperty('--tabbar-h', (bar ? bar.offsetHeight : 0) + 'px');
-    feed.style.paddingBottom = (comp.offsetHeight + 14) + 'px';
+    const sc = document.getElementById('appScroll');
+    if(!sc) return;
+    const compTop = comp.getBoundingClientRect().top;
+    // The true dead zone at the bottom of the screen is "whatever is below
+    // the composer's own top edge" — composer height plus the tab bar height
+    // when it's showing, or just the composer while composing (tab bar
+    // hidden, composer flush to 0). Deriving it from compTop rather than
+    // adding comp.offsetHeight + a guessed tab-bar figure means it's always
+    // exactly right in both states, with no double-accounting: this REPLACES
+    // the generic 80px tab-bar reservation for this page (see
+    // body.notes-active #appScroll CSS) rather than sitting on top of it.
+    const bottomReserve = Math.max(0, sc.clientHeight - compTop);
+    document.documentElement.style.setProperty('--notes-bottom-reserve', bottomReserve + 'px');
+    // A small fixed breathing gap — not composer-height-based any more, since
+    // the real clearance now lives in appScroll's own padding above.
+    feed.style.paddingBottom = '14px';
+    // Bottom-fill (see #view-notes.active CSS): when there are only a few
+    // notes, plain block flow glues them under the header and leaves a big
+    // blank gap down to the composer, because the composer is position:fixed
+    // and contributes no height to the document for short content to be
+    // "pushed down" by. Giving the flex column a min-height that stops
+    // exactly at the composer's own top edge, with #notesFeed's
+    // margin-top:auto collapsing the slack to ABOVE the notes, puts the
+    // newest note directly against the composer instead. For a feed tall
+    // enough to need scrolling, min-height is smaller than the content,
+    // margin-top:auto resolves to 0, and it behaves exactly like plain block
+    // flow, protected from hiding under the composer by appScroll's own
+    // padding-bottom (bottomReserve, above) at the true scrolled-to-end.
+    const topbar = document.querySelector('.topbar');
+    const topbarH = topbar ? topbar.offsetHeight : 0;
+    const mainEl = view.parentElement;
+    const mainPaddingTop = mainEl ? (parseFloat(getComputedStyle(mainEl).paddingTop) || 0) : 0;
+    view.style.minHeight = Math.max(0, compTop - topbarH - mainPaddingTop) + 'px';
   }
   // The feed is oldest-first with the newest note directly above the composer,
   // so "the latest note" means the BOTTOM of the scroller, not the top. Not
@@ -3612,6 +3709,11 @@
     // flag is set BEFORE renderAll() so renderNotesFeed() consumes it in the
     // same pass that builds the list it has to scroll to.
     if(name === 'notes') notesScrollToBottom_ = true;
+    // Gates the body.notes-active #appScroll override (see its CSS) that
+    // replaces the generic tab-bar-only bottom padding with Notas' own
+    // composer-aware reservation — must be off everywhere else, or every
+    // other page loses its normal tab-bar clearance.
+    document.body.classList.toggle('notes-active', name === 'notes');
     // The tab bar is hidden by focus, restored by blur — but a navigation that
     // happens without a blur (a programmatic switchView, a modal action) would
     // leave it hidden with no way back. Cheap insurance against a dead end.
@@ -6086,6 +6188,14 @@
     return isFinite(p) ? p : 0;
   }
 
+  // Set by every renderNotesFeed() call; read by the delegated long-press/
+  // right-click handlers below to resolve a card's data-feed-idx back to its
+  // ref and current permissions. Those handlers are bound ONCE (outside any
+  // render) so they can't close over a particular render's own `items` array
+  // the way a per-node listener could — this is the one piece of state they
+  // need instead.
+  let lastNotesFeedItems_ = [];
+
   const NOTES_PAGE_SIZE = 60;
   let notesPage = 1;
   // Set only by the two moments that should jump to the newest note — entering
@@ -6150,22 +6260,21 @@
       const canEditNote = canSection(itemSection, 'edit');
       const canDeleteNote = canSection(itemSection, 'delete');
       const canAddPhoto = isStandalone && canSection('notas', 'upload');
-      // The photo input/label is bound to THIS card's note id via a native
-      // <label for>, not a shared hidden input plus a remembered module
-      // variable — see the "target belongs on the element" note below.
-      html += `<div class="note-card">
+      // Editar/Foto/Excluir no longer render inline (see .note-action-menu) —
+      // they're reached by a press-and-hold or right-click on the card, which
+      // reads permissions off these data-* attributes at open time. The
+      // hidden file input is still a real per-note element, still keyed by
+      // this card's own note id (see "target belongs on the element" note
+      // below) — the popover's Foto button just clicks it by id instead of a
+      // visible <label> wrapping it.
+      html += `<div class="note-card" data-feed-idx="${idx}" data-can-edit="${canEditNote?1:0}" data-can-photo="${canAddPhoto?1:0}" data-can-delete="${canDeleteNote?1:0}">
         <div class="txt">${escapeHTML(it.texto)}</div>
         <div class="meta-row">
           <span class="ts">${ts}</span>
           <span class="origin" ${it.entryRef ? `data-ref-kind="${it.entryRef.kind}" data-ref-id="${it.entryRef.id}"` : ''}>${escapeHTML(it.origin)}</span>
         </div>
-        ${isStandalone ? `<div class="photo-select-wrap" id="notephotoselwrap-${escapeHTML(it.ref.id)}"></div><div class="photo-thumbs" id="notephotos-${escapeHTML(it.ref.id)}"></div>` : ''}
-        <div class="note-actions">
-          ${canEditNote ? `<button class="n-edit" data-feed-idx="${idx}">Editar</button>` : ''}
-          ${canAddPhoto ? `<label class="n-photo" for="notephotoinput-${escapeHTML(it.ref.id)}">+ Foto</label>
-          <input type="file" id="notephotoinput-${escapeHTML(it.ref.id)}" class="note-photo-input" data-note-id="${escapeHTML(it.ref.id)}" accept="image/*" multiple style="display:none;">` : ''}
-          ${canDeleteNote ? `<button class="n-del" data-feed-idx="${idx}">Excluir</button>` : ''}
-        </div>
+        ${isStandalone ? `<div class="photo-select-wrap" id="notephotoselwrap-${escapeHTML(it.ref.id)}"></div><div class="photo-thumbs" id="notephotos-${escapeHTML(it.ref.id)}"></div>
+        ${canAddPhoto ? `<input type="file" id="notephotoinput-${escapeHTML(it.ref.id)}" class="note-photo-input" data-note-id="${escapeHTML(it.ref.id)}" accept="image/*" multiple style="display:none;">` : ''}` : ''}
       </div>`;
     }
     // Chat-style stickiness: if the reader was already parked at the bottom
@@ -6181,14 +6290,15 @@
     const SCROLL_STICK_PX = 60;
     const wasAtBottom = !!scEl && (scEl.scrollHeight - scEl.scrollTop - scEl.clientHeight) <= SCROLL_STICK_PX;
     box.innerHTML = html;
+    // lastNotesFeedItems_ is read by the press-and-hold/right-click handlers
+    // (bound ONCE on #notesFeed, see setupNoteActionGestures_ below) to
+    // resolve a card's data-feed-idx back to its ref/permissions — those
+    // handlers are delegated and outlive any single render, so they can't
+    // close over this render's own `items` the way the old inline .n-edit/
+    // .n-del listeners did.
+    lastNotesFeedItems_ = items;
     box.querySelectorAll('.origin[data-ref-id]').forEach(el=>{
       el.addEventListener('click', ()=> openDetail(el.dataset.refKind, el.dataset.refId));
-    });
-    box.querySelectorAll('.n-edit[data-feed-idx]').forEach(el=>{
-      el.addEventListener('click', ()=> editNoteRef(items[Number(el.dataset.feedIdx)].ref));
-    });
-    box.querySelectorAll('.n-del[data-feed-idx]').forEach(el=>{
-      el.addEventListener('click', ()=> deleteNoteRef(items[Number(el.dataset.feedIdx)].ref));
     });
     // Each input closes over its own note id via data-note-id, read fresh
     // from the element that actually fired change — nothing to go stale
@@ -6219,6 +6329,129 @@
     syncNoteComposer_();
     if(notesScrollToBottom_ || wasAtBottom){ notesScrollToBottom_ = false; scrollNotesToBottom_(); }
   }
+
+  // ---------- Note action popover (press-and-hold / right-click) ----------
+  // Editar/Foto/Excluir used to be permanently visible under every card. They
+  // now live behind this shared popover, opened by a press-and-hold on touch
+  // or a right-click (contextmenu) on desktop — same interaction WhatsApp and
+  // most chat apps use. Everything the popover DOES is unchanged: it calls
+  // the exact same editNoteRef/deleteNoteRef functions, and clicks the exact
+  // same per-note hidden file input, that the old inline buttons called.
+  let noteActionMenuCtx_ = null;
+  function openNoteActionMenu_(x, y, ctx){
+    const menu = document.getElementById('noteActionMenu');
+    const backdrop = document.getElementById('noteActionMenuBackdrop');
+    if(!menu || !backdrop) return;
+    if(!ctx.canEdit && !ctx.canPhoto && !ctx.canDelete) return; // nothing this role can do here
+    noteActionMenuCtx_ = ctx;
+    menu.querySelector('[data-nam="edit"]').hidden = !ctx.canEdit;
+    menu.querySelector('[data-nam="photo"]').hidden = !ctx.canPhoto;
+    menu.querySelector('[data-nam="del"]').hidden = !ctx.canDelete;
+    backdrop.classList.add('open');
+    menu.classList.add('open');
+    // Measured AFTER .open (display:none -> flex) so offsetWidth/Height are
+    // real; clamped so a long-press near an edge never renders off-screen.
+    const mw = menu.offsetWidth, mh = menu.offsetHeight;
+    const vw = window.innerWidth, vh = window.innerHeight;
+    let left = x - mw/2;
+    let top = y - mh - 14; // prefer showing ABOVE the touch point, like a tooltip
+    if(top < 8) top = Math.min(y + 14, vh - mh - 8); // not enough room above — show below instead
+    left = Math.min(Math.max(8, left), vw - mw - 8);
+    top = Math.min(Math.max(8, top), vh - mh - 8);
+    menu.style.left = left + 'px';
+    menu.style.top = top + 'px';
+  }
+  function closeNoteActionMenu_(){
+    const menu = document.getElementById('noteActionMenu');
+    const backdrop = document.getElementById('noteActionMenuBackdrop');
+    if(menu) menu.classList.remove('open');
+    if(backdrop) backdrop.classList.remove('open');
+    noteActionMenuCtx_ = null;
+  }
+  $('#noteActionMenu').addEventListener('click', (e)=>{
+    const btn = e.target.closest('.nam-btn');
+    if(!btn) return;
+    const ctx = noteActionMenuCtx_;
+    closeNoteActionMenu_();
+    if(!ctx) return;
+    if(btn.dataset.nam === 'edit') editNoteRef(ctx.ref);
+    else if(btn.dataset.nam === 'del') deleteNoteRef(ctx.ref);
+    else if(btn.dataset.nam === 'photo'){
+      const inp = document.getElementById('notephotoinput-' + ctx.noteId);
+      if(inp) inp.click();
+    }
+  });
+  $('#noteActionMenuBackdrop').addEventListener('click', closeNoteActionMenu_);
+  document.addEventListener('keydown', (e)=>{ if(e.key === 'Escape') closeNoteActionMenu_(); });
+  // Scroll events don't bubble, but they DO reach ancestors during the
+  // capturing phase — this is what lets one window-level listener close the
+  // menu no matter which scroll container (here, #appScroll) actually moved.
+  window.addEventListener('scroll', ()=>{
+    if(document.getElementById('noteActionMenu').classList.contains('open')) closeNoteActionMenu_();
+  }, true);
+  window.addEventListener('resize', closeNoteActionMenu_);
+
+  // Delegated on #notesFeed (bound once, survives every innerHTML replace) —
+  // resolves a card back to its ref/permissions via data-feed-idx and
+  // lastNotesFeedItems_, since these handlers outlive any single render and
+  // can't close over that render's own `items`.
+  (function setupNoteActionGestures_(){
+    const feed = document.getElementById('notesFeed');
+    if(!feed) return;
+    const LONG_PRESS_MS = 480;
+    const MOVE_TOLERANCE_PX = 10; // beyond this, treat it as a scroll, not a press
+    let lp = null;          // {startX, startY, fired}
+    let suppressClick = false; // set when a long-press just fired, to swallow the resulting synthetic click
+    function ctxFromCard(card){
+      if(!card) return null;
+      const idx = Number(card.dataset.feedIdx);
+      const item = lastNotesFeedItems_[idx];
+      if(!item) return null;
+      return {
+        ref: item.ref,
+        noteId: item.ref && item.ref.id,
+        canEdit: card.dataset.canEdit === '1',
+        canPhoto: card.dataset.canPhoto === '1',
+        canDelete: card.dataset.canDelete === '1',
+      };
+    }
+    function clearLP(){ if(lp && lp.timer) clearTimeout(lp.timer); lp = null; }
+    feed.addEventListener('touchstart', (e)=>{
+      const card = e.target.closest('.note-card');
+      if(!card){ clearLP(); return; }
+      const t = e.touches[0];
+      const rec = {startX: t.clientX, startY: t.clientY, fired: false, card};
+      rec.timer = setTimeout(()=>{
+        rec.fired = true;
+        const ctx = ctxFromCard(card);
+        if(ctx) openNoteActionMenu_(rec.startX, rec.startY, ctx);
+      }, LONG_PRESS_MS);
+      lp = rec;
+    }, {passive:true});
+    feed.addEventListener('touchmove', (e)=>{
+      if(!lp) return;
+      const t = e.touches[0];
+      if(Math.abs(t.clientX - lp.startX) > MOVE_TOLERANCE_PX || Math.abs(t.clientY - lp.startY) > MOVE_TOLERANCE_PX) clearLP();
+    }, {passive:true});
+    feed.addEventListener('touchend', ()=>{
+      if(lp && lp.fired) suppressClick = true; // the browser still synthesizes a 'click' after touchend even here
+      clearLP();
+    });
+    feed.addEventListener('touchcancel', clearLP);
+    // Capture phase, so a suppressed click is stopped BEFORE it reaches a
+    // card's own listeners (the origin chip's navigation, a photo thumbnail's
+    // lightbox) — not just before it would bubble back up past #notesFeed.
+    feed.addEventListener('click', (e)=>{
+      if(suppressClick){ suppressClick = false; e.stopPropagation(); e.preventDefault(); }
+    }, true);
+    feed.addEventListener('contextmenu', (e)=>{
+      const card = e.target.closest('.note-card');
+      if(!card) return;
+      e.preventDefault(); // desktop's equivalent of press-and-hold — never the native browser menu here
+      const ctx = ctxFromCard(card);
+      if(ctx) openNoteActionMenu_(e.clientX, e.clientY, ctx);
+    });
+  })();
 
   // ---------- Settings ----------
   const ROLE_LABELS = { admin:'Admin', owner:'Owner', partner:'Partner' };
