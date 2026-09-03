@@ -1008,6 +1008,56 @@
   .proj-row .proj-acts button.danger{color:var(--red);}
   .proj-row .proj-acts button[disabled]{color:var(--ink-faint); cursor:default;}
 
+  /* Ajustes -> Projetos: each project is one card carrying its name/actions
+     row PLUS its socio assignment. The card border/background moved out of
+     .proj-row onto the wrapper so the two halves read as one object instead
+     of two stacked cards — .proj-row itself is unchanged everywhere else. */
+  .proj-card{background:#fff; border:1px solid var(--line); border-radius:10px; margin-bottom:8px;}
+  .proj-card > .proj-row{background:none; border:none; border-radius:0; margin:0; padding-bottom:8px;}
+  .socio-strip{padding:0 13px 11px;}
+  /* The label sits INSIDE the chip row rather than on its own line — it is a
+     3-word eyebrow and a whole extra row per project is exactly the kind of
+     whitespace this app pays for size increases with. With several socios the
+     chips wrap under it, which reads correctly. */
+  .socio-strip .socio-lbl{
+    flex:0 0 auto; font-size:var(--fs-eyebrow); font-weight:700; text-transform:uppercase;
+    letter-spacing:0.05em; color:var(--ink-soft); margin-right:2px;
+  }
+  .socio-chips{display:flex; flex-wrap:wrap; gap:6px; align-items:center;}
+  .socio-chip{
+    display:inline-flex; align-items:center; gap:2px; background:var(--paper-2); border:1px solid var(--line);
+    border-radius:20px; padding:4px 4px 4px 11px; font-size:var(--fs-meta); font-weight:600; color:var(--ink);
+  }
+  .socio-chip.is-static{padding-right:11px;}
+  /* The x is visually small but keeps a 30px tap box — same reasoning as the
+     task checkbox's overlay: a small affordance is fine, a small target isn't. */
+  .socio-chip .x{
+    width:22px; height:22px; display:flex; align-items:center; justify-content:center; flex:0 0 auto;
+    border:none; background:none; border-radius:50%; color:var(--ink-soft); cursor:pointer;
+    font-size:var(--fs-body); line-height:1; padding:0; touch-action:manipulation;
+  }
+  .socio-chip .x:active{background:rgba(0,0,0,0.06); color:var(--red);}
+  .socio-add{
+    display:inline-flex; align-items:center; justify-content:center; gap:5px; min-height:30px; padding:0 12px;
+    border:1px dashed var(--line); border-radius:20px; background:none; color:var(--blue);
+    font-size:var(--fs-meta); font-weight:700; cursor:pointer; font-family:'Inter',sans-serif;
+    touch-action:manipulation;
+  }
+  .socio-add.open{border-style:solid; border-color:var(--blue); background:rgba(44,92,115,0.07);}
+  .socio-empty{font-size:var(--fs-meta); color:var(--ink-soft);}
+  /* The picker is inline rather than a modal: assigning someone is a small,
+     reversible act and pushing it into a dialog would make it feel like a
+     separate socio-management app, which is exactly what this shouldn't be. */
+  .socio-picker{margin-top:8px; padding-top:8px; border-top:1px dashed var(--line);}
+  .socio-picker .socio-pick-hint{font-size:var(--fs-caption); color:var(--ink-soft); margin-bottom:6px;}
+  .socio-picker .opts{display:flex; flex-wrap:wrap; gap:6px;}
+  .socio-picker .opts button{
+    border:1px solid var(--line); background:#fff; border-radius:20px; padding:5px 12px; min-height:30px;
+    font-size:var(--fs-meta); font-weight:600; color:var(--ink); cursor:pointer; font-family:'Inter',sans-serif;
+    touch-action:manipulation;
+  }
+  .socio-picker .opts button.socio-new{color:var(--blue); font-weight:700; border-style:dashed;}
+
   .update-banner{
     position:fixed; left:12px; right:12px; bottom:calc(78px + var(--safe-bottom)); z-index:410;
     background:var(--ink); color:#fff; border-radius:14px; padding:12px 14px;
@@ -1242,11 +1292,11 @@
         <div class="row2">
           <div class="field">
             <label>Sócio</label>
-            <select id="filterSocio">
-              <option value="">Todos</option>
-              <option value="Dalmir">Dalmir</option>
-              <option value="Pedro">Pedro</option>
-            </select>
+            <!-- Populated from the socios actually present in the visible
+                 entries (see populateEntryFilters), not from the project's
+                 current assignment: history stays filterable even after
+                 someone is unassigned. -->
+            <select id="filterSocio"><option value="">Todos</option></select>
           </div>
           <div class="field">
             <label>&nbsp;</label>
@@ -1336,12 +1386,15 @@
           <input type="text" id="f_fornecedor" placeholder="Quem prestou o serviço" autocomplete="off">
           <div class="ac-dropdown" id="f_fornecedor_ac" style="display:none;"></div>
         </div>
-        <div class="field">
+        <!-- Rendered from the ACTIVE PROJECT's assigned socios (see
+             syncSocioField), never a fixed list. The whole field is hidden
+             when the project has 0 assigned socios (nothing to choose, entry
+             saves with no socio) or exactly 1 (that socio is used
+             automatically) — a one-socio project is meant to be completely
+             frictionless. -->
+        <div class="field" id="socioField">
           <label>Pago por sócio</label>
-          <div class="toggle-group" id="socioToggle">
-            <button type="button" data-socio="Pedro">Pedro</button>
-            <button type="button" data-socio="Dalmir">Dalmir</button>
-          </div>
+          <div class="toggle-group" id="socioToggle"></div>
         </div>
         <div class="field" id="existingNotesField" style="display:none;">
           <label>Notas já registradas</label>
@@ -1790,10 +1843,24 @@
   let projectFotos = [];
   let tipos = [];
   let unidades = [];
+  // The MASTER list of socio names (the Socios tab). Which of these a given
+  // project actually offers lives on the project itself (project.socios) —
+  // see the "Project <-> socio" helpers below. Creating a socio adds to this
+  // list; assigning one never does, and unassigning one never removes from
+  // it, so a socio always outlives any single project assignment.
+  let socios = [];
   let activeProjectId = null;
 
   let editingId = null;
-  let selectedSocio = 'Pedro';
+  // The socio the entry BEING EDITED was saved with. Kept separately from
+  // selectedSocio because it must survive even when it is no longer one of
+  // the project's assigned socios: an assignment change is current
+  // configuration, and it must never silently rewrite what an existing
+  // lançamento already records (see syncSocioField).
+  let editingSocio = '';
+  // '' is a legitimate value — a project with no socios assigned saves
+  // entries with no socio at all, and shows no selector.
+  let selectedSocio = '';
   let entriesKind = 'caixa';
   let addKind = 'caixa';
   // Keeps the Adicionar form card's top accent (orange/blue) in step with
@@ -1965,6 +2032,79 @@
       word = words[1];
     }
     return (word.charAt(0) || '?').toUpperCase();
+  }
+
+  // ---------- Project <-> socio assignment ----------
+  // Two separate things, and keeping them separate is the whole feature:
+  //
+  //   project.socios  -> CURRENT CONFIGURATION. Which socios this project
+  //                      offers when a lançamento is created. Lives in the
+  //                      Projetos tab's own `socios` cell.
+  //   entry.socio     -> HISTORY. Who actually paid for one lançamento.
+  //                      Written once, when the entry was saved, and never
+  //                      touched again by anything here.
+  //
+  // Nothing below ever reads one to change the other. Unassigning a socio
+  // rewrites exactly one cell (that project's list) and leaves every entry
+  // that already records them completely alone — including entries in the
+  // very same project, which keep displaying, filtering and editing with
+  // their original socio.
+  //
+  // `socios` (the module-level array) is the MASTER list — every socio that
+  // exists at all. A project's assignment is a subset of it by name, the same
+  // "foreign key by display name" convention this app already uses for
+  // Projetos.id and Usuarios.projetos.
+  const DEFAULT_PROJECT_SOCIO = 'Dalmir'; // auto-assigned to every newly created project
+  function parseSociosCell_(cell){
+    const out = [];
+    String(cell === undefined || cell === null ? '' : cell).split(',').forEach(part=>{
+      const name = part.trim();
+      if(name && !caseInsensitiveMatch(out, name)) out.push(name);
+    });
+    return out;
+  }
+  // The socios a project's OWN entries have historically used. Only ever a
+  // fallback for a project whose assignment isn't known yet — a cache written
+  // before this feature existed, for the one boot until getAll lands. It
+  // mirrors the backend's one-shot migration rule exactly rather than
+  // guessing something different, so the value shown in that window is the
+  // value the server is about to confirm.
+  function historicalSociosForProject_(projectId){
+    const out = [];
+    [caixaObra, empreiteiro].forEach(list=>{
+      list.forEach(e=>{
+        if(e.projectId !== projectId) return;
+        const name = (e.socio || '').trim();
+        if(name && !caseInsensitiveMatch(out, name)) out.push(name);
+      });
+    });
+    return out;
+  }
+  // An ARRAY (even an empty one) is an answer: "these socios are assigned",
+  // and [] legitimately means nobody is. An ABSENT socios key is not an
+  // answer — it can only come from a pre-feature cache — so it falls back
+  // instead of being read as an empty assignment, which would wrongly hide
+  // the selector on a project that has socios.
+  function resolvedProjectSocios_(p){
+    if(!p) return [];
+    if(Array.isArray(p.socios)) return p.socios.slice();
+    return historicalSociosForProject_(p.id);
+  }
+  function projectSocios(projectId){
+    return resolvedProjectSocios_(projects.find(x=>x.id===projectId));
+  }
+  // Assignment writes always go through here, so "the same socio twice on one
+  // project" is impossible by construction rather than by the caller
+  // remembering to check. The backend de-duplicates independently as well.
+  function setProjectSocios_(projectId, list){
+    const p = projects.find(x=>x.id===projectId);
+    if(!p) return;
+    const clean = [];
+    (list||[]).forEach(name=>{
+      const n = String(name||'').trim();
+      if(n && !caseInsensitiveMatch(clean, n)) clean.push(n);
+    });
+    p.socios = clean;
   }
 
   // ---------- Storage: Google Sheets via Apps Script ----------
@@ -2174,10 +2314,11 @@
   const SHEET_TAB = {
     projects: 'projetos', caixaObra: 'caixaObra', empreiteiro: 'empreiteiro',
     tasks: 'tarefas', notes: 'notas', documentos: 'documentos', tipos: 'tipos', unidades: 'unidades',
+    socios: 'socios',
   };
   // Small reference lists — rarely edited concurrently, kept on the simple
   // whole-tab save rather than row-level tracking.
-  const LEGACY_WHOLE_TAB_KEYS = new Set(['projects', 'tipos', 'unidades']);
+  const LEGACY_WHOLE_TAB_KEYS = new Set(['projects', 'tipos', 'unidades', 'socios']);
 
   // Converts the app's in-memory shape into flat rows matching each tab's columns.
   // Nested photo arrays (.fotos on entries/tasks/notes) are NOT included here —
@@ -2186,13 +2327,20 @@
   // computed union of standalone notes AND notes nested inside individual
   // lançamentos, not a direct reflection of this one array.
   function toSheetRows(key, value){
-    if(key === 'projects') return value.map(p => ({id: p.name, ativo: true}));
+    // p.socios is the project <-> socio assignment (current configuration).
+    // Unlike driveFolderId — which the client has no concept of and the
+    // backend re-merges — this one IS client-owned, so it round-trips here
+    // normally. It says nothing about the `socio` already stored on existing
+    // lançamentos: those rows are history and no assignment change rewrites
+    // them.
+    if(key === 'projects') return value.map(p => ({id: p.name, ativo: true, socios: resolvedProjectSocios_(p).join(', ')}));
     if(key === 'caixaObra') return value.map(e => ({id:e.id, projeto:e.projectId, data:e.data, nome:e.nome, tipo:e.tipo||'', qtd:e.qtd||'', unidade:e.unidade||'', valor:e.valor||0, fornecedor:e.fornecedor||'', socio:e.socio||'', criadoEm:e.criadoEm, lastModified:e.lastModified}));
     if(key === 'empreiteiro') return value.map(e => ({id:e.id, projeto:e.projectId, data:e.data, nome:e.nome, qtd:e.qtd||'', unidade:e.unidade||'', valor:e.valor||0, fornecedor:e.fornecedor||'', socio:e.socio||'', criadoEm:e.criadoEm, lastModified:e.lastModified}));
     if(key === 'tasks') return value.map(t => ({id:t.id, projeto:t.projectId||'', texto:t.texto, prazo:t.prazo||'', prioridade:t.prioridade||'media', feito: !!t.feito, criadoEm:t.criadoEm, lastModified:t.lastModified}));
     if(key === 'documentos') return value.filter(d => !NO_DRIVE_FILE_YET.has((pendingUploads.get(d.id)||{}).status)).map(d => ({id:d.id, projeto:d.projectId||'', nome:d.nome, mimeType:d.mimeType||'', driveFileId:d.driveFileId||'', driveUrl:d.driveUrl||'', criadoEm:d.criadoEm, lastModified:d.lastModified}));
     if(key === 'tipos') return value.map(t => ({tipo: t}));
     if(key === 'unidades') return value.map(u => ({unidade: u}));
+    if(key === 'socios') return value.map(s => ({socio: s}));
     return [];
   }
   // The "Fotos" tab is a flattened mirror of every .fotos[] array nested inside
@@ -2701,6 +2849,7 @@
     else if(key === 'documentos') documentos = previousValue;
     else if(key === 'projectFotos') projectFotos = previousValue;
     else if(key === 'projects') projects = previousValue;
+    else if(key === 'socios') socios = previousValue;
   }
 
   // Every write in this app is optimistic: the caller mutates in-memory state
@@ -3096,7 +3245,7 @@
         const snap = cacheableState_();
         localStorage.setItem(CACHE_KEY, JSON.stringify({
           projects, caixaObra: snap.caixaObra, empreiteiro: snap.empreiteiro, tasks: snap.tasks,
-          notes: snap.notes, documentos: snap.documentos, projectFotos: snap.projectFotos, tipos, unidades,
+          notes: snap.notes, documentos: snap.documentos, projectFotos: snap.projectFotos, tipos, unidades, socios,
           savedAt: lastSyncTime,
         }));
       }catch(e){
@@ -3125,6 +3274,14 @@
       projectFotos = payload.projectFotos || [];
       tipos = (payload.tipos && payload.tipos.length) ? payload.tipos : DEFAULT_TIPOS.slice();
       unidades = (payload.unidades && payload.unidades.length) ? payload.unidades : DEFAULT_UNIDADES.slice();
+      socios = payload.socios || [];
+      // A cache written before this feature shipped carries projects as
+      // {id,name} with no socios key at all. That absence is deliberately NOT
+      // normalized to [] here: [] means "nobody is assigned" (a real state,
+      // which hides the selector), while absent means "not known yet" —
+      // resolvedProjectSocios_ falls back to this project's own history for
+      // the one boot until getAll lands, exactly as the backend migration
+      // does. See resolvedProjectSocios_.
       rebuildSheetSnapshot_();
       lastSyncTime = payload.savedAt || null;
       return true;
@@ -3254,7 +3411,8 @@
     });
   }
   function applyServerData_(data){
-      projects = (data.projetos||[]).filter(p => p.ativo !== false).map(p => ({id: p.id, name: p.id}));
+      projects = (data.projetos||[]).filter(p => p.ativo !== false)
+        .map(p => ({id: p.id, name: p.id, socios: parseSociosCell_(p.socios)}));
       // NO invented fallback here. There used to be a hardcoded
       // [Obra Gavião, Obra Boreal] default for the empty case, from back when
       // reaching zero projects was impossible. deleteProject_ made it
@@ -3309,6 +3467,10 @@
       if(tipos.length === 0) tipos = DEFAULT_TIPOS.slice();
       unidades = (data.unidades||[]).map(u=>u.unidade).filter(Boolean);
       if(unidades.length === 0) unidades = DEFAULT_UNIDADES.slice();
+      // No invented fallback: the backend seeds this tab once from real data
+      // (see ensureSociosSchema_), so an empty list here means there genuinely
+      // are no socios — a state the whole UI renders (no selector, no chips).
+      socios = (data.socios||[]).map(s=>s.socio).filter(Boolean);
 
       // Seed the diff snapshot from what we just loaded, so the very next save
       // only sends whatever actually changes from here — and so conflict checks
@@ -4171,6 +4333,16 @@
     selF.innerHTML = '<option value="">Todos</option>' + fornecedores.map(f=>`<option value="${escapeHTML(f)}">${escapeHTML(toDisplayCase(f))}</option>`).join('');
     if(fornecedores.includes(curF)) selF.value = curF; else { selF.value=''; filters.fornecedor=''; }
 
+    // Derived from the socios actually recorded on the visible entries, not
+    // from the project's current assignment — an entry keeps its socio when
+    // that person is unassigned, so filtering by them has to keep working.
+    const usedSocios = Array.from(new Set(list.map(e=>e.socio).filter(Boolean)))
+      .sort((a,b)=>a.localeCompare(b, 'pt-BR'));
+    const selS = $('#filterSocio');
+    const curS = selS.value;
+    selS.innerHTML = '<option value="">Todos</option>' + usedSocios.map(x=>`<option value="${escapeHTML(x)}">${escapeHTML(toDisplayCase(x))}</option>`).join('');
+    if(usedSocios.includes(curS)) selS.value = curS; else { selS.value=''; filters.socio=''; }
+
     $('#filterTipoField').style.display = entriesKind === 'caixa' ? 'block' : 'none';
     if(entriesKind === 'caixa'){
       const selT = $('#filterTipo');
@@ -4440,17 +4612,87 @@
   wirePrioToggle('#t_prioridadeToggle');
   wirePrioToggle('#te_prioridadeToggle');
 
+  // The socio options currently on offer in the Adicionar form. Derived, never
+  // stored: syncSocioField recomputes it from the form's project every time
+  // anything that could change it happens.
+  let socioOptions = [];
   function setSocio(name){
-    // Accent/case-insensitive match: rows entered directly into the sheet
-    // may have "pedro"/"dalmir" in any casing. Canonicalize to the button's
-    // own dataset value so selectedSocio is always stored consistently.
-    const btn = Array.from($all('#socioToggle button')).find(b => normSearch(b.dataset.socio) === normSearch(name));
-    selectedSocio = btn ? btn.dataset.socio : name;
-    $all('#socioToggle button').forEach(b => b.classList.toggle('active', b === btn));
+    // Accent/case-insensitive match against the CURRENT options: rows entered
+    // directly into the sheet may have "pedro"/"dalmir" in any casing.
+    // Canonicalize to the option's own spelling so selectedSocio is always
+    // stored consistently — but fall back to the name as given rather than
+    // dropping it, so an entry being edited keeps a socio that is no longer
+    // assigned to its project. Note '' is a LEGAL option value ("Sem sócio",
+    // offered only while editing an entry saved without one), so this tests
+    // for a found match explicitly rather than for truthiness.
+    const match = caseInsensitiveMatch(socioOptions, name);
+    selectedSocio = match !== undefined ? match : (name || '');
+    renderSocioToggle_();
   }
-  $all('#socioToggle button').forEach(btn=>{
-    btn.addEventListener('click', ()=> setSocio(btn.dataset.socio));
-  });
+  function renderSocioToggle_(){
+    const box = $('#socioToggle');
+    if(!box) return;
+    box.innerHTML = socioOptions.map(n =>
+      `<button type="button" data-socio="${escapeHTML(n)}"${normSearch(n) === normSearch(selectedSocio) ? ' class="active"' : ''}>${n ? escapeHTML(toDisplayCase(n)) : 'Sem sócio'}</button>`
+    ).join('');
+    box.querySelectorAll('button[data-socio]').forEach(btn=>{
+      btn.addEventListener('click', ()=> setSocio(btn.dataset.socio));
+    });
+  }
+  // Which project's assignment governs the form right now. When creating,
+  // that's the active project — so switching projects mid-entry recalculates
+  // immediately. When EDITING, it is the entry's own project, which doesn't
+  // change just because the user tapped a different project pill.
+  function formProjectId_(){
+    if(editingId){
+      const e = getList(addKind).find(x => x.id === editingId);
+      if(e) return e.projectId;
+    }
+    return activeProjectId;
+  }
+  // The single source of truth for the Adicionar socio control. Recomputes the
+  // options from the form's project and applies the three-way rule:
+  //   0 assigned -> no selector, entry saves with no socio
+  //   1 assigned -> no selector, that socio is used automatically
+  //   2+         -> selector, showing ONLY that project's socios
+  // A socio selected for a different project can never survive a project
+  // change: `selectedSocio` is re-derived from the new option list every time,
+  // and falls back to the first option (or '') when the old one isn't in it.
+  function syncSocioField(preferred){
+    const field = $('#socioField');
+    if(!field) return;
+    const opts = projectSocios(formProjectId_());
+    // HISTORY IS NEVER REWRITTEN. Editing an existing entry must be able to
+    // save it back exactly as it was, whatever the project's assignment says
+    // today — otherwise correcting a typo in an old lançamento would quietly
+    // re-credit the payment to somebody who never made it.
+    if(editingId){
+      if(editingSocio){
+        // Keep the entry's own socio on offer even after that person was
+        // unassigned from this project.
+        if(caseInsensitiveMatch(opts, editingSocio) === undefined) opts.unshift(editingSocio);
+      } else {
+        // The entry was saved with NO socio (its project had none assigned at
+        // the time). Offer "Sem sócio" as a real, preselected option rather
+        // than silently defaulting to whoever happens to be first in the list.
+        opts.unshift('');
+      }
+    }
+    socioOptions = opts;
+
+    if(opts.length <= 1){
+      // Nothing to choose. Hiding the control is the point — a project with a
+      // single socio should never ask a question with one answer.
+      selectedSocio = opts.length ? opts[0] : '';
+      field.style.display = 'none';
+      renderSocioToggle_();
+      return;
+    }
+    field.style.display = '';
+    const keep = caseInsensitiveMatch(opts, preferred !== undefined ? preferred : selectedSocio);
+    selectedSocio = keep !== undefined ? keep : opts[0];
+    renderSocioToggle_();
+  }
 
   const form = $('#entryForm');
   function resetForm(){
@@ -4473,7 +4715,11 @@
     $('#f_unidade').value = 'und';
     $('#f_unidade').classList.add('hint-highlight');
     editingId = null;
-    setSocio('Pedro');
+    editingSocio = '';
+    // Recomputed rather than defaulted to a name: which socio (if any) a new
+    // entry starts with is entirely a function of the active project's
+    // assignment now.
+    syncSocioField('');
     $('#addTitle').textContent = 'Adicionar';
     $('#saveEntryBtn').textContent = 'Salvar lançamento';
     $('#cancelEditBtn').style.display = 'none';
@@ -5824,7 +6070,10 @@
     $('#f_valor').value = e.valor || '';
     $('#f_fornecedor').value = toDisplayCase(e.fornecedor) || '';
     $('#f_nota').value = '';
-    setSocio(e.socio || 'Pedro');
+    // Preserve the entry's OWN socio, even if that person is no longer
+    // assigned to this project — see syncSocioField.
+    editingSocio = e.socio || '';
+    syncSocioField(editingSocio);
     $('#addTitle').textContent = 'Editar lançamento';
     $('#saveEntryBtn').textContent = 'Salvar alterações';
     $('#cancelEditBtn').style.display = 'inline-flex';
@@ -6742,6 +6991,7 @@
   }
   $('#settingsBtn').addEventListener('click', ()=>{
     renderAccountCard();
+    openSocioPickerFor = null; // never reopen a picker the user left open last time
     renderSettingsProjects();
     $('#settingsModal').classList.add('open');
   });
@@ -6826,11 +7076,157 @@
     if(im.fotos) parts.push(`${im.fotos} foto${im.fotos===1?'':'s'}`);
     return parts;
   }
+  // Which project's socio picker is currently expanded (only ever one, so the
+  // list stays compact). Reset whenever the settings modal is opened.
+  let openSocioPickerFor = null;
+  // The socios NOT yet on this project — what "assign an existing socio"
+  // offers. Assigning is always picking from the master list, never typing a
+  // name that might duplicate someone: that is what makes an assignment
+  // incapable of creating a second copy of a socio.
+  function unassignedSociosFor_(projectId){
+    const assigned = projectSocios(projectId);
+    return socios.filter(n => !caseInsensitiveMatch(assigned, n));
+  }
+  function socioStripHTML_(p, canEditConfig){
+    const assigned = projectSocios(p.id);
+    const chips = assigned.map(n => `<span class="socio-chip${canEditConfig ? '' : ' is-static'}">${escapeHTML(toDisplayCase(n))}${
+      canEditConfig ? `<button type="button" class="x" data-unassign="${escapeHTML(n)}" aria-label="Remover ${escapeHTML(toDisplayCase(n))} deste projeto">&times;</button>` : ''
+    }</span>`).join('');
+    const empty = assigned.length ? '' : '<span class="socio-empty">Nenhum sócio</span>';
+    const isOpen = openSocioPickerFor === p.id;
+    const addBtn = canEditConfig
+      ? `<button type="button" class="socio-add${isOpen ? ' open' : ''}" data-socioadd>${isOpen ? 'Fechar' : '+ Sócio'}</button>`
+      : '';
+    let picker = '';
+    if(canEditConfig && isOpen){
+      const opts = unassignedSociosFor_(p.id);
+      picker = `<div class="socio-picker">
+        <div class="socio-pick-hint">${opts.length ? 'Toque para adicionar a este projeto' : 'Todos os sócios já estão neste projeto'}</div>
+        <div class="opts">${
+          opts.map(n => `<button type="button" data-assign="${escapeHTML(n)}">${escapeHTML(toDisplayCase(n))}</button>`).join('')
+        }<button type="button" class="socio-new" data-newsocio>+ Novo sócio</button></div>
+      </div>`;
+    }
+    return `<div class="socio-strip">
+      <div class="socio-chips"><span class="socio-lbl">Sócios</span>${chips}${empty}${addBtn}</div>
+      ${picker}
+    </div>`;
+  }
+  // Every assignment change is ONE optimistic mutation of that project's own
+  // socios list followed by the same whole-tab Projetos save adding or
+  // renaming a project already uses — so it inherits that path's permission
+  // check (config.edit), its out-of-scope-row preservation, its cache write
+  // and its failure rollback with no parallel mechanism of its own.
+  //
+  // Nothing in here reads or writes an entry. That is the point: an
+  // assignment is current configuration, and the `socio` already stored on a
+  // lançamento is history that no configuration change may touch.
+  async function saveProjectSocios_(projectId, nextList){
+    // Rollback is PER PROJECT, not a whole-array clone, and saveKey is
+    // deliberately called with no `previousValue` — the same invariant the
+    // task write paths follow. Each × / + tap is its own intention, and a
+    // second one can easily land before the first round trip returns; a
+    // whole-array restore would then undo a change the user already watched
+    // apply (and which may already be on the sheet), which is exactly the
+    // "1 of 5 sticks, 4 silently revert" failure the checkbox path had.
+    const prevList = projectSocios(projectId);
+    setProjectSocios_(projectId, nextList);
+    renderSettingsProjects();
+    renderAll(); // the Adicionar socio control follows the assignment immediately
+    const ok = await saveKey('projects', projects);
+    if(!ok){
+      setProjectSocios_(projectId, prevList);
+      renderSettingsProjects();
+      renderAll();
+    }
+    return ok;
+  }
+
+  // "Create a new socio" must never be a second way to end up with two of the
+  // same person: a name that already exists is simply assigned instead of
+  // added again.
+  async function createAndAssignSocio_(projectId){
+    const raw = await showPrompt('', {title:'Novo sócio', placeholder:'Ex: Carlos'});
+    if(!raw) return;
+    // A comma is the separator the assignment cell uses, so a name can't
+    // contain one. Stripping beats rejecting — a comma here can only be a
+    // typo, and bouncing the dialog for it would be noise.
+    const name = raw.replace(/,/g, ' ').replace(/\s+/g, ' ').trim();
+    if(!name) return;
+    const existing = caseInsensitiveMatch(socios, name);
+    const already = caseInsensitiveMatch(projectSocios(projectId), existing || name);
+    if(already){
+      openSocioPickerFor = null;
+      renderSettingsProjects();
+      showToast(toDisplayCase(already) + ' já está neste projeto.');
+      return;
+    }
+    if(!existing){
+      const prevSocios = cloneState_(socios);
+      socios = socios.concat([name]);
+      const okList = await saveKey('socios', socios, prevSocios);
+      // If this half fails nothing was created; saveKey has already restored
+      // the list and shown the error. If it succeeds but the assignment below
+      // fails, the socio exists and is simply unassigned — a visible,
+      // one-tap-recoverable state, never a lost or duplicated record.
+      if(!okList){ renderSettingsProjects(); return; }
+    }
+    openSocioPickerFor = null;
+    const finalName = existing || name;
+    const ok = await saveProjectSocios_(projectId, projectSocios(projectId).concat([finalName]));
+    if(ok) showToast(toDisplayCase(finalName) + ' adicionado a ' + projName(projectId) + '.');
+  }
+
+  function socioCardProject_(el){
+    const card = el.closest('[data-projcard]');
+    return card ? card.dataset.projcard : null;
+  }
+  function wireSocioStrips_(box){
+    box.querySelectorAll('[data-socioadd]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const pid = socioCardProject_(btn);
+        openSocioPickerFor = (openSocioPickerFor === pid) ? null : pid;
+        renderSettingsProjects();
+      });
+    });
+    box.querySelectorAll('[data-unassign]').forEach(btn=>{
+      btn.addEventListener('click', withGuard(async ()=>{
+        const pid = socioCardProject_(btn);
+        const name = btn.dataset.unassign;
+        if(!pid) return;
+        // No confirmation dialog on purpose: this removes an assignment and
+        // nothing else. The socio stays in the master list (assignable again
+        // here, and untouched on every other project), and every lançamento
+        // already recorded against them keeps its socio exactly as it is.
+        const next = projectSocios(pid).filter(n => normSearch(n) !== normSearch(name));
+        const ok = await saveProjectSocios_(pid, next);
+        if(ok) showToast(toDisplayCase(name) + ' saiu de ' + projName(pid) + '.');
+      }));
+    });
+    box.querySelectorAll('[data-assign]').forEach(btn=>{
+      btn.addEventListener('click', withGuard(async ()=>{
+        const pid = socioCardProject_(btn);
+        const name = btn.dataset.assign;
+        if(!pid) return;
+        openSocioPickerFor = null;
+        const ok = await saveProjectSocios_(pid, projectSocios(pid).concat([name]));
+        if(ok) showToast(toDisplayCase(name) + ' adicionado a ' + projName(pid) + '.');
+      }));
+    });
+    box.querySelectorAll('[data-newsocio]').forEach(btn=>{
+      btn.addEventListener('click', withGuard(async ()=>{
+        const pid = socioCardProject_(btn);
+        if(pid) await createAndAssignSocio_(pid);
+      }));
+    });
+  }
+
   function renderSettingsProjects(){
     const box = $('#settingsProjects');
     const canDeleteConfig = canSection('config','delete');
-    box.innerHTML = projects.map(p => `<div class="proj-row"><span class="pname"><span class="proj-dot-inline"></span>${escapeHTML(p.name)}</span><span class="proj-acts"><button data-rename="${escapeHTML(p.id)}">Renomear</button>${canDeleteConfig ? `<button class="danger" data-delproj="${escapeHTML(p.id)}">Excluir</button>` : ''}</span></div>`).join('');
     const canEditConfig = canSection('config','edit');
+    box.innerHTML = projects.map(p => `<div class="proj-card" data-projcard="${escapeHTML(p.id)}"><div class="proj-row"><span class="pname"><span class="proj-dot-inline"></span>${escapeHTML(p.name)}</span><span class="proj-acts"><button data-rename="${escapeHTML(p.id)}">Renomear</button>${canDeleteConfig ? `<button class="danger" data-delproj="${escapeHTML(p.id)}">Excluir</button>` : ''}</span></div>${socioStripHTML_(p, canEditConfig)}</div>`).join('');
+    wireSocioStrips_(box);
     box.querySelectorAll('[data-delproj]').forEach(btn=>{
       btn.addEventListener('click', withGuard(()=> deleteProjectFlow_(btn)));
     });
@@ -6952,7 +7348,17 @@
         return;
       }
       const prevProjects = cloneState_(projects);
-      const np = {id: nn, name: nn}; // Sheets uses the project name as its id
+      // A new project starts with Dalmir assigned — the one socio every
+      // project in this business has by default, so the common case ("Obra X,
+      // paid by Dalmir") needs no setup at all and Adicionar shows no
+      // selector. Dalmir is treated as a completely ordinary socio from that
+      // moment on: he can be removed here, others can be added alongside him,
+      // and nothing in Adicionar knows his name. If the master list somehow
+      // doesn't have him, the literal name is still assigned rather than
+      // leaving the project with no socio — an assigned socio never has to be
+      // in the master list to work.
+      const defaultSocio = caseInsensitiveMatch(socios, DEFAULT_PROJECT_SOCIO) || DEFAULT_PROJECT_SOCIO;
+      const np = {id: nn, name: nn, socios: [defaultSocio]}; // Sheets uses the project name as its id
       projects.push(np);
       const ok = await saveKey('projects', projects, prevProjects);
       if(!ok){
@@ -7381,6 +7787,14 @@
     renderTasks();
     renderNotesFeed();
     renderDocsView();
+    // The Adicionar socio control depends on the ACTIVE PROJECT's assignment,
+    // which changes from three unrelated places: the project switcher, a
+    // background getAll landing, and the Gear assignment UI. Rather than
+    // remembering to call it at each, it rides along with the render every one
+    // of those already triggers. It preserves the current selection whenever
+    // that selection is still valid, so it can never disturb a form the user
+    // is part-way through filling in.
+    syncSocioField();
   }
 
   // ==================================================================

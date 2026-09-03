@@ -155,8 +155,8 @@ function getCurrentUser_(idToken) {
 // Each section maps to the business-data sheet(s) it OWNS OUTRIGHT — a sheet
 // whose every row belongs to that section, wholesale. 'config' and 'usuarios'
 // are sections with no page of their own (see VIEW_FILTERED_SECTIONS below)
-// — they exist purely to gate WRITE actions (editing Projetos/Tipos/Unidades;
-// a future user-management screen), not to hide a nav tab. 'painel.tarefas'
+// — they exist purely to gate WRITE actions (editing Projetos/Tipos/Unidades/
+// Socios; a future user-management screen), not to hide a nav tab. 'painel.tarefas'
 // is a dotted PAGE.SUBSECTION key, not a data-owning section — it carries no
 // sheets of its own (see "Page vs. section" below).
 //
@@ -169,7 +169,7 @@ const SECTIONS = {
   tarefas: ['tarefas'],
   notas: [],
   docs: ['documentos'],
-  config: ['projetos', 'tipos', 'unidades'],
+  config: ['projetos', 'tipos', 'unidades', 'socios'],
   usuarios: [], // reserved for a future user-management screen — not built yet
 };
 
@@ -202,8 +202,8 @@ const SECTIONS = {
 // sheets for this reason — see there for the enforcement itself.
 
 // Sections whose sheets get wiped wholesale from getAll when the user lacks
-// 'view' on them. 'config'/'usuarios' are excluded on purpose: Tipos/Unidades
-// are shared reference data (never section-gated, see writeSheet_ comments)
+// 'view' on them. 'config'/'usuarios' are excluded on purpose: Tipos/Unidades/
+// Socios are shared reference data (never section-gated, see writeSheet_ comments)
 // and Projetos is filtered by PROJECT scope only (below) — neither has ever
 // been page/section-view-gated, only action-gated (who may edit them).
 // 'painel.tarefas' harmlessly no-ops here (it owns no sheets); Notas/Fotos
@@ -804,7 +804,16 @@ const SHEETS = {
   // resolveOrCreateProjectFolder_ — and is deliberately never sent by, or
   // accepted from, the client: the frontend's whole-tab Projetos save has no
   // concept of it and must not be able to blank it (see saveProjetos_).
-  projetos:    { name: 'Projetos',    cols: ['id', 'ativo', 'driveFolderId'] },
+  // 'socios' is the project <-> socio ASSIGNMENT: a comma-separated list of
+  // socio names, exactly the same shape (and the same "foreign key by name")
+  // convention Usuarios.projetos already uses on the auth spreadsheet. Unlike
+  // driveFolderId this one IS client-owned — the frontend's projects array
+  // carries it and toSheetRows('projects', ...) sends it — so a whole-tab
+  // Projetos save round-trips it normally. It is CURRENT CONFIGURATION only:
+  // it decides which socios a project OFFERS when creating a lancamento, and
+  // never touches the `socio` already recorded on an existing CaixaObra /
+  // Empreiteiro row (see normalizeSociosCell_ / ensureSociosSchema_).
+  projetos:    { name: 'Projetos',    cols: ['id', 'ativo', 'driveFolderId', 'socios'] },
   caixaObra:   { name: 'CaixaObra',   cols: ['id','projeto','data','nome','tipo','qtd','unidade','valor','fornecedor','socio','criadoEm','lastModified'], rowLevel: true },
   empreiteiro: { name: 'Empreiteiro', cols: ['id','projeto','data','nome','qtd','unidade','valor','fornecedor','socio','criadoEm','lastModified'], rowLevel: true },
   tarefas:     { name: 'Tarefas',     cols: ['id','projeto','texto','prazo','prioridade','feito','criadoEm','lastModified'], rowLevel: true },
@@ -813,7 +822,22 @@ const SHEETS = {
   documentos:  { name: 'Documentos',  cols: ['id','projeto','nome','mimeType','driveFileId','driveUrl','criadoEm','lastModified'], rowLevel: true },
   tipos:       { name: 'Tipos',       cols: ['tipo'] },
   unidades:    { name: 'Unidades',    cols: ['unidade'] },
+  // The master list of socios — a small shared reference list, exactly like
+  // Tipos/Unidades: single column, whole-tab replace, no conflict tracking.
+  // Assigning a socio to a project never adds a row here (that is Projetos.
+  // socios), and unassigning never removes one — the two are deliberately
+  // independent, so removing someone from a project can't delete the socio.
+  socios:      { name: 'Socios',      cols: ['socio'] },
 };
+
+// The two socios this app offered as hardcoded buttons before project-level
+// assignment existed. Seeded into the Socios tab on first run so the master
+// list starts out matching what the app has always actually allowed, rather
+// than empty. DEFAULT_PROJECT_SOCIO is the one automatically assigned to a
+// newly created project (and to a pre-existing project whose history carries
+// no socio at all) — see ensureSociosSchema_.
+const LEGACY_SOCIOS = ['Pedro', 'Dalmir'];
+const DEFAULT_PROJECT_SOCIO = 'Dalmir';
 
 function ss_() { return SpreadsheetApp.getActiveSpreadsheet(); }
 
@@ -1193,6 +1217,155 @@ function doGet(e) {
   return jsonOut_({ error: 'Use POST.' });
 }
 
+// ------------------------------------------------------------
+// PROJECT <-> SOCIO ASSIGNMENT
+//
+// Two pieces of storage, deliberately separate:
+//   * Socios (a single-column tab)  -> the master list of people. Shared
+//     reference data, same shape and same whole-tab-replace treatment as
+//     Tipos/Unidades.
+//   * Projetos.socios (a cell)      -> which of those people are currently
+//     assigned to that one project, as a comma-separated list of names.
+//
+// Keeping them apart is what makes the two rules in the spec structurally
+// true rather than merely "handled": assigning someone to a project can
+// never duplicate the socio (the master list is untouched), and removing
+// someone from a project can never delete the socio (only that one cell
+// changes). A socio assigned to several projects is several independent
+// cells, so removing them from one is invisible to the others.
+//
+// The assignment is CURRENT CONFIGURATION. The `socio` column already
+// written on a CaixaObra/Empreiteiro row is HISTORY, and nothing in this
+// file ever rewrites it from an assignment change — not even the migration
+// below, which only ever READS entries to decide what to assign.
+// ------------------------------------------------------------
+
+// Splits a "A, B, C" cell into a clean, de-duplicated list. Deduplication is
+// the whole reason writes go through here rather than storing the client's
+// string verbatim: "prevent duplicate assignments" has to hold at the
+// persistence layer, not just in whichever UI happened to produce the value.
+function parseSociosCell_(cell) {
+  const seen = {};
+  const out = [];
+  String(cell === undefined || cell === null ? '' : cell).split(',').forEach(function (part) {
+    const name = String(part).trim();
+    if (!name) return;
+    const key = name.toLowerCase();
+    if (seen[key]) return;
+    seen[key] = true;
+    out.push(name);
+  });
+  return out;
+}
+function normalizeSociosCell_(cell) {
+  return parseSociosCell_(cell).join(', ');
+}
+// Case-insensitive lookup against a list, returning the list's OWN spelling —
+// so a name only ever gets stored in one casing no matter how it was typed.
+function canonicalSocio_(list, name) {
+  const key = String(name || '').trim().toLowerCase();
+  if (!key) return '';
+  for (let i = 0; i < list.length; i++) {
+    if (String(list[i]).trim().toLowerCase() === key) return list[i];
+  }
+  return '';
+}
+
+// Does the Projetos sheet already carry the 'socios' header? This is the
+// one-shot migration's guard, and it is deliberately the SHEET's own shape
+// rather than a stored flag: the header is created by the migration itself,
+// so "the column exists" is exactly "this has already run", with nothing to
+// keep in sync. After it has run, a BLANK socios cell genuinely means "no
+// socios assigned" — which is why the backfill can never run twice and
+// silently re-add someone the user deliberately removed.
+function projetosSociosCol_() {
+  return SHEETS.projetos.cols.indexOf('socios') + 1;
+}
+function hasSociosColumn_(projetosSheet) {
+  const col = projetosSociosCol_();
+  if (projetosSheet.getMaxColumns() < col) return false;
+  return String(projetosSheet.getRange(1, col).getValue()).trim().toLowerCase() === 'socios';
+}
+
+// Creates the Socios tab and the Projetos.socios column if this spreadsheet
+// predates the feature, and backfills both from data that already exists.
+// Idempotent, cheap on the common path (two getSheetByName calls plus one
+// header read), and called from the same short-lived lock that already
+// backfills missing ids at the top of getAll — a schema repair is a write,
+// so it must never run lock-free alongside a concurrent batchMulti.
+function ensureSociosSchema_() {
+  const ss = ss_();
+  let sociosSheet = ss.getSheetByName(SHEETS.socios.name);
+  const projetosSheet = ss.getSheetByName(SHEETS.projetos.name);
+  const needsColumn = !!projetosSheet && !hasSociosColumn_(projetosSheet);
+  if (sociosSheet && !needsColumn) return;
+
+  // Everything both halves need, read once. Only CaixaObra/Empreiteiro carry
+  // a socio, and they are read strictly to OBSERVE what each project has
+  // historically used — no entry row is written by any of this.
+  const entries = readSheet_('caixaObra').concat(readSheet_('empreiteiro'));
+
+  // --- Master list -------------------------------------------------------
+  // Starts as the two names this app has always offered, plus every distinct
+  // socio that actually appears in the data (a row typed straight into the
+  // spreadsheet can carry a name the buttons never had). Derived from real
+  // data; nothing invented beyond preserving the app's existing two options.
+  const master = LEGACY_SOCIOS.slice();
+  entries.forEach(function (e) {
+    const name = String(e.socio || '').trim();
+    if (name && !canonicalSocio_(master, name)) master.push(name);
+  });
+  if (!sociosSheet) {
+    sociosSheet = ss.insertSheet(SHEETS.socios.name);
+    sociosSheet.getRange(1, 1).setValue('socio');
+    sociosSheet.setFrozenRows(1);
+    sociosSheet.getRange(2, 1, master.length, 1).setValues(master.map(function (n) { return [n]; }));
+  }
+
+  // --- Projetos.socios column + one-shot backfill -------------------------
+  if (!needsColumn) return;
+  const col = projetosSociosCol_();
+  if (projetosSheet.getMaxColumns() < col) {
+    projetosSheet.insertColumnsAfter(projetosSheet.getMaxColumns(), col - projetosSheet.getMaxColumns());
+  } else if (String(projetosSheet.getRange(1, col).getValue()).trim() !== '') {
+    // Something else already occupies this position — a column a person added
+    // by hand to the right of the schema. Shift it right instead of writing
+    // over it; writeSheet_ already carries such columns along with their row,
+    // and it would start reading that one AS 'socios' the moment the schema
+    // grew past it.
+    projetosSheet.insertColumnBefore(col);
+  }
+  projetosSheet.getRange(1, col).setValue('socios');
+
+  const lastRow = projetosSheet.getLastRow();
+  if (lastRow < 2) return;
+  const ids = projetosSheet.getRange(2, 1, lastRow - 1, 1).getValues();
+  // Per project, the socios its OWN history actually used — so an existing
+  // project keeps offering exactly the people it has always been used with,
+  // and nothing about the app's behaviour changes for it on the day this
+  // ships. A project with no socio in its history at all falls back to the
+  // same default a brand-new project gets. This is why the migration reads
+  // entries: assigning every project every known socio would be an invention,
+  // and assigning none would silently remove the ability to record who paid.
+  const byProject = {};
+  entries.forEach(function (e) {
+    const proj = String(e.projeto || '').trim();
+    const name = String(e.socio || '').trim();
+    if (!proj || !name) return;
+    const list = byProject[proj] || (byProject[proj] = []);
+    const canon = canonicalSocio_(master, name) || name;
+    if (!canonicalSocio_(list, canon)) list.push(canon);
+  });
+  const fallback = canonicalSocio_(master, DEFAULT_PROJECT_SOCIO) || DEFAULT_PROJECT_SOCIO;
+  const out = ids.map(function (row) {
+    const id = String(row[0] || '').trim();
+    if (!id) return [''];
+    const list = byProject[id];
+    return [(list && list.length ? list : [fallback]).join(', ')];
+  });
+  projetosSheet.getRange(2, col, out.length, 1).setValues(out);
+}
+
 // Whole-tab save for Projetos is access-scoped data (unlike Tipos/Unidades,
 // shared reference lists) — a user restricted to specific projects only ever
 // has THOSE rows in memory (getAll already filtered the rest out for them),
@@ -1204,7 +1377,7 @@ function doGet(e) {
 // renameProject_ below.
 // driveFolderId is backend-owned (see the SHEETS.projetos comment) and the
 // client has no concept of it — toSheetRows('projects', ...) on the frontend
-// only ever sends {id, ativo}. Whatever the client sends for an id that
+// only ever sends {id, ativo, socios}. Whatever the client sends for an id that
 // already exists in the sheet gets its CURRENT driveFolderId stamped back on
 // before writing, so adding or renaming one project can never blank another
 // project's (or even its own) already-resolved folder id. A brand-new id
@@ -1215,7 +1388,15 @@ function preserveProjectFolderIds_(rows) {
   const folderById = {};
   existing.forEach(function (p) { folderById[p.id] = p.driveFolderId || ''; });
   return (rows || []).map(function (r) {
-    return Object.assign({}, r, { driveFolderId: folderById[r.id] || '' });
+    // socios IS client-owned (unlike driveFolderId, above) — the frontend
+    // holds it on every project object and sends the whole array back — but
+    // it still gets normalized here rather than written verbatim, so a
+    // duplicate assignment can't exist in the sheet even if some future
+    // caller sends one.
+    return Object.assign({}, r, {
+      driveFolderId: folderById[r.id] || '',
+      socios: normalizeSociosCell_(r.socios),
+    });
   });
 }
 function saveProjetos_(user, rows) {
@@ -1545,6 +1726,12 @@ function doPost(e) {
         return jsonOut_({ error: 'Servidor ocupado, tente novamente.' });
       }
       try {
+        // Same short-lived lock, same reason: both of these repair the
+        // spreadsheet's own shape and therefore WRITE, so neither may run
+        // alongside a concurrent batchMulti. ensureSociosSchema_ is a no-op
+        // on every request after the first one following this feature's
+        // deploy (see there).
+        ensureSociosSchema_();
         Object.keys(SHEETS).forEach(function (key) { backfillMissingIds_(key); });
       } finally {
         idLock.releaseLock();
@@ -1625,8 +1812,27 @@ function doPost(e) {
       // Projetos IS access-scoped, see saveProjetos_.
       if (action === 'saveSheet') {
         if (!can_(user, 'config', 'edit')) throw new Error('sem permissão para editar');
+        // A write must never be the thing that discovers the Socios tab or
+        // the Projetos.socios column doesn't exist yet — writeSheet_ throws
+        // on a missing tab, and saveProjetos_ would otherwise write the
+        // column into whatever position happens to be free. Idempotent and
+        // cheap once the schema is in place; see ensureSociosSchema_.
+        if (body.sheet === 'projetos' || body.sheet === 'socios') ensureSociosSchema_();
         if (body.sheet === 'projetos') {
           saveProjetos_(user, body.rows);
+        } else if (body.sheet === 'socios') {
+          // Same de-duplication rule the assignment cell gets, applied to the
+          // master list: two socios differing only in casing are one socio.
+          const seen = {};
+          const rows = (body.rows || []).map(function (r) {
+            return String((r && r.socio !== undefined ? r.socio : r) || '').trim();
+          }).filter(function (name) {
+            const key = name.toLowerCase();
+            if (!name || seen[key]) return false;
+            seen[key] = true;
+            return true;
+          }).map(function (name) { return { socio: name }; });
+          writeSheet_('socios', rows);
         } else {
           writeSheet_(body.sheet, body.rows);
         }
