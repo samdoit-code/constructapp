@@ -485,6 +485,13 @@
   .note-card{
     background:#fffbe9; border:1px solid #ecdfa8; border-left:4px solid var(--orange);
     border-radius:10px; padding:12px 14px; margin-bottom:9px; box-shadow:var(--shadow);
+    /* A press-and-hold is exactly the gesture iOS/Android use to trigger text
+       selection and the copy/share callout — without these, holding a note to
+       open the action popover ALSO highlighted its text and popped up the
+       OS's native selection menu underneath our own. touch-callout is the
+       Safari-specific one that suppresses that callout; user-select suppresses
+       the selection highlight itself, needed on both platforms. */
+    -webkit-touch-callout:none; -webkit-user-select:none; user-select:none;
   }
   /* `pre-wrap` alone only wraps at whitespace, so a single unbroken token — a
      pasted URL, a long product code, a run of characters typed without a space
@@ -3596,26 +3603,47 @@
     document.documentElement.style.setProperty('--tabbar-h', (bar ? bar.offsetHeight : 0) + 'px');
     const sc = document.getElementById('appScroll');
     if(!sc) return;
-    const compTop = comp.getBoundingClientRect().top;
-    // The true dead zone at the bottom of the screen is "whatever is below
-    // the composer's own top edge" — composer height plus the tab bar height
-    // when it's showing, or just the composer while composing (tab bar
-    // hidden, composer flush to 0). Deriving it from compTop rather than
-    // adding comp.offsetHeight + a guessed tab-bar figure means it's always
-    // exactly right in both states, with no double-accounting: this REPLACES
-    // the generic 80px tab-bar reservation for this page (see
-    // body.notes-active #appScroll CSS) rather than sitting on top of it.
+    const tabbarH = bar ? bar.offsetHeight : 0; // 0 while composing — nav.tabbar is display:none then
+    // compTop (the composer's real on-screen top) is what actually produces a
+    // tight, correct alignment in the overwhelmingly common case, so it stays
+    // the primary signal — a purely deterministic offsetHeight-sum formula
+    // was tried instead and, while safe, left a visibly bigger gap (every
+    // small padding it had to re-derive independently — main's own bottom
+    // padding, a cosmetic buffer — compounded instead of cancelling out the
+    // way they do when the real rendered position is used directly).
+    //
+    // The known risk with using it directly: on iOS, a position:fixed
+    // element's rect can in principle be reported relative to either the
+    // layout viewport or the visual one depending on browser/version, and the
+    // on-screen keyboard shrinks only the visual one — sc.clientHeight (a
+    // layout-viewport quantity) does not shrink with it. If that mismatch
+    // ever makes compTop read as implausibly small (i.e. the composer
+    // appearing far higher on screen than it structurally can be), the old
+    // formula (sc.clientHeight - compTop) would inflate this reservation
+    // hugely, and appScroll's padding-bottom rule would then reserve a large
+    // genuinely-scrollable dead zone — reported on-device as "scroll up and
+    // there's a huge gap before the composer" while composing.
+    //
+    // structuralMax is what the reservation can deterministically never
+    // legitimately exceed — composer height + tab bar height, plus a small
+    // buffer — and clamping compTop to never read BELOW the floor that
+    // implies (i.e. never let the composer appear implausibly high up) closes
+    // that failure mode without giving up the tight, real-position-based
+    // alignment for every normal frame where compTop is reported correctly.
+    const structuralMax = comp.offsetHeight + tabbarH + 40;
+    const rawTop = comp.getBoundingClientRect().top;
+    const compTop = Math.max(rawTop, sc.clientHeight - structuralMax);
     const bottomReserve = Math.max(0, sc.clientHeight - compTop);
     document.documentElement.style.setProperty('--notes-bottom-reserve', bottomReserve + 'px');
-    // A small fixed breathing gap — not composer-height-based any more, since
-    // the real clearance now lives in appScroll's own padding above.
+    // A small fixed breathing gap — not composer-height-based, since the real
+    // clearance lives in appScroll's own padding above.
     feed.style.paddingBottom = '14px';
     // Bottom-fill (see #view-notes.active CSS): when there are only a few
     // notes, plain block flow glues them under the header and leaves a big
     // blank gap down to the composer, because the composer is position:fixed
     // and contributes no height to the document for short content to be
     // "pushed down" by. Giving the flex column a min-height that stops
-    // exactly at the composer's own top edge, with #notesFeed's
+    // exactly at the (clamped) composer top, with #notesFeed's
     // margin-top:auto collapsing the slack to ABOVE the notes, puts the
     // newest note directly against the composer instead. For a feed tall
     // enough to need scrolling, min-height is smaller than the content,
