@@ -5986,30 +5986,74 @@
   if(window.visualViewport){
     window.visualViewport.addEventListener('resize', syncNoteComposer_);
   }
-  $('#saveNoteBtn').addEventListener('click', withGuard(async ()=>{
+  // Render BEFORE the await — the app-wide rule (see the entry and task add
+  // forms). This handler used to push the note into state and then await the
+  // full Apps Script round trip before rendering ANYTHING, so tapping send
+  // did nothing visible — no note, no cleared field — until the server
+  // answered. In a composer that looks like a messaging app, where the echo is
+  // expected to be instant, that read as the app being slow or the tap being
+  // missed. The save still happens exactly as before; only the paint moved
+  // ahead of it.
+  async function postNote_(){
     const txt = $('#noteInput').value.trim();
-    if(!txt){ showToast('Escreva algo antes de salvar.'); return; }
-    const prevNotes = cloneState_(notes);
+    if(!txt) return;                    // also swallows a double-tap: the field is already cleared below
     const pendingFotos = draftNoteFotos.slice();
-    notes.push({id: uid('sn'), projectId: activeProjectId, texto: txt, criadoEm: Date.now(), fotos: pendingFotos});
-    const saveOk10 = await saveKey('notes', notes, prevNotes);
-    if(saveOk10){
-      draftNoteFotos = []; // now owned by the saved note — clear without deleting their blobs
-      $('#noteInput').value = '';
-      autoGrowNoteInput_(); // collapse the composer back to one row
-      notesPage = 1;
-      // The note just written lands at the very bottom, directly above the
-      // composer — consumed by the renderAll() at the end of this handler.
-      notesScrollToBottom_ = true;
+    // Rollback below removes THIS note by id, and saveKey is called with NO
+    // previousValue — never a clone of the whole array. A clone taken here
+    // predates any OTHER note posted while this save is in flight, so
+    // restoring it on failure would erase a note the user watched appear (and
+    // which may already have been persisted). Same invariant the task add
+    // form and the checkbox path follow.
+    const newNote = {id: uid('sn'), projectId: activeProjectId, texto: txt, criadoEm: Date.now(), fotos: pendingFotos};
+    notes.push(newNote);
+
+    // Optimistic: clear the composer and show the note immediately. Only the
+    // (rare) failure path below pays for a second render.
+    draftNoteFotos = [];               // now owned by the note — cleared without touching their blobs or their in-flight uploads
+    $('#noteInput').value = '';
+    autoGrowNoteInput_();              // collapse the composer back to one row
+    notesScrollToBottom_ = true;       // consumed by the render below
+    renderNoteFormPhotoThumbs();
+    // Only the Notas feed can have changed from here, so paint just that —
+    // renderAll() would additionally rebuild Painel, Lançamentos, Tarefas and
+    // the Docs gallery, none of which a new note alters. The full render still
+    // runs, deferred, for the one cross-page surface a note's PHOTOS feed
+    // into (the Docs album), so nothing goes stale.
+    renderNotesFeed();
+    scheduleFullRenderAfterNote_();
+
+    const saveOk = await saveKey('notes', notes);
+    if(saveOk){
       showToast('Nota adicionada.');
     } else {
-      // Nothing was actually saved — keep the text and draft photos so the
-      // user can retry instead of losing what they wrote.
+      const i = notes.findIndex(x=>x.id===newNote.id);
+      if(i >= 0) notes.splice(i, 1);
+      // Restore the composer too, so nothing the user typed (or attached) is
+      // lost — restoring only the state array would silently drop it.
+      $('#noteInput').value = txt;
+      draftNoteFotos = pendingFotos;
+      autoGrowNoteInput_();
+      renderNoteFormPhotoThumbs();
+      renderNotesFeed();
       showToast('Não consegui salvar a nota. Tente novamente.', false, 4500);
     }
-    renderNoteFormPhotoThumbs();
-    renderAll();
-  }));
+  }
+  // Coalesced so posting several notes in a row costs ONE full re-render, not
+  // one per note. Nothing on screen waits for it.
+  let fullRenderAfterNoteTimer_ = null;
+  function scheduleFullRenderAfterNote_(){
+    if(fullRenderAfterNoteTimer_) return;
+    fullRenderAfterNoteTimer_ = setTimeout(()=>{ fullRenderAfterNoteTimer_ = null; renderAll(); }, 400);
+  }
+  // Deliberately NOT wrapped in withGuard. The guard exists to stop a second
+  // tap producing a duplicate write while the first is still in flight — but
+  // the composer is cleared synchronously above, so a double-tap now hits the
+  // empty-text return instead, and the guard's only remaining effect would be
+  // to block a genuine SECOND note for the length of a round trip, which in a
+  // chat-style composer is exactly the wrong behaviour. Concurrent saves are
+  // already safe: syncSheets is serialized through the syncQueue FIFO, so the
+  // second call diffs against a snapshot the first has already updated.
+  $('#saveNoteBtn').addEventListener('click', ()=>{ postNote_(); });
 
   function dateGroupLabel(ts){
     const d = new Date(ts);
