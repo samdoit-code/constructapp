@@ -224,13 +224,13 @@
     position:absolute; inset:0;
     background: linear-gradient(135deg, rgba(224,101,31,0.07), transparent 55%);
   }
-  /* The horizontal padding keeps the centred project name clear of the
-     absolutely-positioned "Total geral" badge in the corner — without it the
-     two collide as soon as either the label or the badge grows. */
+  /* Left-justified so a long project name has the whole card width to grow
+     into, instead of being squeezed between a centred position and the
+     "Total geral" badge (now under the amount, not in the corner). */
   .stamp .label{
     font-size:var(--fs-meta); color:var(--ink-soft); font-weight:700; letter-spacing:0.1em; text-transform:uppercase;
-    position:relative; display:flex; align-items:center; justify-content:center; gap:7px;
-    padding:0 78px; min-width:0;
+    position:relative; display:flex; align-items:center; justify-content:flex-start; gap:7px;
+    text-align:left; min-width:0;
   }
   .stamp .label > span:last-child{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
   .proj-dot-inline{width:9px;height:9px;border-radius:50%; flex:0 0 auto; box-shadow:0 0 0 2px rgba(0,0,0,0.05); background:var(--orange);}
@@ -239,12 +239,13 @@
     margin:5px 0 0; position:relative; letter-spacing:0.01em; line-height:1.1;
   }
   .badge{
-    display:inline-block; position:absolute; top:14px; right:14px;
+    display:inline-block; position:relative;
     border:1.5px solid var(--orange); color:var(--orange-dark);
     font-family:'Inter',sans-serif; font-weight:700; font-size:var(--fs-eyebrow);
     letter-spacing:0.07em; text-transform:uppercase;
     padding:4px 10px; border-radius:20px; transform:none;
     background:rgba(224,101,31,0.08);
+    margin-top:8px;
   }
 
   /* margin-bottom matches the 8px every other list item (.task-row, .entry-card
@@ -377,11 +378,20 @@
   .row2{display:grid; grid-template-columns:1fr 1fr; gap:10px;}
   .row2 > .field{min-width:0;}
   .form-card{background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:16px; box-shadow:var(--shadow);}
+  /* Adicionar's form card carries a top accent bar — the same "which one is
+     this" affordance the app already uses as a LEFT accent elsewhere (e.g.
+     .stamp), just rotated to the top edge since this card has no natural
+     left edge of its own to claim. Color follows the selected segmented
+     button so the whole card visibly commits to Caixa (orange) or
+     Empreiteiro (blue), not just the pill above it. */
+  .form-card.kind-accent{border-top:4px solid var(--orange); transition:border-top-color .18s var(--ease);}
+  .form-card.kind-accent.kind-emp{border-top-color:var(--blue);}
+  .segmented button[data-addkind="caixa"].active{background:var(--orange); color:#fff; box-shadow:0 1px 3px rgba(0,0,0,0.12);}
+  .segmented button[data-addkind="emp"].active{background:var(--blue); color:#fff; box-shadow:0 1px 3px rgba(0,0,0,0.12);}
   .form-actions{display:flex; gap:10px; margin-top:6px;}
   .form-actions .btn{flex:1;}
   .form-context{font-size:var(--fs-body); color:var(--ink-soft); background:var(--paper-2); border-radius:9px; padding:9px 12px; margin-bottom:12px; display:flex; align-items:center; gap:6px;}
   .form-context b{color:var(--ink); font-weight:700;}
-  .mini-hint{font-size:var(--fs-caption); color:var(--amber); font-weight:600; margin-top:6px;}
   .date-hint{font-size:var(--fs-caption); font-weight:600; margin-top:7px; color:var(--ink-soft); display:flex; align-items:center; gap:5px;}
   .date-hint.is-today{color:var(--green);}
   .hint-highlight{background:#fff6e4 !important; border-color:var(--amber) !important;}
@@ -432,6 +442,24 @@
   .ac-item.active, .ac-item:hover{background:var(--paper-2);}
   /* The filtered total is the number the user came to this page to read —
      it now carries real weight instead of matching the surrounding chrome. */
+  /* Everything above "Total filtrado" (title, kind switch, search, filter
+     controls) can be folded away — a Photoshop-panel-style minimize, not a
+     hide: the JS toggle animates a measured pixel height (not a fixed
+     max-height guess) so the collapse/expand timing matches the actual
+     content regardless of whether the filter panel is open. */
+  .entries-collapsible{overflow:hidden; transition:max-height .32s cubic-bezier(.4,0,.2,1), opacity .22s ease; opacity:1;}
+  .entries-collapsible.collapsed{opacity:0;}
+  .entries-collapse-divider{display:flex; align-items:center; gap:10px; margin:2px 0 12px;}
+  .entries-collapse-divider .line{flex:1; height:1px; background:var(--line);}
+  .entries-collapse-divider button{
+    flex:0 0 auto; width:28px; height:20px; display:flex; align-items:center; justify-content:center;
+    border:1px solid var(--line); border-radius:7px; background:var(--card); color:var(--ink-soft); cursor:pointer;
+    transition:background .15s var(--ease), color .15s var(--ease), box-shadow .15s var(--ease);
+  }
+  .entries-collapse-divider button:hover{background:var(--paper-2); color:var(--ink);}
+  .entries-collapse-divider button:active{box-shadow:inset 0 1px 3px rgba(0,0,0,0.15);}
+  .entries-collapse-divider button svg{width:14px; height:14px; stroke:currentColor; stroke-width:2.2; fill:none; stroke-linecap:round; stroke-linejoin:round; transition:transform .28s var(--ease);}
+  .entries-collapse-divider.is-collapsed button svg{transform:rotate(180deg);}
   .total-strip{
     display:flex; justify-content:space-between; align-items:center;
     background:var(--paper-2); border:1px solid var(--line); border-radius:11px;
@@ -455,8 +483,8 @@
   .entry-table-wrap{background:var(--card); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); overflow:hidden;}
   /* Table view is the deliberately dense counterpart to the card view, so it
      gets a smaller step of the same ladder — never below the eyebrow floor. */
-  .etr-header{display:flex; align-items:center; gap:7px; padding:7px 12px; background:var(--paper-2); font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-soft); border-bottom:1px solid var(--line);}
-  .entry-table-row{display:flex; align-items:center; gap:7px; padding:7px 12px; border-bottom:1px solid var(--line); cursor:pointer;}
+  .etr-header{display:flex; align-items:center; gap:7px; padding:9px 12px; background:var(--paper-2); font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-soft); border-bottom:1px solid var(--line);}
+  .entry-table-row{display:flex; align-items:center; gap:7px; padding:10px 12px; border-bottom:1px solid var(--line); cursor:pointer;}
   .entry-table-row:last-child{border-bottom:none;}
   .entry-table-row:active{background:var(--paper-2);}
   .etr-date{flex:0 0 56px; font-size:var(--fs-eyebrow); font-weight:600; color:var(--ink-soft); line-height:1.2; white-space:nowrap;}
@@ -845,10 +873,25 @@
   .task-body{flex:1; min-width:0;}
   .t-txt{font-size:var(--fs-title); font-weight:600; line-height:1.35; letter-spacing:-0.006em;}
   .t-meta{display:flex; align-items:center; gap:7px; margin-top:5px; flex-wrap:wrap;}
-  .prio-dot{width:8px;height:8px;border-radius:50%; flex:0 0 auto;}
-  .prio-alta{background:var(--red);}
-  .prio-media{background:var(--amber);}
-  .prio-baixa{background:var(--green);}
+  /* Priority tags — same pill language as .entry-card .tag, but each priority
+     gets its own color (a plain dot was too minimal to read at a glance).
+     .prio-toggle is the picker (Nova tarefa / editar tarefa): unselected
+     options sit as a tinted outline, .active fills solid. .is-badge is the
+     read-only version shown on the task card/row itself — always filled,
+     never interactive. */
+  .prio-tag{font-size:var(--fs-eyebrow); font-weight:700; text-transform:uppercase; letter-spacing:0.03em; font-family:'Inter',sans-serif; border-radius:20px; flex:0 0 auto;}
+  .prio-toggle{display:flex; gap:8px;}
+  .prio-toggle .prio-tag{padding:7px 14px; border:1.5px solid transparent; cursor:pointer; background:none; transition:background .15s var(--ease), color .15s var(--ease), border-color .15s var(--ease);}
+  .prio-toggle .prio-tag-baixa{color:var(--green); border-color:var(--green); background:rgba(63,125,85,0.08);}
+  .prio-toggle .prio-tag-baixa.active{background:var(--green); color:#fff;}
+  .prio-toggle .prio-tag-media{color:var(--amber); border-color:var(--amber); background:rgba(198,138,26,0.08);}
+  .prio-toggle .prio-tag-media.active{background:var(--amber); color:#fff;}
+  .prio-toggle .prio-tag-alta{color:var(--red); border-color:var(--red); background:rgba(179,64,47,0.08);}
+  .prio-toggle .prio-tag-alta.active{background:var(--red); color:#fff;}
+  .prio-tag.is-badge{padding:2px 7px; color:#fff;}
+  .prio-tag.is-badge.prio-tag-baixa{background:var(--green);}
+  .prio-tag.is-badge.prio-tag-media{background:var(--amber);}
+  .prio-tag.is-badge.prio-tag-alta{background:var(--red);}
   .t-due{font-size:var(--fs-caption); color:var(--ink-soft); font-weight:600;}
   .t-due.overdue{color:var(--red);}
   .t-proj{font-size:var(--fs-eyebrow); font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--blue); background:rgba(44,92,115,0.09); padding:2px 7px; border-radius:5px;}
@@ -1115,9 +1158,9 @@
   <div class="view active" id="view-dashboard">
     <div class="section-title">Resumo do projeto</div>
     <div class="stamp">
-      <div class="badge">Total geral</div>
       <div class="label"><span class="proj-dot-inline" id="dashProjDot"></span><span id="dashProjLabel">—</span></div>
       <div class="amount" id="dashTotal">R$ 0</div>
+      <div class="badge">Total geral</div>
     </div>
     <div class="stat-grid">
       <div class="stat-card">
@@ -1149,81 +1192,90 @@
 
   <!-- LANÇAMENTOS -->
   <div class="view" id="view-entries">
-    <div class="section-title">Lançamentos</div>
-    <div class="segmented">
-      <button data-kind="caixa" class="active">Caixa da obra</button>
-      <button data-kind="emp">Empreiteiro</button>
-    </div>
-    <div class="ac-wrap">
-      <div class="searchbar">
-        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-        <input type="text" id="searchInput" placeholder="Buscar por nome ou fornecedor..." autocomplete="off">
-        <button type="button" class="search-clear" id="searchClearBtn" aria-label="Limpar busca" tabindex="-1">
-          <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
-        </button>
+    <div class="entries-collapsible" id="entriesCollapsible">
+      <div class="section-title">Lançamentos</div>
+      <div class="segmented">
+        <button data-kind="caixa" class="active">Caixa da obra</button>
+        <button data-kind="emp">Empreiteiro</button>
       </div>
-      <div class="ac-dropdown" id="searchAcDropdown" style="display:none;"></div>
-    </div>
-    <div class="filter-toggle-row">
-      <button class="btn btn-ghost btn-sm" id="filterToggleBtn">Filtros</button>
-      <select id="sortSelect" class="btn btn-ghost btn-sm sort-select" aria-label="Ordenar lançamentos">
-        <option value="recent">Mais recentes</option>
-        <option value="oldest">Mais antigos</option>
-        <option value="planilha">Ordem da planilha</option>
-        <option value="valor-desc">Maior valor</option>
-        <option value="valor-asc">Menor valor</option>
-        <option value="nome">Nome A-Z</option>
-      </select>
-      <button class="btn btn-ghost btn-sm" id="clearFilterBtn" style="display:none;">Limpar filtros</button>
-      <div class="view-toggle" id="entriesViewToggle">
-        <button type="button" data-mode="card" class="active" title="Visualização em cartões" aria-label="Visualização em cartões">
-          <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="1.8"/><rect x="3" y="14" width="18" height="6" rx="1.8"/></svg>
-        </button>
-        <button type="button" data-mode="table" title="Visualização em tabela" aria-label="Visualização em tabela">
-          <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
-        </button>
-      </div>
-    </div>
-    <div class="filter-panel" id="filterPanel" style="display:none;">
-      <div class="row2">
-        <div class="field">
-          <label>Fornecedor</label>
-          <select id="filterFornecedor"><option value="">Todos</option></select>
+      <div class="ac-wrap">
+        <div class="searchbar">
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+          <input type="text" id="searchInput" placeholder="Buscar por nome ou fornecedor..." autocomplete="off">
+          <button type="button" class="search-clear" id="searchClearBtn" aria-label="Limpar busca" tabindex="-1">
+            <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
         </div>
-        <div class="field" id="filterTipoField">
-          <label>Tipo</label>
-          <select id="filterTipo"><option value="">Todos</option></select>
+        <div class="ac-dropdown" id="searchAcDropdown" style="display:none;"></div>
+      </div>
+      <div class="filter-toggle-row">
+        <button class="btn btn-ghost btn-sm" id="filterToggleBtn">Filtros</button>
+        <select id="sortSelect" class="btn btn-ghost btn-sm sort-select" aria-label="Ordenar lançamentos">
+          <option value="recent">Mais recentes</option>
+          <option value="oldest">Mais antigos</option>
+          <option value="planilha">Ordem Planilha</option>
+          <option value="valor-desc">Maior valor</option>
+          <option value="valor-asc">Menor valor</option>
+          <option value="nome">Nome A-Z</option>
+        </select>
+        <button class="btn btn-ghost btn-sm" id="clearFilterBtn" style="display:none;">Limpar</button>
+        <div class="view-toggle" id="entriesViewToggle">
+          <button type="button" data-mode="card" class="active" title="Visualização em cartões" aria-label="Visualização em cartões">
+            <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="1.8"/><rect x="3" y="14" width="18" height="6" rx="1.8"/></svg>
+          </button>
+          <button type="button" data-mode="table" title="Visualização em tabela" aria-label="Visualização em tabela">
+            <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+          </button>
         </div>
       </div>
-      <div class="row2">
-        <div class="field">
-          <label>Sócio</label>
-          <select id="filterSocio">
-            <option value="">Todos</option>
-            <option value="Dalmir">Dalmir</option>
-            <option value="Pedro">Pedro</option>
-          </select>
-        </div>
-        <div class="field">
-          <label>&nbsp;</label>
-        </div>
-      </div>
-      <div class="row2">
-        <div class="field">
-          <label>De</label>
-          <div class="date-field-wrap">
-            <div class="date-fake-display placeholder" id="filterDataDe_display">dd/mm/aaaa</div>
-            <input type="date" id="filterDataDe">
+      <div class="filter-panel" id="filterPanel" style="display:none;">
+        <div class="row2">
+          <div class="field">
+            <label>Fornecedor</label>
+            <select id="filterFornecedor"><option value="">Todos</option></select>
+          </div>
+          <div class="field" id="filterTipoField">
+            <label>Tipo</label>
+            <select id="filterTipo"><option value="">Todos</option></select>
           </div>
         </div>
-        <div class="field">
-          <label>Até</label>
-          <div class="date-field-wrap">
-            <div class="date-fake-display placeholder" id="filterDataAte_display">dd/mm/aaaa</div>
-            <input type="date" id="filterDataAte">
+        <div class="row2">
+          <div class="field">
+            <label>Sócio</label>
+            <select id="filterSocio">
+              <option value="">Todos</option>
+              <option value="Dalmir">Dalmir</option>
+              <option value="Pedro">Pedro</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>&nbsp;</label>
+          </div>
+        </div>
+        <div class="row2">
+          <div class="field">
+            <label>De</label>
+            <div class="date-field-wrap">
+              <div class="date-fake-display placeholder" id="filterDataDe_display">dd/mm/aaaa</div>
+              <input type="date" id="filterDataDe">
+            </div>
+          </div>
+          <div class="field">
+            <label>Até</label>
+            <div class="date-field-wrap">
+              <div class="date-fake-display placeholder" id="filterDataAte_display">dd/mm/aaaa</div>
+              <input type="date" id="filterDataAte">
+            </div>
           </div>
         </div>
       </div>
+    </div>
+    <div class="entries-collapse-divider" id="entriesCollapseDivider" aria-expanded="true">
+      <span class="line"></span>
+      <button type="button" id="entriesCollapseBtn" title="Minimizar filtros" aria-label="Minimizar filtros">
+        <svg viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></svg>
+      </button>
+      <span class="line"></span>
     </div>
     <div class="total-strip">
       <span>Total filtrado</span>
@@ -1240,7 +1292,7 @@
       <button data-addkind="emp">Empreiteiro</button>
     </div>
     <div class="form-context">Salvando em: <b id="addProjLabel">—</b></div>
-    <div class="form-card">
+    <div class="form-card kind-accent kind-caixa" id="entryFormCard">
       <form id="entryForm">
         <div class="field ac-wrap">
           <label>Nome / descrição <span class="req">*</span></label>
@@ -1259,12 +1311,10 @@
           <div class="field">
             <label>Quantidade</label>
             <input type="text" id="f_qtd" placeholder="0" inputmode="decimal">
-            <div class="mini-hint" id="qtdHint">Padrão: 1 — toque para alterar</div>
           </div>
           <div class="field">
             <label>Unidade</label>
             <select id="f_unidade"></select>
-            <div class="mini-hint" id="unidadeHint">Padrão: und — toque para alterar</div>
           </div>
         </div>
         <div class="row2">
@@ -1336,11 +1386,11 @@
       </div>
       <div class="field">
         <label>Prioridade</label>
-        <select id="t_prioridade">
-          <option value="media" selected>Média</option>
-          <option value="alta">Alta</option>
-          <option value="baixa">Baixa</option>
-        </select>
+        <div class="prio-toggle" id="t_prioridadeToggle">
+          <button type="button" class="prio-tag prio-tag-baixa" data-prio="baixa">Baixa</button>
+          <button type="button" class="prio-tag prio-tag-media active" data-prio="media">Média</button>
+          <button type="button" class="prio-tag prio-tag-alta" data-prio="alta">Alta</button>
+        </div>
       </div>
       <div class="field">
         <label>Projeto</label>
@@ -1359,14 +1409,24 @@
       <button class="btn btn-primary btn-block" id="saveTaskBtn">Adicionar tarefa</button>
     </div>
 
-    <div class="section-title">Atrasadas</div>
-    <div class="recent-list" id="tasksOverdue"></div>
-    <div class="section-title">Hoje</div>
-    <div class="recent-list" id="tasksToday"></div>
-    <div class="section-title">Em aberto</div>
-    <div class="recent-list" id="tasksOpen"></div>
-    <div class="section-title">Concluídas</div>
-    <div class="recent-list" id="tasksDone"></div>
+    <div id="tasksCategories">
+      <div class="task-cat" id="taskCat-overdue">
+        <div class="section-title">Atrasadas</div>
+        <div class="recent-list" id="tasksOverdue"></div>
+      </div>
+      <div class="task-cat" id="taskCat-today">
+        <div class="section-title">Hoje</div>
+        <div class="recent-list" id="tasksToday"></div>
+      </div>
+      <div class="task-cat" id="taskCat-open">
+        <div class="section-title">Em aberto</div>
+        <div class="recent-list" id="tasksOpen"></div>
+      </div>
+      <div class="task-cat" id="taskCat-done">
+        <div class="section-title">Concluídas</div>
+        <div class="recent-list" id="tasksDone"></div>
+      </div>
+    </div>
   </div>
 
   <!-- NOTAS -->
@@ -1584,11 +1644,11 @@
         </div>
         <div class="field">
           <label>Prioridade</label>
-          <select id="te_prioridade">
-            <option value="alta">Alta</option>
-            <option value="media">Média</option>
-            <option value="baixa">Baixa</option>
-          </select>
+          <div class="prio-toggle" id="te_prioridadeToggle">
+            <button type="button" class="prio-tag prio-tag-baixa" data-prio="baixa">Baixa</button>
+            <button type="button" class="prio-tag prio-tag-media active" data-prio="media">Média</button>
+            <button type="button" class="prio-tag prio-tag-alta" data-prio="alta">Alta</button>
+          </div>
         </div>
       </div>
       <div class="field">
@@ -1736,6 +1796,12 @@
   let selectedSocio = 'Pedro';
   let entriesKind = 'caixa';
   let addKind = 'caixa';
+  // Keeps the Adicionar form card's top accent (orange/blue) in step with
+  // whichever segmented button is active — called everywhere addKind changes.
+  function syncEntryFormCardKind_(){
+    const card = $('#entryFormCard');
+    if(card) card.classList.toggle('kind-emp', addKind === 'emp');
+  }
   let activeModal = null; // {kind, id}
   let activeTaskId = null;
   let filters = {fornecedor:'', tipo:'', socio:'', de:'', ate:''};
@@ -3836,6 +3902,7 @@
         // so the + button doesn't silently reset back to Caixa da obra.
         addKind = entriesKind;
         $all('.segmented button[data-addkind]').forEach(b=>b.classList.toggle('active', b.dataset.addkind===addKind));
+        syncEntryFormCardKind_();
         $('#tipoField').style.display = addKind === 'caixa' ? 'block' : 'none';
         resetForm();
       }
@@ -3911,7 +3978,7 @@
       <div class="datechip"><div class="d">${d.getDate()}</div><div class="m">${MONTHS[d.getMonth()]}/${String(d.getFullYear()).slice(-2)}</div></div>
       <div class="info">
         <div class="nome"><span class="nome-txt">${escapeHTML(toDisplayCase(e.nome))}</span></div>
-        <div class="meta">${e.kind==='caixa' && e.tipo ? `<span class="tag">${escapeHTML(e.tipo)}</span>` : ''}<span class="meta-txt">${escapeHTML(metaParts.join(' · ') || '—')}</span>${noteCount ? `<span class="notedot"><svg viewBox="0 0 24 24"><path d="M4 4h16v13H8l-4 4V4z"/></svg>${noteCount}</span>` : ''}${photoCount ? `<span class="notedot"><svg viewBox="0 0 24 24"><path d="M4 8a2 2 0 012-2h1.2a1 1 0 00.9-.55L8.7 4.1A1 1 0 019.6 3.5h4.8a1 1 0 01.9.6l.6 1.35a1 1 0 00.9.55H18a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V8z"/><circle cx="12" cy="13" r="3.3"/></svg>${photoCount}</span>` : ''}</div>
+        <div class="meta"><span class="meta-txt">${escapeHTML(metaParts.join(' · ') || '—')}</span>${noteCount ? `<span class="notedot"><svg viewBox="0 0 24 24"><path d="M4 4h16v13H8l-4 4V4z"/></svg>${noteCount}</span>` : ''}${photoCount ? `<span class="notedot"><svg viewBox="0 0 24 24"><path d="M4 8a2 2 0 012-2h1.2a1 1 0 00.9-.55L8.7 4.1A1 1 0 019.6 3.5h4.8a1 1 0 01.9.6l.6 1.35a1 1 0 00.9.55H18a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V8z"/><circle cx="12" cy="13" r="3.3"/></svg>${photoCount}</span>` : ''}</div>
       </div>
       <div class="valor">${fmtBRL(e.valor)}<span class="who">${escapeHTML(toDisplayCase(e.socio))||''}</span></div>
     </div>`;
@@ -4030,7 +4097,44 @@
   $('#filterToggleBtn').addEventListener('click', ()=>{
     const panel = $('#filterPanel');
     panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+    // If the collapsible panel above "Total filtrado" is expanded and its
+    // measured height was already released to 'none' (see
+    // setEntriesCollapsed_), it grows naturally with the filter panel; if a
+    // fixed pixel height is still set (mid-collapse), leave it — the filter
+    // panel is clipped along with everything else, which is correct.
   });
+
+  // Lançamentos panel minimize/maximize — everything above "Total filtrado"
+  // folds away, Photoshop-panel style. Animates a JS-measured pixel height
+  // rather than a fixed max-height guess, so the timing is right whether or
+  // not the filter panel happens to be open when it collapses.
+  let entriesPanelCollapsed = false;
+  function setEntriesCollapsed_(collapsed){
+    const box = $('#entriesCollapsible');
+    const divider = $('#entriesCollapseDivider');
+    if(collapsed === entriesPanelCollapsed) return;
+    entriesPanelCollapsed = collapsed;
+    divider.classList.toggle('is-collapsed', collapsed);
+    divider.setAttribute('aria-expanded', String(!collapsed));
+    const btn = $('#entriesCollapseBtn');
+    btn.title = collapsed ? 'Maximizar filtros' : 'Minimizar filtros';
+    btn.setAttribute('aria-label', btn.title);
+    if(collapsed){
+      box.style.maxHeight = box.scrollHeight + 'px';
+      box.offsetHeight; // force reflow so the browser registers the start height before animating to 0
+      box.classList.add('collapsed');
+      box.style.maxHeight = '0px';
+    } else {
+      box.classList.remove('collapsed');
+      box.style.maxHeight = box.scrollHeight + 'px';
+      box.addEventListener('transitionend', function onDone(e){
+        if(e.target !== box || e.propertyName !== 'max-height') return;
+        box.style.maxHeight = 'none'; // let it grow freely again (e.g. opening the filter panel)
+        box.removeEventListener('transitionend', onDone);
+      });
+    }
+  }
+  $('#entriesCollapseBtn').addEventListener('click', ()=> setEntriesCollapsed_(!entriesPanelCollapsed));
   function updateClearFilterVisibility(){
     const active = filters.fornecedor || filters.tipo || filters.socio || filters.de || filters.ate;
     $('#clearFilterBtn').style.display = active ? 'inline-flex' : 'none';
@@ -4241,6 +4345,7 @@
     btn.addEventListener('click', ()=>{
       addKind = btn.dataset.addkind;
       $all('.segmented button[data-addkind]').forEach(b=>b.classList.toggle('active', b===btn));
+      syncEntryFormCardKind_();
       $('#tipoField').style.display = addKind === 'caixa' ? 'block' : 'none';
       resetForm();
     });
@@ -4283,12 +4388,10 @@
       }
     }
     $('#f_unidade').classList.remove('hint-highlight');
-    $('#unidadeHint').style.display = 'none';
   });
 
   $('#f_qtd').addEventListener('input', ()=>{
     $('#f_qtd').classList.remove('hint-highlight');
-    $('#qtdHint').style.display = 'none';
   });
   $('#f_qtd').addEventListener('focus', function(){
     // If it still holds the untouched default (1), select it so the first keystroke replaces it
@@ -4301,7 +4404,7 @@
     if(!hint) return;
     const val = $('#f_data').value;
     if(val === todayStr()){
-      hint.textContent = 'Hoje — toque para escolher outra data';
+      hint.textContent = '';
       hint.classList.add('is-today');
     } else if(val){
       hint.textContent = parseDateLocal(val).toLocaleDateString('pt-BR', {weekday:'long', day:'2-digit', month:'long'});
@@ -4315,6 +4418,27 @@
   const refreshTePrazo = wireFakeDate('te_prazo', 'te_prazo_display', {placeholder:'Sem prazo'});
   const refreshFilterDe = wireFakeDate('filterDataDe', 'filterDataDe_display', {placeholder:'dd/mm/aaaa'});
   const refreshFilterAte = wireFakeDate('filterDataAte', 'filterDataAte_display', {placeholder:'dd/mm/aaaa'});
+
+  // Priority tags (Nova tarefa / editar tarefa) — a 3-way tag toggle, same
+  // shape as #socioToggle, instead of a <select>: quicker to tap and the
+  // colors (Alta red / Média amber / Baixa green) carry meaning a dropdown
+  // couldn't show at a glance.
+  function wirePrioToggle(containerSel){
+    $(containerSel).querySelectorAll('button[data-prio]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        $(containerSel).querySelectorAll('button[data-prio]').forEach(b=>b.classList.toggle('active', b===btn));
+      });
+    });
+  }
+  function getPrioToggleValue(containerSel){
+    const active = $(containerSel).querySelector('button[data-prio].active');
+    return active ? active.dataset.prio : 'media';
+  }
+  function setPrioToggleValue(containerSel, val){
+    $(containerSel).querySelectorAll('button[data-prio]').forEach(b=>b.classList.toggle('active', b.dataset.prio===(val||'media')));
+  }
+  wirePrioToggle('#t_prioridadeToggle');
+  wirePrioToggle('#te_prioridadeToggle');
 
   function setSocio(name){
     // Accent/case-insensitive match: rows entered directly into the sheet
@@ -4346,10 +4470,8 @@
     refreshFData();
     $('#f_qtd').value = 1;
     $('#f_qtd').classList.add('hint-highlight');
-    $('#qtdHint').style.display = 'block';
     $('#f_unidade').value = 'und';
     $('#f_unidade').classList.add('hint-highlight');
-    $('#unidadeHint').style.display = 'block';
     editingId = null;
     setSocio('Pedro');
     $('#addTitle').textContent = 'Adicionar';
@@ -5689,15 +5811,14 @@
     editingId = e.id;
     addKind = activeModal.kind;
     $all('.segmented button[data-addkind]').forEach(b=>b.classList.toggle('active', b.dataset.addkind===addKind));
+    syncEntryFormCardKind_();
     $('#tipoField').style.display = addKind === 'caixa' ? 'block' : 'none';
     $('#f_nome').value = toDisplayCase(e.nome) || '';
     if(addKind === 'caixa') $('#f_tipo').value = e.tipo || '';
     $('#f_qtd').value = e.qtd || '';
     $('#f_qtd').classList.remove('hint-highlight');
-    $('#qtdHint').style.display = 'none';
     $('#f_unidade').value = e.unidade || 'und';
     $('#f_unidade').classList.remove('hint-highlight');
-    $('#unidadeHint').style.display = 'none';
     $('#f_data').value = e.data || todayStr();
     refreshFData();
     $('#f_valor').value = e.valor || '';
@@ -5774,7 +5895,7 @@
       <div class="task-body">
         <div class="t-txt">${escapeHTML(t.texto)}</div>
         <div class="t-meta">
-          <span class="prio-dot prio-${t.prioridade}"></span>
+          <span class="prio-tag is-badge prio-tag-${t.prioridade}">${({alta:'Alta',media:'Média',baixa:'Baixa'})[t.prioridade] || 'Média'}</span>
           ${dueLabel ? `<span class="t-due ${dueClass}">${dueLabel}</span>` : ''}
           <span class="t-proj">${t.projectId ? escapeHTML(projName(t.projectId)) : 'Geral'}</span>
           ${photoCount ? `<span class="notedot"><svg viewBox="0 0 24 24"><path d="M4 8a2 2 0 012-2h1.2a1 1 0 00.9-.55L8.7 4.1A1 1 0 019.6 3.5h4.8a1 1 0 01.9.6l.6 1.35a1 1 0 00.9.55H18a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V8z"/><circle cx="12" cy="13" r="3.3"/></svg>${photoCount}</span>` : ''}
@@ -5835,6 +5956,15 @@
     // have been CREATED recently, regardless of when they were finished.
     const done = visible.filter(t => t.feito).sort((a,b)=> (b.lastModified||0) - (a.lastModified||0));
 
+    // Em aberto only jumps ahead of Atrasadas/Hoje when both of those are
+    // empty — there's nothing urgent above it to justify making the reader
+    // scroll past two empty-state messages first. Concluídas never moves.
+    const catsBox = $('#tasksCategories');
+    const order = (overdue.length === 0 && today.length === 0)
+      ? ['taskCat-open', 'taskCat-overdue', 'taskCat-today', 'taskCat-done']
+      : ['taskCat-overdue', 'taskCat-today', 'taskCat-open', 'taskCat-done'];
+    order.forEach(id => { const el = document.getElementById(id); if(el) catsBox.appendChild(el); });
+
     const map = [['tasksOverdue', overdue, 'Nenhuma tarefa atrasada.', 'overdue'], ['tasksToday', today, 'Nada previsto para hoje.', 'today'], ['tasksOpen', open, 'Nenhuma tarefa em aberto.', 'open'], ['tasksDone', done, 'Nenhuma tarefa concluída ainda.', 'done']];
     map.forEach(([selId, list, emptyMsg, catKey])=>{
       const box = $('#'+selId);
@@ -5862,7 +5992,7 @@
     const texto = $('#t_texto').value.trim();
     if(!texto){ showToast('Escreva a tarefa primeiro.'); return; }
     const prazo = $('#t_prazo').value || '';
-    const prioridade = $('#t_prioridade').value;
+    const prioridade = getPrioToggleValue('#t_prioridadeToggle');
     const projectId = $('#t_projeto').value || null;
     const fotos = draftTaskFotos.slice();
     // Rollback below removes THIS task by id, never restores a clone of the
@@ -5878,7 +6008,7 @@
     $('#t_texto').value = '';
     $('#t_prazo').value = '';
     refreshTPrazo();
-    $('#t_prioridade').value = 'media';
+    setPrioToggleValue('#t_prioridadeToggle', 'media');
     $('#t_projeto').value = activeProjectId || '';
     renderTaskFormPhotoThumbs();
     renderAll();
@@ -5893,7 +6023,7 @@
       $('#t_texto').value = texto;
       $('#t_prazo').value = prazo;
       refreshTPrazo();
-      $('#t_prioridade').value = prioridade;
+      setPrioToggleValue('#t_prioridadeToggle', prioridade);
       $('#t_projeto').value = projectId || '';
       draftTaskFotos = fotos;
       renderTaskFormPhotoThumbs();
@@ -5948,7 +6078,7 @@
     $('#te_texto').value = t.texto || '';
     $('#te_prazo').value = t.prazo || '';
     refreshTePrazo();
-    $('#te_prioridade').value = t.prioridade || 'media';
+    setPrioToggleValue('#te_prioridadeToggle', t.prioridade || 'media');
     populateTaskEditProjectSelect(t.projectId || '');
     $('#taskModalTitle').textContent = 'Editar tarefa';
     $('#taskViewMode').style.display = 'none';
@@ -5971,7 +6101,7 @@
     const prevFields = {texto: t.texto, prazo: t.prazo, prioridade: t.prioridade, projectId: t.projectId};
     t.texto = texto;
     t.prazo = $('#te_prazo').value || '';
-    t.prioridade = $('#te_prioridade').value;
+    t.prioridade = getPrioToggleValue('#te_prioridadeToggle');
     t.projectId = $('#te_projeto').value || null;
     const saveOk6 = await saveKey('tasks', tasks);
     if(!saveOk6){
@@ -6317,7 +6447,7 @@
     if(!view || !view.classList.contains('active')) return; // switchView() re-renders fresh on entry, same guard as renderEntries()/renderDocsView()
     const items = [];
     const push_ = (o)=>{ o.ts = noteTs_(o.criadoEm); o.seq = items.length; items.push(o); };
-    projEntries(notes).forEach(n => push_({texto:n.texto, criadoEm:n.criadoEm, origin:'Nota geral', entryRef:null, ref:{origin:'standalone', id:n.id}, noteObj:n}));
+    projEntries(notes).forEach(n => push_({texto:n.texto, criadoEm:n.criadoEm, origin:'Nota Global do Projeto', entryRef:null, ref:{origin:'standalone', id:n.id}, noteObj:n}));
     projEntries(caixaObra).forEach(e => (e.notas||[]).forEach(n => push_({texto:n.texto, criadoEm:n.criadoEm, origin:'Caixa da obra: ' + e.nome, entryRef:{kind:'caixa', id:e.id}, ref:{origin:'caixa', entryId:e.id, noteId:n.id}})));
     projEntries(empreiteiro).forEach(e => (e.notas||[]).forEach(n => push_({texto:n.texto, criadoEm:n.criadoEm, origin:'Empreiteiro: ' + e.nome, entryRef:{kind:'emp', id:e.id}, ref:{origin:'emp', entryId:e.id, noteId:n.id}})));
     // ONE ordering rule for this whole feed: ascending by normalized timestamp,
