@@ -485,14 +485,27 @@
   .note-card{
     background:#fffbe9; border:1px solid #ecdfa8; border-left:4px solid var(--orange);
     border-radius:10px; padding:12px 14px; margin-bottom:9px; box-shadow:var(--shadow);
-    /* A press-and-hold is exactly the gesture iOS/Android use to trigger text
-       selection and the copy/share callout — without these, holding a note to
-       open the action popover ALSO highlighted its text and popped up the
-       OS's native selection menu underneath our own. touch-callout is the
-       Safari-specific one that suppresses that callout; user-select suppresses
-       the selection highlight itself, needed on both platforms. */
+    /* position:relative hosts the in-card action overlay (see
+       .note-action-menu) — the menu is ONE shared node moved into whichever
+       card was double-tapped, so it is always exactly the size and place of
+       that card without any coordinate math. */
+    position:relative;
+    /* touch-action:manipulation is load-bearing for the double-tap trigger:
+       without it iOS treats a double-tap on the card as double-tap-to-ZOOM
+       and never lets the second tap reach us. It also removes the 300ms
+       click delay. user-select/touch-callout stop the OS text-selection
+       highlight and copy callout from firing on the same gesture. */
+    touch-action:manipulation;
     -webkit-touch-callout:none; -webkit-user-select:none; user-select:none;
   }
+  /* "Nota geral" (standalone) notes are the global ones and are what this
+     page is really about, so they keep the orange left rule and an orange
+     tag. A note attached to a lançamento is contextual, not global: it drops
+     the left accent entirely and its tag recedes to the page background with
+     plain ink text, so the eye lands on the global notes first. */
+  .note-card.is-linked{border-left:1px solid #ecdfa8;}
+  .note-card.is-linked .origin{background:var(--paper); color:var(--ink); font-weight:600;}
+  .note-card.is-global .origin{background:rgba(224,101,31,0.12); color:var(--orange-dark);}
   /* `pre-wrap` alone only wraps at whitespace, so a single unbroken token — a
      pasted URL, a long product code, a run of characters typed without a space
      — has nowhere to break and spills straight out of the card. overflow-wrap
@@ -510,22 +523,44 @@
      right-click on desktop) popover — see .note-action-menu below and the
      long-press/contextmenu wiring near renderNotesFeed. Freed height is what
      makes the feed noticeably more compact without losing any capability. */
-  .note-action-menu-backdrop{position:fixed; inset:0; z-index:60; background:transparent; display:none;}
-  .note-action-menu-backdrop.open{display:block;}
+  /* Absolutely positioned INSIDE the double-tapped card (the node is moved
+     there on open), so it is always exactly that card's size and position —
+     no viewport coordinate math, nothing to clamp, and it can never end up
+     detached from the note it belongs to. */
   .note-action-menu{
-    position:fixed; z-index:61; display:none; gap:2px;
-    background:var(--ink); border-radius:14px; padding:6px; box-shadow:0 10px 28px rgba(0,0,0,0.38);
+    position:absolute; inset:0; z-index:61; display:none;
+    align-items:center; justify-content:center; gap:10px;
+    background:rgba(33,29,25,0.62); -webkit-backdrop-filter:blur(2px); backdrop-filter:blur(2px);
+    border-radius:9px; animation:namIn .12s var(--ease);
   }
   .note-action-menu.open{display:flex;}
+  @keyframes namIn{from{opacity:0;} to{opacity:1;}}
   .note-action-menu .nam-btn{
-    display:flex; flex-direction:column; align-items:center; gap:3px; background:none; border:none; color:#fff;
-    padding:8px 13px; border-radius:10px; cursor:pointer; font-family:'Inter',sans-serif; touch-action:manipulation;
+    display:flex; flex-direction:column; align-items:center; gap:4px; background:none; border:none; color:#fff;
+    padding:6px 10px; border-radius:12px; cursor:pointer; font-family:'Inter',sans-serif; touch-action:manipulation;
   }
-  .note-action-menu .nam-btn:active{background:rgba(255,255,255,0.16);}
-  .note-action-menu .nam-btn svg{width:19px; height:19px; stroke:#fff; fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round;}
-  .note-action-menu .nam-btn span{font-size:var(--fs-caption); font-weight:600; white-space:nowrap;}
+  /* The circle is the tap target — 44px, the same floor every other control
+     in this app holds to, even though the glyph inside is 20px. */
+  .note-action-menu .nam-ico{
+    width:44px; height:44px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+    background:rgba(255,255,255,0.16); border:1.5px solid rgba(255,255,255,0.28);
+  }
+  .note-action-menu .nam-btn:active .nam-ico{background:rgba(255,255,255,0.3);}
+  /* Required: the .nam-btn rule above sets display:flex, and an author rule
+     always beats the UA stylesheet's [hidden]{display:none} — without this,
+     setting .hidden on a button a role may not use would leave it fully
+     visible and clickable. */
+  .note-action-menu .nam-btn[hidden]{display:none;}
+  .note-action-menu .nam-btn svg{width:20px; height:20px; stroke:#fff; fill:none; stroke-width:1.9; stroke-linecap:round; stroke-linejoin:round;}
+  .note-action-menu .nam-label{font-size:var(--fs-eyebrow); font-weight:700; letter-spacing:0.04em; text-transform:uppercase; white-space:nowrap;}
+  .note-action-menu .nam-btn[data-nam="del"] .nam-ico{background:rgba(255,120,95,0.22); border-color:rgba(255,140,115,0.5);}
   .note-action-menu .nam-btn[data-nam="del"]{color:#ffb4a2;}
   .note-action-menu .nam-btn[data-nam="del"] svg{stroke:#ffb4a2;}
+  /* A very short card can't fit icon + label stacked; drop only the LABEL
+     rather than let the overlay overflow its own card. Scoped to .nam-label
+     specifically — .nam-ico is a <span> too, and a bare `span` selector here
+     silently hid the icon circles along with the text. */
+  .note-card.nam-compact .note-action-menu .nam-label{display:none;}
 
   /* Chat-style note composer, docked above the tab bar.
      position:fixed inside #view-notes, so .view{display:none} hides it on every
@@ -1616,23 +1651,28 @@
   </div>
 </div>
 
-<!-- Note action popover (Editar/Foto/Excluir), reached by press-and-hold or
-     right-click on a note card — see setupNoteActionGestures_. Backdrop is
-     transparent (not a dimming overlay like the other modals): a context menu
-     shouldn't visually block the note it's attached to. -->
-<div class="note-action-menu-backdrop" id="noteActionMenuBackdrop"></div>
+<!-- Note action overlay (Editar/Foto/Excluir), opened by a double-tap on a
+     note card (or double-click / right-click on desktop) — see
+     setupNoteActionGestures_. It is ONE shared node that gets moved INTO
+     whichever card was tapped and absolutely positioned over it, so it is
+     always exactly that card's size and place with no coordinate math.
+     There is deliberately NO backdrop element: #appScroll is position:fixed
+     and therefore its own stacking context, so a body-level fixed backdrop
+     always paints ABOVE an overlay nested inside a card and swallows the
+     taps meant for these buttons. Dismissal is a document-level listener
+     instead (see closeNoteActionMenu_'s wiring). -->
 <div class="note-action-menu" id="noteActionMenu">
-  <button type="button" class="nam-btn" data-nam="edit" title="Editar nota">
-    <svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-    <span>Editar</span>
+  <button type="button" class="nam-btn" data-nam="edit" title="Editar nota" aria-label="Editar nota">
+    <span class="nam-ico"><svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></span>
+    <span class="nam-label">Editar</span>
   </button>
-  <button type="button" class="nam-btn" data-nam="photo" title="Adicionar foto">
-    <svg viewBox="0 0 24 24"><path d="M4 8a2 2 0 012-2h1.2a1 1 0 00.9-.55L8.7 4.1A1 1 0 019.6 3.5h4.8a1 1 0 01.9.6l.6 1.35a1 1 0 00.9.55H18a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V8z"/><circle cx="12" cy="13" r="3.3"/></svg>
-    <span>Foto</span>
+  <button type="button" class="nam-btn" data-nam="photo" title="Adicionar foto" aria-label="Adicionar foto">
+    <span class="nam-ico"><svg viewBox="0 0 24 24"><path d="M4 8a2 2 0 012-2h1.2a1 1 0 00.9-.55L8.7 4.1A1 1 0 019.6 3.5h4.8a1 1 0 01.9.6l.6 1.35a1 1 0 00.9.55H18a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V8z"/><circle cx="12" cy="13" r="3.3"/></svg></span>
+    <span class="nam-label">Foto</span>
   </button>
-  <button type="button" class="nam-btn" data-nam="del" title="Excluir nota">
-    <svg viewBox="0 0 24 24"><path d="M4 7h16"/><path d="M9 7V5a1 1 0 011-1h4a1 1 0 011 1v2"/><path d="M6 7l1 13a2 2 0 002 2h6a2 2 0 002-2l1-13"/></svg>
-    <span>Excluir</span>
+  <button type="button" class="nam-btn" data-nam="del" title="Excluir nota" aria-label="Excluir nota">
+    <span class="nam-ico"><svg viewBox="0 0 24 24"><path d="M4 7h16"/><path d="M9 7V5a1 1 0 011-1h4a1 1 0 011 1v2"/><path d="M6 7l1 13a2 2 0 002 2h6a2 2 0 002-2l1-13"/></svg></span>
+    <span class="nam-label">Excluir</span>
   </button>
 </div>
 
@@ -3654,18 +3694,58 @@
     const topbarH = topbar ? topbar.offsetHeight : 0;
     const mainEl = view.parentElement;
     const mainPaddingTop = mainEl ? (parseFloat(getComputedStyle(mainEl).paddingTop) || 0) : 0;
-    view.style.minHeight = Math.max(0, compTop - topbarH - mainPaddingTop) + 'px';
+    // While the keyboard is up the fill must be sized against the VISUAL
+    // viewport, not compTop. compTop and sc.clientHeight are layout-viewport
+    // quantities and neither shrinks for the keyboard, so a fill derived from
+    // them reserves slack for screen space the keyboard is already covering —
+    // that slack becomes real scrollable dead space the user can drag into
+    // ("an extra space appears when I move the notes up") and it swamps the
+    // scroll range, which is why scrolling the list stopped feeling normal.
+    // visualViewport.height is the one measurement that does shrink, so the
+    // fill tracks what is actually on screen and the newest note stays put
+    // against the composer.
+    const composing = document.body.classList.contains('composing-note');
+    const fillBottom = composing
+      ? comp.offsetHeight                 // tab bar is hidden while composing; the feed carries its own 14px
+      : (sc.clientHeight - compTop);      // composer + tab bar, real measured position
+    const fillViewportH = (composing && window.visualViewport)
+      ? window.visualViewport.height
+      : sc.clientHeight;
+    view.style.minHeight = Math.max(0, fillViewportH - topbarH - mainPaddingTop - fillBottom) + 'px';
   }
   // The feed is oldest-first with the newest note directly above the composer,
   // so "the latest note" means the BOTTOM of the scroller, not the top. Not
   // smooth-scrolled: this runs on page entry and right after posting, where an
   // animated slide would read as the same drift the fixed-composer glitch did.
+  // Re-applied over several frames, not once. The feed's final height is not
+  // known at the moment this runs: photo thumbnails decode, the composer's
+  // measured reservation lands, web fonts settle, and the keyboard animates —
+  // every one of them changes scrollHeight AFTER the first attempt. A single
+  // scrollTo therefore lands short and leaves the page sitting near the top,
+  // which is exactly the "entering Notas shows the oldest notes, I have to
+  // scroll down to see recent" report. Cheap to repeat (a no-op once already
+  // at the bottom), and it stops early the moment the user scrolls away
+  // themselves so it can never fight them.
+  let notesBottomPinUntil_ = 0;
   function scrollNotesToBottom_(){
     const sc = document.getElementById('appScroll');
     if(!sc) return;
-    const go = ()=> sc.scrollTo({top: sc.scrollHeight});
+    notesBottomPinUntil_ = Date.now() + 700;
+    let lastTop = -1;
+    const go = ()=>{
+      if(Date.now() > notesBottomPinUntil_) return;
+      const target = sc.scrollHeight;
+      // The user scrolled somewhere else in the meantime — stop pinning.
+      if(lastTop >= 0 && Math.abs(sc.scrollTop - lastTop) > 2) return;
+      sc.scrollTop = target;
+      lastTop = sc.scrollTop;
+      requestAnimationFrame(go);
+    };
     go();
-    requestAnimationFrame(go); // again after layout settles (thumbnails, measured padding)
+    // Backstops beyond the rAF chain for the slower settles (keyboard
+    // animation, a late thumbnail) that outlast it.
+    setTimeout(()=>{ if(Date.now() <= notesBottomPinUntil_) sc.scrollTop = sc.scrollHeight; }, 120);
+    setTimeout(()=>{ if(Date.now() <= notesBottomPinUntil_) sc.scrollTop = sc.scrollHeight; }, 350);
   }
   // Grows the composer one line at a time up to the CSS max-height, then
   // scrolls internally — the WhatsApp behaviour. Re-syncs the feed padding on
@@ -6295,7 +6375,7 @@
       // this card's own note id (see "target belongs on the element" note
       // below) — the popover's Foto button just clicks it by id instead of a
       // visible <label> wrapping it.
-      html += `<div class="note-card" data-feed-idx="${idx}" data-can-edit="${canEditNote?1:0}" data-can-photo="${canAddPhoto?1:0}" data-can-delete="${canDeleteNote?1:0}">
+      html += `<div class="note-card ${isStandalone ? 'is-global' : 'is-linked'}" data-feed-idx="${idx}" data-can-edit="${canEditNote?1:0}" data-can-photo="${canAddPhoto?1:0}" data-can-delete="${canDeleteNote?1:0}">
         <div class="txt">${escapeHTML(it.texto)}</div>
         <div class="meta-row">
           <span class="ts">${ts}</span>
@@ -6317,6 +6397,10 @@
     const scEl = document.getElementById('appScroll');
     const SCROLL_STICK_PX = 60;
     const wasAtBottom = !!scEl && (scEl.scrollHeight - scEl.scrollTop - scEl.clientHeight) <= SCROLL_STICK_PX;
+    // The action overlay is a single shared node that lives INSIDE whichever
+    // card is open — replacing the feed's innerHTML with it still parented
+    // there would destroy it outright. Closing first parks it back on <body>.
+    closeNoteActionMenu_();
     box.innerHTML = html;
     // lastNotesFeedItems_ is read by the press-and-hold/right-click handlers
     // (bound ONCE on #notesFeed, see setupNoteActionGestures_ below) to
@@ -6366,37 +6450,59 @@
   // the exact same editNoteRef/deleteNoteRef functions, and clicks the exact
   // same per-note hidden file input, that the old inline buttons called.
   let noteActionMenuCtx_ = null;
-  function openNoteActionMenu_(x, y, ctx){
+  let noteActionMenuHost_ = null; // the card the shared overlay node is currently living inside
+  function openNoteActionMenu_(card, ctx){
     const menu = document.getElementById('noteActionMenu');
-    const backdrop = document.getElementById('noteActionMenuBackdrop');
-    if(!menu || !backdrop) return;
+    if(!menu || !card) return;
     if(!ctx.canEdit && !ctx.canPhoto && !ctx.canDelete) return; // nothing this role can do here
+    closeNoteActionMenu_();
     noteActionMenuCtx_ = ctx;
     menu.querySelector('[data-nam="edit"]').hidden = !ctx.canEdit;
     menu.querySelector('[data-nam="photo"]').hidden = !ctx.canPhoto;
     menu.querySelector('[data-nam="del"]').hidden = !ctx.canDelete;
-    backdrop.classList.add('open');
+    // Moved into the card rather than positioned against it: inset:0 then
+    // makes it exactly the card's size, and it stays glued through any
+    // scroll or reflow with no listener keeping the two in sync.
+    card.appendChild(menu);
+    // Stacked icon+label needs ~62px; a one-line card with no photos is
+    // shorter than that, so those drop to icons only rather than overflow.
+    card.classList.toggle('nam-compact', card.offsetHeight < 76);
+    noteActionMenuHost_ = card;
     menu.classList.add('open');
-    // Measured AFTER .open (display:none -> flex) so offsetWidth/Height are
-    // real; clamped so a long-press near an edge never renders off-screen.
-    const mw = menu.offsetWidth, mh = menu.offsetHeight;
-    const vw = window.innerWidth, vh = window.innerHeight;
-    let left = x - mw/2;
-    let top = y - mh - 14; // prefer showing ABOVE the touch point, like a tooltip
-    if(top < 8) top = Math.min(y + 14, vh - mh - 8); // not enough room above — show below instead
-    left = Math.min(Math.max(8, left), vw - mw - 8);
-    top = Math.min(Math.max(8, top), vh - mh - 8);
-    menu.style.left = left + 'px';
-    menu.style.top = top + 'px';
+    // Dismiss-on-outside-tap, armed a tick later so the very interaction that
+    // opened this (a dblclick's own trailing click, say) can't immediately
+    // close it again. Capture phase, so it runs before anything underneath.
+    setTimeout(()=>{
+      if(!noteActionMenuOpen_()) return;
+      document.addEventListener('pointerdown', dismissNoteActionMenu_, true);
+      document.addEventListener('click', dismissNoteActionMenu_, true);
+    }, 0);
+  }
+  function dismissNoteActionMenu_(e){
+    const menu = document.getElementById('noteActionMenu');
+    if(menu && e && menu.contains(e.target)) return; // a tap on the menu itself is handled by its own click listener
+    closeNoteActionMenu_();
   }
   function closeNoteActionMenu_(){
+    document.removeEventListener('pointerdown', dismissNoteActionMenu_, true);
+    document.removeEventListener('click', dismissNoteActionMenu_, true);
     const menu = document.getElementById('noteActionMenu');
-    const backdrop = document.getElementById('noteActionMenuBackdrop');
-    if(menu) menu.classList.remove('open');
-    if(backdrop) backdrop.classList.remove('open');
+    if(menu){
+      menu.classList.remove('open');
+      // Parked back on <body> so a re-render replacing the feed's innerHTML
+      // can never destroy the shared node along with its host card.
+      if(menu.parentElement !== document.body) document.body.appendChild(menu);
+    }
+    if(noteActionMenuHost_) noteActionMenuHost_.classList.remove('nam-compact');
+    noteActionMenuHost_ = null;
     noteActionMenuCtx_ = null;
   }
+  function noteActionMenuOpen_(){
+    const menu = document.getElementById('noteActionMenu');
+    return !!menu && menu.classList.contains('open');
+  }
   $('#noteActionMenu').addEventListener('click', (e)=>{
+    e.stopPropagation(); // never let a tap on the overlay reach the card underneath
     const btn = e.target.closest('.nam-btn');
     if(!btn) return;
     const ctx = noteActionMenuCtx_;
@@ -6409,14 +6515,11 @@
       if(inp) inp.click();
     }
   });
-  $('#noteActionMenuBackdrop').addEventListener('click', closeNoteActionMenu_);
   document.addEventListener('keydown', (e)=>{ if(e.key === 'Escape') closeNoteActionMenu_(); });
   // Scroll events don't bubble, but they DO reach ancestors during the
   // capturing phase — this is what lets one window-level listener close the
   // menu no matter which scroll container (here, #appScroll) actually moved.
-  window.addEventListener('scroll', ()=>{
-    if(document.getElementById('noteActionMenu').classList.contains('open')) closeNoteActionMenu_();
-  }, true);
+  window.addEventListener('scroll', ()=>{ if(noteActionMenuOpen_()) closeNoteActionMenu_(); }, true);
   window.addEventListener('resize', closeNoteActionMenu_);
 
   // Delegated on #notesFeed (bound once, survives every innerHTML replace) —
@@ -6426,10 +6529,15 @@
   (function setupNoteActionGestures_(){
     const feed = document.getElementById('notesFeed');
     if(!feed) return;
-    const LONG_PRESS_MS = 480;
-    const MOVE_TOLERANCE_PX = 10; // beyond this, treat it as a scroll, not a press
-    let lp = null;          // {startX, startY, fired}
-    let suppressClick = false; // set when a long-press just fired, to swallow the resulting synthetic click
+    // Double-tap, not press-and-hold. A long-press is the same gesture the OS
+    // reserves for text selection / the copy callout, and on iOS it kept
+    // half-firing that alongside our menu even with -webkit-touch-callout
+    // suppressed. A double-tap has no OS meaning here once the card carries
+    // touch-action:manipulation (which is also what stops iOS treating it as
+    // double-tap-to-zoom), and it can't be triggered by scrolling at all.
+    const DOUBLE_TAP_MS = 320;
+    const TAP_SLOP_PX = 28; // the two taps must land on roughly the same spot
+    let lastTap = null;     // {t, x, y, card}
     function ctxFromCard(card){
       if(!card) return null;
       const idx = Number(card.dataset.feedIdx);
@@ -6443,41 +6551,45 @@
         canDelete: card.dataset.canDelete === '1',
       };
     }
-    function clearLP(){ if(lp && lp.timer) clearTimeout(lp.timer); lp = null; }
-    feed.addEventListener('touchstart', (e)=>{
+    // The origin chip navigates to its lançamento and a photo thumbnail opens
+    // the lightbox — both are single-tap targets of their own, so a double
+    // tap there must stay theirs rather than being stolen for the menu.
+    function isOwnTapTarget_(el){ return !!(el.closest('.origin') || el.closest('.photo-thumb') || el.closest('.photo-select-wrap')); }
+    feed.addEventListener('touchend', (e)=>{
       const card = e.target.closest('.note-card');
-      if(!card){ clearLP(); return; }
-      const t = e.touches[0];
-      const rec = {startX: t.clientX, startY: t.clientY, fired: false, card};
-      rec.timer = setTimeout(()=>{
-        rec.fired = true;
+      if(!card || isOwnTapTarget_(e.target)){ lastTap = null; return; }
+      const t = e.changedTouches && e.changedTouches[0];
+      if(!t) return;
+      const now = Date.now();
+      if(lastTap && lastTap.card === card
+         && (now - lastTap.t) < DOUBLE_TAP_MS
+         && Math.abs(t.clientX - lastTap.x) < TAP_SLOP_PX
+         && Math.abs(t.clientY - lastTap.y) < TAP_SLOP_PX){
+        lastTap = null;
+        e.preventDefault(); // swallow the synthesized click that would follow the second tap
         const ctx = ctxFromCard(card);
-        if(ctx) openNoteActionMenu_(rec.startX, rec.startY, ctx);
-      }, LONG_PRESS_MS);
-      lp = rec;
-    }, {passive:true});
-    feed.addEventListener('touchmove', (e)=>{
-      if(!lp) return;
-      const t = e.touches[0];
-      if(Math.abs(t.clientX - lp.startX) > MOVE_TOLERANCE_PX || Math.abs(t.clientY - lp.startY) > MOVE_TOLERANCE_PX) clearLP();
-    }, {passive:true});
-    feed.addEventListener('touchend', ()=>{
-      if(lp && lp.fired) suppressClick = true; // the browser still synthesizes a 'click' after touchend even here
-      clearLP();
+        if(ctx) openNoteActionMenu_(card, ctx);
+        return;
+      }
+      lastTap = {t: now, x: t.clientX, y: t.clientY, card};
     });
-    feed.addEventListener('touchcancel', clearLP);
-    // Capture phase, so a suppressed click is stopped BEFORE it reaches a
-    // card's own listeners (the origin chip's navigation, a photo thumbnail's
-    // lightbox) — not just before it would bubble back up past #notesFeed.
-    feed.addEventListener('click', (e)=>{
-      if(suppressClick){ suppressClick = false; e.stopPropagation(); e.preventDefault(); }
-    }, true);
+    // A scroll that happens to start and end on the same card must not count
+    // as the first half of a double tap.
+    feed.addEventListener('touchmove', ()=>{ lastTap = null; }, {passive:true});
+    // Desktop: dblclick is the direct equivalent, contextmenu the familiar
+    // alternative. Neither exists on touch, so they can't double-fire.
+    feed.addEventListener('dblclick', (e)=>{
+      const card = e.target.closest('.note-card');
+      if(!card || isOwnTapTarget_(e.target)) return;
+      const ctx = ctxFromCard(card);
+      if(ctx) openNoteActionMenu_(card, ctx);
+    });
     feed.addEventListener('contextmenu', (e)=>{
       const card = e.target.closest('.note-card');
       if(!card) return;
-      e.preventDefault(); // desktop's equivalent of press-and-hold — never the native browser menu here
+      e.preventDefault(); // never the native browser menu on a note
       const ctx = ctxFromCard(card);
-      if(ctx) openNoteActionMenu_(e.clientX, e.clientY, ctx);
+      if(ctx) openNoteActionMenu_(card, ctx);
     });
   })();
 
