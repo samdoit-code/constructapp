@@ -113,7 +113,7 @@
   }
   .topbar .mark picture, .topbar .mark img{height:38px; width:auto; display:block;}
   .topbar .titles{line-height:1.15; min-width:0;}
-  .topbar h1{font-size:16.5px;margin:0; font-weight:700; letter-spacing:0.02em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .topbar h1{font-size:var(--fs-title);margin:0; font-weight:700; letter-spacing:0.02em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
   .topbar .sub{font-size:var(--fs-caption); color:#cfc8ba; font-family:'Inter',sans-serif; text-transform:none; letter-spacing:0.01em; margin-top:2px;}
   .gear-btn{
     background:rgba(255,255,255,0.1); border:none; width:34px; height:34px; border-radius:50%;
@@ -160,7 +160,7 @@
     transition: background .12s ease, border-color .12s ease;
   }
   .project-select-row:active{transform:scale(0.99);}
-  .project-select-row .proj-monogram{width:38px; height:38px; font-size:14.5px; box-shadow:0 1px 3px rgba(0,0,0,0.15);}
+  .project-select-row .proj-monogram{width:38px; height:38px; font-size:15px; box-shadow:0 1px 3px rgba(0,0,0,0.15);}
   .project-select-row .pname{flex:1; font-size:var(--fs-title); font-weight:600; color:var(--ink);}
   .project-select-row .current-tag{font-size:var(--fs-eyebrow); font-weight:700; text-transform:uppercase; letter-spacing:0.06em; padding:4px 9px; border-radius:20px; color:#fff; flex:0 0 auto; visibility:hidden; background:var(--orange);}
   .project-select-row.active .pname{font-weight:700; color:var(--orange-dark);}
@@ -968,7 +968,7 @@
     animation: dialogPop .28s var(--ease);
   }
   @keyframes dialogPop{from{transform:scale(0.95); opacity:0;} to{transform:scale(1); opacity:1;}}
-  .dialog-title{font-family:'Oswald',sans-serif; font-size:18px; font-weight:600; text-transform:none; letter-spacing:0.01em; margin-bottom:8px;}
+  .dialog-title{font-family:'Oswald',sans-serif; font-size:var(--fs-heading); font-weight:600; text-transform:none; letter-spacing:0.01em; margin-bottom:8px;}
   /* pre-line so a message can use a blank line to separate "what you're about
      to do" from "here's exactly what it destroys" (see deleteProjectFlow_).
      Every other dialog message is a single line and is unaffected. */
@@ -995,7 +995,7 @@
   }
   .account-card .avatar{
     width:38px; height:38px; border-radius:50%; background:var(--orange); color:#fff; flex:0 0 auto;
-    display:flex; align-items:center; justify-content:center; font-family:'Oswald',sans-serif; font-size:16px; font-weight:600;
+    display:flex; align-items:center; justify-content:center; font-family:'Oswald',sans-serif; font-size:15px; font-weight:600;
   }
   .account-card .info{min-width:0;}
   .account-card .name{font-weight:700; font-size:var(--fs-body); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
@@ -1630,7 +1630,7 @@
 <!-- Photo lightbox viewer -->
 <div class="modal-overlay center-modal" id="photoViewModal">
   <div style="width:100%; max-width:420px;">
-    <div id="photoViewLoading" style="text-align:center; color:#fff; font-size:15.5px; padding:20px;">Carregando...</div>
+    <div id="photoViewLoading" style="text-align:center; color:#fff; font-size:var(--fs-body); padding:20px;">Carregando...</div>
     <div class="zoom-viewport" id="photoZoomViewport" style="display:none;">
       <img id="photoViewImg" src="">
     </div>
@@ -1655,7 +1655,7 @@
 <div class="modal-overlay" id="pdfViewModal">
   <div class="modal-sheet" style="max-width:640px;">
     <div class="modal-head">
-      <h2 id="pdfViewTitle" style="font-size:16.5px; text-transform:none; font-family:'Inter',sans-serif; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:78%;">Documento</h2>
+      <h2 id="pdfViewTitle" style="font-size:var(--fs-title); text-transform:none; font-family:'Inter',sans-serif; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:78%;">Documento</h2>
       <button class="modal-close" data-close="pdfViewModal"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
     </div>
     <div class="zoom-viewport" id="pdfZoomViewport">
