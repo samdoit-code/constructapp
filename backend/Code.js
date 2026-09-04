@@ -467,6 +467,33 @@ function assertBatchAccess_(user, ops) {
     return SHEET_TO_SECTION[sheet];
   }
 
+  // A delete for a row this sheet no longer has is a genuine NO-OP — applyBatch_
+  // already skips it — so there is nothing to authorize and nothing to refuse.
+  //
+  // This distinction is load-bearing, and collapsing it caused a real, silent
+  // production failure. sectionForOp_ can come back empty for two reasons that
+  // demand OPPOSITE handling: a row that EXISTS but resolves to no known parent
+  // must fail closed, while a row that is simply ALREADY GONE must pass
+  // through. Only Notas/Fotos could tell the difference at all (every other
+  // sheet's section is a static SHEET_TO_SECTION lookup that resolves fine for
+  // an absent id), so deleting an already-absent Notas/Fotos row threw
+  // 'sem acesso a esta seção' — even for an admin with '*' projects — and
+  // rejected the WHOLE batch, taking every unrelated row in it down too.
+  //
+  // That is a routine outcome, not an exotic one: a deletePhotos whose response
+  // is lost and retried leaves the client's baseline still holding the id, so
+  // the next diff emits exactly this delete. On the client it was classified as
+  // a permission VERDICT, which is not retried — and the verdict path then
+  // wedged the sync engine (see enqueueSync_/discardRejected_ in index.html).
+  //
+  // The same "already gone" skip applies to the project-scope pass below, for
+  // the same reason.
+  function deleteTargetExists_(sheet, id) {
+    const cfg = SHEETS[sheet];
+    if (!cfg || cfg.cols[0] !== 'id') return true; // not an id-keyed sheet — nothing to look up
+    return idExists_(sheet, id);
+  }
+
   ops.forEach(function (op) {
     (op.upserts || []).forEach(function (u) {
       const section = sectionForOp_(op.sheet, u.id, u.row);
@@ -477,6 +504,7 @@ function assertBatchAccess_(user, ops) {
       if (!can_(user, section, action)) throw new Error('sem permissão para ' + action);
     });
     (op.deletes || []).forEach(function (id) {
+      if (!deleteTargetExists_(op.sheet, id)) return; // already gone — nothing to authorize
       const section = sectionForOp_(op.sheet, id, null);
       if (!section) throw new Error('sem acesso a esta seção');
       if (!can_(user, section, 'delete')) throw new Error('sem permissão para excluir');
@@ -509,12 +537,30 @@ function assertBatchAccess_(user, ops) {
     if (op.sheet === 'notas') (op.upserts || []).forEach(u => { notaProjectById[u.id] = resolveNotaProject_(u.row, entryIdx); });
   });
 
+  // Resolves the project a row belongs to. When the client sent the row (an
+  // upsert) that is the authority; for a DELETE there is no row in the request,
+  // so it has to come from the sheet's own current state.
+  //
+  // Both no-row branches used to be wrong in a way that only a project-SCOPED
+  // user could ever hit, which is why it stayed latent — every fixture and
+  // every real user here is '*', and this whole pass is skipped for them:
+  //   - 'fotos' returned undefined unconditionally, so a scoped user could
+  //     never delete ANY photo row through batchMulti.
+  //   - 'documentos' was looked up in entryIdx, which only ever holds
+  //     caixaObra/empreiteiro/tarefas ids — so it never matched either, and
+  //     an id colliding across sheets would have resolved to the wrong one.
+  // Reading the row back from its own sheet answers both correctly.
   function projectOfRow(sheet, id, row) {
     if (sheet === 'caixaObra' || sheet === 'empreiteiro' || sheet === 'tarefas' || sheet === 'documentos') {
-      return row ? row.projeto : (entryIdx.caixa[id] || entryIdx.emp[id] || entryIdx.tasks[id]);
+      if (row) return row.projeto;
+      const existing = existingRows_(sheet)[id];
+      return existing ? existing.projeto : undefined;
     }
     if (sheet === 'notas') return row ? resolveNotaProject_(row, entryIdx) : notaProjectById[id];
-    if (sheet === 'fotos') return row ? resolveFotoProject_(row, entryIdx, notaProjectById) : undefined;
+    if (sheet === 'fotos') {
+      const foto = row || existingRows_('fotos')[id];
+      return foto ? resolveFotoProject_(foto, entryIdx, notaProjectById) : undefined;
+    }
     return undefined;
   }
 
@@ -525,6 +571,7 @@ function assertBatchAccess_(user, ops) {
       }
     });
     (op.deletes || []).forEach(id => {
+      if (!deleteTargetExists_(op.sheet, id)) return; // already gone — see deleteTargetExists_
       if (!hasProjectAccess_(user, projectOfRow(op.sheet, id, null))) {
         throw new Error('sem acesso a este projeto');
       }

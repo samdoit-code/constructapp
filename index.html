@@ -1932,16 +1932,45 @@
   // as the decimal point, and stripping the other as a thousands separator.
   // Plain Number("150,50") is NaN, which used to make the entry form report
   // "Preencha os campos obrigatórios." for a field the user had filled in.
+  // Everything before `sep`'s LAST occurrence is the integer part (with every
+  // grouping character removed), everything after it is the fraction. Handles a
+  // mistyped "1,500,50" as well as the ordinary "1.500,50", and replacing the
+  // last separator rather than the first is what makes that true.
+  function splitAtDecimalSep_(s, sep){
+    const i = s.lastIndexOf(sep);
+    return s.slice(0, i).replace(/[.,]/g, '') + '.' + s.slice(i + 1);
+  }
+  // A dot-only string in EXACTLY the Brazilian grouped-thousands shape: every
+  // dot followed by precisely three digits, at most three leading. "1.500",
+  // "12.000", "1.500.000" — but not "1.5", "1.50" or "1500.50", none of which
+  // has that shape, so all three still read as decimals.
+  const BR_GROUPED_THOUSANDS = /^-?\d{1,3}(\.\d{3})+$/;
   function parseDecimalBR(str){
     if(str === undefined || str === null) return NaN;
-    let s = String(str).trim();
+    // Tolerate what someone actually types or pastes into a money field.
+    let s = String(str).replace(/\s/g, '').replace(/^R\$/i, '');
     if(!s) return NaN;
     const lastComma = s.lastIndexOf(',');
     const lastDot = s.lastIndexOf('.');
-    if(lastComma > lastDot){
-      s = s.replace(/\./g, '').replace(',', '.');
-    } else if(lastDot > lastComma){
-      s = s.replace(/,/g, '');
+    if(lastComma > -1 && lastDot > -1){
+      // Both present: whichever comes LAST is the decimal point and the other
+      // is grouping. "1.500,50" and "1,500.50" both mean 1500.50.
+      s = splitAtDecimalSep_(s, lastComma > lastDot ? ',' : '.');
+    } else if(lastComma > -1){
+      // Comma only: the Brazilian decimal comma — what the pt-BR numeric keypad
+      // offers and what the "0,00" placeholder asks for. Plain Number("150,50")
+      // is NaN, which used to make the form report "Preencha os campos
+      // obrigatórios." for a field the user had filled in.
+      s = splitAtDecimalSep_(s, ',');
+    } else if(lastDot > -1 && BR_GROUPED_THOUSANDS.test(s)){
+      // Dot only, in the grouped-thousands shape. Reading it as a decimal point
+      // wrote a THOUSANDTH of the real amount into the books with no warning:
+      // "1.500" (R$ 1.500,00 to a Brazilian) parsed as 1.5, and "12.000" as 12.
+      // Deliberately narrow — this is the only shape where the pt-BR reading is
+      // unambiguous, so nothing else changes meaning.
+      s = s.replace(/\./g, '');
+    } else if(lastDot > -1){
+      s = splitAtDecimalSep_(s, '.');
     }
     return Number(s);
   }
@@ -2271,8 +2300,11 @@
     const timer = setTimeout(()=> controller.abort(), timeoutMs);
     const act = body && body.action;
     // getAll is a background sync as far as the user is concerned — it fires
-    // on boot, on foreground-return, and after every write to refresh the
-    // snapshot, none of which the user explicitly asked to watch. Showing a
+    // on boot, and as the stale-response recovery — neither of which the user
+    // explicitly asked to watch. (It no longer fires after every write: a
+    // batchMulti response carries its own confirmed lastModified back, so
+    // nothing needs re-reading. Foreground return flushes PENDING WRITES, not
+    // a read.) Showing a
     // busy pill for it would mean the hub flashes constantly during ordinary
     // use. The one getAll a user DOES ask for (the "Sincronizar agora" gear)
     // already spins its own button — see the #syncBtn click handler.
@@ -2403,12 +2435,11 @@
   // from one action (e.g. an entry + its photos + its notes) get bundled into
   // a single request instead of firing off separately.
   let sheetSnapshot = {};
-  // Derives sheetSnapshot from the current in-memory state — used after both
-  // a real server fetch and a localStorage cache load, so the snapshot never
-  // needs to be persisted itself (see saveCacheToLocalStorage): it's fully
-  // reconstructable from data the cache already stores, and persisting it
-  // too was roughly doubling the cache payload for ~3,000 entries, moving it
-  // closer to localStorage's ~5MB per-origin ceiling than it needed to be.
+  // Derives sheetSnapshot from the current in-memory state — used after both a
+  // real server fetch and a load from the local store, so the flat snapshot
+  // itself never has to be persisted separately: the `baseline` store already
+  // holds exactly these rows, and rebuilding from it is what makes
+  // expectedLastModified correct across a restart.
   function rebuildSheetSnapshot_(){
     sheetSnapshot = {
       caixaObra: toSheetRows('caixaObra', caixaObra),
@@ -2464,6 +2495,25 @@
   // for writes AND by fetchAndApplyFromServer for the moment it swaps server
   // data into memory — a hydration that landed between a write's request and
   // its response would rewrite sheetSnapshot underneath that write.
+  //
+  // NEVER call this from code that is ALREADY running inside a link of this
+  // chain. The new link waits on the current one, which cannot resolve until
+  // the code that enqueued it returns — a self-deadlock that leaves syncQueue
+  // and runSync_'s syncInFlight flag stuck forever, with no error, no timeout
+  // and nothing drawn in the activity hub. Every later write still persists
+  // locally but nothing reaches the spreadsheet again until the app is
+  // relaunched, and "Sincronizar agora" spins forever.
+  //
+  // That is not hypothetical: discardRejected_ (the server-VERDICT path) used
+  // to call fetchAndApplyFromServer, which enqueued from inside flushPending_'s
+  // own link. Any refusal — including the routine "delete a row the server no
+  // longer has" that assertBatchAccess_ used to reject — wedged the engine.
+  // Callers already holding the chain pass the alreadyQueued flag instead and
+  // apply inline, which gives the SAME ordering guarantee: holding the queue is
+  // exactly what enqueueing is for. A global "am I inside?" flag would be
+  // wrong here — the chain yields at every await, so an unrelated outer caller
+  // (the manual sync button, say) would see the flag set and skip the queue it
+  // genuinely needs.
   function enqueueSync_(fn){
     const run = () => fn();
     const result = syncQueue.then(run, run);
@@ -2491,6 +2541,17 @@
   let syncInFlight = false;
   let syncFailures = 0;
   let syncBlockedReason = null;                  // 'offline' | 'auth' | null — drives the hub's pending label
+  // When the oldest currently-unsent change was accepted, or null when nothing
+  // is pending. Defence in depth, not bookkeeping the user is shown: the hub's
+  // sync layer otherwise draws only when syncFailures > 0, and syncFailures can
+  // only be incremented by a round trip that actually came back. Anything that
+  // stops the engine from sending AT ALL therefore stays completely invisible
+  // while the local delta grows — which is exactly how the enqueueSync_
+  // self-deadlock managed to be a silent, session-long outage rather than a
+  // visible one. The structural fix is in enqueueSync_/discardRejected_; this
+  // makes the whole CLASS of "sync quietly stopped" surface on its own.
+  let pendingSince_ = null;
+  const PENDING_STALE_MS = 5 * 60 * 1000;        // the leading window is 150ms — minutes of silence is abnormal
   // Ids the server has definitively refused. They must not be retried and
   // must not survive the next hydration, or the app loops forever on a write
   // that can never succeed.
@@ -2584,12 +2645,20 @@
   // right for a refusal; hydration below is what puts that value back on
   // screen, and rejectedIds keeps this specific change from being re-applied
   // on top of it the way every other pending row legitimately is.
+  // Only ever reached from syncSheetsNow_, which runs inside flushPending_'s
+  // own link in syncQueue — hence alreadyQueued:true. See enqueueSync_ for what
+  // enqueuing from here used to do (permanently wedge the sync engine on any
+  // refusal). rejectedIds is cleared in a finally so a failed refresh can't
+  // leave ids permanently excluded from every future hydration.
   async function discardRejected_(ids){
     ids.forEach(id=> rejectedIds.add(String(id)));
-    await persistPending_();
-    const ok = await fetchAndApplyFromServer();
-    ids.forEach(id=> rejectedIds.delete(String(id)));
-    if(ok){ renderAll(); }
+    try{
+      await persistPending_();
+      const ok = await fetchAndApplyFromServer(true);
+      if(ok){ renderAll(); }
+    }finally{
+      ids.forEach(id=> rejectedIds.delete(String(id)));
+    }
   }
   // A conflict means at least one row's expectedLastModified no longer
   // matches the sheet. Two very different situations produce that: (1) our
@@ -2863,7 +2932,7 @@
     taskSettleTimer = setTimeout(()=>{ taskSettleTimer = null; renderAll(); }, TASK_SETTLE_MS);
   }
 
-  // The photo counterpart of reapplyPendingTaskChanges_. A getAll rebuilds
+  // The photo counterpart of applyPendingRows_. A getAll rebuilds
   // every parent array from the server; a photo whose bytes are still moving
   // is deliberately absent from the server, so the rebuild erases it. Without
   // this, findUploadHome_ would come back empty when the upload finished, the
@@ -3075,13 +3144,26 @@
           }
           return 'retry';
         }
-        const gone = new Set((resp.deleted || []).map(String));
-        // Ids the server did not report as deleted are ones it no longer has a
-        // row for — already gone. Dropping them is correct; keeping them would
-        // queue a request that can never do anything.
-        pendingFileDeletes[bucket] = pendingFileDeletes[bucket].filter(id=> chunk.indexOf(id) < 0);
+        // The WHOLE chunk leaves both the queue and the baseline — not just the
+        // ids the server reported deleting. An id it did not report is one it
+        // has no row for, so it is already gone from the server's point of
+        // view, and keeping it in sheetSnapshot (the "last value the server
+        // confirmed" side of diff(desired, baseline)) is a lie: the next diff
+        // emits a row DELETE for a row the server does not have.
+        //
+        // That is the exact request assertBatchAccess_ used to refuse for
+        // Notas/Fotos, which rejected the whole batch and then wedged the sync
+        // engine on the verdict path. The backend now treats it as a no-op, so
+        // this is no longer catastrophic — but it is still a wasted op on every
+        // subsequent sync forever, and the baseline should simply be true.
+        //
+        // Routine trigger: a deletePhotos request the server applied but whose
+        // response was lost. withRetry re-sends it, the server finds no rows,
+        // and the retry legitimately reports `deleted: []`.
+        const processed = new Set(chunk.map(String));
+        pendingFileDeletes[bucket] = pendingFileDeletes[bucket].filter(id=> !processed.has(String(id)));
         if(sheetSnapshot[sheetName]){
-          sheetSnapshot[sheetName] = sheetSnapshot[sheetName].filter(r => !gone.has(String(r.id)));
+          sheetSnapshot[sheetName] = sheetSnapshot[sheetName].filter(r => !processed.has(String(r.id)));
         }
         await persistMeta_('fileDeletes', pendingFileDeletes);
         await persistBaselineDelta_(prevSnapshot);
@@ -3257,13 +3339,32 @@
   // NOT called when the network simply could not be reached — that
   // conflation is what used to delete a working device's entire dataset
   // because it was launched with no signal.
+  // An in-flight upload belongs to a SESSION, not to the device. Cancelling
+  // uploads and dropping the journal therefore has to happen on EVERY path that
+  // ends a session, not only the explicit sign-out button — which is all it
+  // used to cover. The other three (a mid-session revocation, the manual sync
+  // button hitting an auth error, and onGoogleSignIn's auth catch) all purged
+  // the database and left cmoreira_upload_journal_v1 behind, so the next person
+  // to sign in on a shared device resumed the previous one's photo job under
+  // their own token. Same class of crossover bootFromLocalSession_ guards
+  // against on the data side.
+  function clearUploadSession_(){
+    pendingUploads.forEach(rec=>{ rec.cancelled = true; releasePreview_(rec); });
+    pendingUploads.clear();
+    uploadQueue.length = 0;
+    uploadBatch = {total:0, done:0, failed:0, cancelled:0};
+    queuedBlobBytes = 0;
+    try{ localStorage.removeItem(UPLOAD_JOURNAL_KEY); }catch(e){}
+  }
   function purgeLocalData_(){
     const email = (currentUser && currentUser.email) || lastKnownUserEmail_();
     try{ localStorage.removeItem(LEGACY_CACHE_KEY); }catch(e){}
     try{ localStorage.removeItem(LAST_USER_KEY); }catch(e){}
     if(email) dropUserDatabase_(email).catch(e=> console.error('purge failed', e));
+    clearUploadSession_();
     sheetSnapshot = {}; pendingCounts = {}; dirtyConfig = {};
     pendingFileDeletes = {photo: [], doc: []};
+    pendingSince_ = null;
   }
   // Companion to purgeLocalData_ for the one path that needs it: a refusal
   // that arrives AFTER the app has already drawn this account's data. Wiping
@@ -3988,7 +4089,14 @@
     el.classList.toggle('stale', stale);
     if(btn) btn.title = 'Sincronizar agora — atualizado ' + fmtRelativeTime(lastSyncTime);
   }
-  setInterval(updateSyncStatusText, 30000); // keeps "X min atrás" accurate without any user action
+  setInterval(()=>{
+    updateSyncStatusText();                 // keeps "X min atrás" accurate without any user action
+    // Only while something is actually waiting: the hub's stale-pending check
+    // is time-based, so without a periodic repaint it would only ever notice on
+    // the next unrelated event. No-ops (and draws nothing) once the queue is
+    // empty, which is the overwhelmingly common case.
+    if(pendingTotal_() > 0) renderUploadTray_();
+  }, 30000);
 
   // Fetches fresh data from Apps Script and applies it to the in-memory state.
   // Returns true on success; on failure, existing state (cached or otherwise)
@@ -4011,7 +4119,12 @@
   // slow refresh must not delay pending writes), which is exactly why the
   // response needs its own freshness check.
   let writeEpoch = 0;
-  async function fetchAndApplyFromServer(){
+  // alreadyQueued: the caller IS the link currently running in syncQueue
+  // (discardRejected_, reached from flushPending_). Enqueuing from there waits
+  // on a link that cannot resolve until this call returns — see enqueueSync_.
+  // Holding the queue already provides the ordering this enqueue exists for,
+  // so the apply runs inline instead.
+  async function fetchAndApplyFromServer(alreadyQueued){
     try{
       const epochBefore = writeEpoch;
       const data = await sheetsPost({action:'getAll'});
@@ -4023,11 +4136,12 @@
       // must never delay a user's checkbox save. Only the apply is queued, so
       // it can never land between a write's request and its response and
       // rewrite sheetSnapshot underneath it.
-      return await enqueueSync_(()=>{
+      const apply = ()=>{
         if(writeEpoch !== epochBefore){ scheduleRefreshSoon_(); return false; }
         applyServerData_(data);
         return true;
-      });
+      };
+      return alreadyQueued ? apply() : await enqueueSync_(apply);
     }catch(err){
       console.error('Erro ao carregar do Google Sheets', err);
       if(isAuthError(err)) throw err; // let the sign-in flow handle this specifically, not the generic offline path
@@ -4434,10 +4548,40 @@
   // In both cases the permissions applied are the last ones the server
   // confirmed, and in both cases they are provisional until it confirms them
   // again. The difference is only how long that takes.
-  async function bootFromLocalSession_(provisional){
+  // expectedEmail: the account whose credential just arrived. Rendering stored
+  // data for anyone else is an account crossover, and on a shared device it was
+  // reachable in the most ordinary way possible — person A closes the app
+  // without signing out (their LAST_USER_KEY and database survive by design,
+  // that is the whole offline story), person B relaunches and signs in with
+  // their own Google account. lastKnownUserEmail_() still said A, so B got A's
+  // lançamentos painted on screen, A's unsent writes pushed to the spreadsheet
+  // under B's token by loadAll's syncNowIfPending_, and A's pending delta
+  // re-applied on top of B's data and persisted into B's database.
+  //
+  // This is NOT a trust decision and does not weaken anything: the email is
+  // read out of the credential without verifying it, the backend still verifies
+  // the token independently on every request, and verify()'s answer still wins
+  // every branch in onGoogleSignIn. It answers a narrower question — whose
+  // already-local data may be optimistically painted while that answer is in
+  // flight. A forged credential cannot use this to see anything: the data it
+  // would unlock is already on the device, and the only way to have put it
+  // there was a previously verified session for that same account.
+  async function bootFromLocalSession_(provisional, expectedEmail){
     if(!provisional && googleIdToken) return false;   // a real session is in progress
+    // Provisional always means "a credential just arrived and verify is in
+    // flight", so the caller must say whose it is.
+    if(provisional && !expectedEmail) return false;
+    // expectedEmail === undefined is the ONE path with no credential at all
+    // (tryOfflineBoot_ — Google's script never loaded, so nobody has signed in
+    // and "the last person on this device" is the only meaningful answer).
+    // Anything else means a credential WAS presented, and it must be readable:
+    // if it could not be, decline rather than guess. The cost of declining is
+    // one round trip, or one launch without the offline fallback; the cost of
+    // guessing wrong is putting somebody else's financial records on screen.
+    if(expectedEmail !== undefined && !expectedEmail) return false;
     const email = lastKnownUserEmail_();
     if(!email) return false;
+    if(expectedEmail && expectedEmail !== email) return false;
     try{ await openLocalDb_(email); }catch(e){ return false; }
     const rec = await readSessionRecord_();
     if(!rec) return false;
@@ -4457,6 +4601,9 @@
     renderUploadTray_();
     return true;
   }
+  // No credential involved (Google's script never loaded), so there is nobody
+  // to match against and "the last person on this device" is the only
+  // meaningful answer — which is exactly what this path is for.
   function tryOfflineBoot_(){ return bootFromLocalSession_(false); }
   // Google Identity Services is loaded from accounts.google.com, so a launch
   // with no connectivity leaves window.google undefined forever. Re-injecting
@@ -5669,10 +5816,20 @@
     const wasEditing = !!editingId;
     if(wasEditing){
       const idx = list.findIndex(x=>x.id === editingId);
-      if(idx > -1){
-        list[idx] = {...list[idx], ...payload};
-        if(notaTxt) list[idx].notas = [...(list[idx].notas||[]), {id: uid('n'), texto: notaTxt, criadoEm: Date.now()}];
+      if(idx === -1){
+        // The entry vanished under the edit — deleted on another device, or by
+        // a project deletion, and a hydration landed while this form was open.
+        // Silently dropping the payload and then reporting "Lançamento
+        // atualizado." was the one place in the app that claimed a save which
+        // had not happened, which is the single thing the write path must never
+        // do. Say what actually occurred instead.
+        showToast('Este lançamento não existe mais — ele foi excluído em outro aparelho.', false, 5000);
+        resetForm();
+        switchView('entries');
+        return;
       }
+      list[idx] = {...list[idx], ...payload};
+      if(notaTxt) list[idx].notas = [...(list[idx].notas||[]), {id: uid('n'), texto: notaTxt, criadoEm: Date.now()}];
     } else {
       const adopted = draftFotos.slice();
       const newEntry = {id: uid('e'), projectId: activeProjectId, criadoEm: Date.now(), notas: notaTxt ? [{id: uid('n'), texto: notaTxt, criadoEm: Date.now()}] : [], fotos: adopted, ...payload};
@@ -6260,12 +6417,22 @@
     // its status tracking, its error handling or its retry schedule changes
     // here; this only decides what gets drawn.
     const unsent = pendingTotal_();
+    if(unsent === 0) pendingSince_ = null;
+    else if(pendingSince_ === null) pendingSince_ = Date.now();
     const noConnection = offlineMode || syncBlockedReason === 'offline'
       || (typeof navigator !== 'undefined' && navigator.onLine === false);
     const needsSignIn = syncBlockedReason === 'auth' && unsent > 0;
-    // syncFailures only becomes non-zero after a real round trip has failed,
-    // so this cannot fire during the ordinary sub-second pending window.
-    const stalled = unsent > 0 && syncFailures > 0 && !noConnection;
+    // Two independent ways to conclude the engine is not getting work out.
+    // syncFailures only becomes non-zero after a real round trip has FAILED, so
+    // it cannot fire during the ordinary sub-second pending window — but it
+    // also cannot fire at all for anything that stops the engine from sending
+    // in the first place. The age check covers that second case: with a 150ms
+    // leading window, work still unsent minutes later is abnormal however it
+    // got that way, and the user is better off seeing it than not.
+    const stalled = unsent > 0 && !noConnection && (
+      syncFailures > 0 ||
+      (pendingSince_ !== null && Date.now() - pendingSince_ > PENDING_STALE_MS)
+    );
     if(noConnection || needsSignIn || stalled){
       hub.classList.add('show', 'ah-sync');
       syncTrayOffset();
@@ -6679,7 +6846,7 @@
         // them) — findUploadHome_ then came back empty and the pipeline
         // trashed the Drive file it had just created. reapplyPendingUploads_
         // below re-attaches them from this, exactly as
-        // reapplyPendingTaskChanges_ does for checkbox intentions.
+        // applyPendingRows_ does for every other unsent change.
         owner: opts.owner || null,
         criadoEm: Date.now(),
       };
@@ -7961,22 +8128,29 @@
     $('#settingsModal').classList.add('open');
   });
   $('#signOutBtn').addEventListener('click', async ()=>{
-    const ok = await showConfirm('Sair da sua conta Google?', {title:'Sair', okLabel:'Sair'});
+    // Signing out purges this device, and anything still unsent goes with it.
+    // That is the correct behaviour — the point of signing out is to leave
+    // nothing behind — but it must never be a surprise. Name the number, in
+    // the dialog, before it happens: a write is accepted the moment it is
+    // durable locally, so "saved" and "on the server" are genuinely different
+    // states here, and the only person who can weigh that is the user. This is
+    // the last remaining path in the app where confirmed work can be destroyed.
+    const unsent = pendingTotal_();
+    const msg = unsent === 0
+      ? 'Sair da sua conta Google?'
+      : (unsent === 1
+        ? 'Você tem 1 alteração que ainda não foi enviada ao servidor. Se sair agora, ela será perdida.\n\nSair mesmo assim?'
+        : `Você tem ${unsent} alterações que ainda não foram enviadas ao servidor. Se sair agora, elas serão perdidas.\n\nSair mesmo assim?`);
+    const ok = await showConfirm(msg, {
+      title: unsent === 0 ? 'Sair' : 'Alterações não enviadas',
+      okLabel: unsent === 0 ? 'Sair' : 'Sair e descartar',
+    });
     if(!ok) return;
     googleIdToken = null;
     currentUser = null;
     offlineMode = false;
     clearSessionHint();
-    purgeLocalData_();
-    // The upload journal is per-device, not per-account, and survived sign-out
-    // — so the next person to sign in on a shared device resumed the previous
-    // user's photo job under their own token. Cancel anything still in flight
-    // and drop the journal with the rest of the session.
-    pendingUploads.forEach(rec=>{ rec.cancelled = true; releasePreview_(rec); });
-    pendingUploads.clear();
-    uploadQueue.length = 0;
-    uploadBatch = {total:0, done:0, failed:0, cancelled:0};
-    try{ localStorage.removeItem(UPLOAD_JOURNAL_KEY); }catch(e){}
+    purgeLocalData_();   // cancels in-flight uploads and drops the journal too
     renderUploadTray_();
     if(window.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect();
     $('#settingsModal').classList.remove('open');
@@ -8781,6 +8955,25 @@
     $('#authGate').style.display = 'none';
     $('#appScroll').style.display = '';
   }
+  // Reads the email out of a Google credential WITHOUT verifying it. See
+  // bootFromLocalSession_ for why that is safe and what it is for: it decides
+  // whose already-on-device data may be painted before verify() answers, never
+  // whether anyone is allowed in. Returns null if the token cannot be read,
+  // which callers treat as "don't take the fast path".
+  function emailFromCredential_(credential){
+    try{
+      const part = String(credential || '').split('.')[1];
+      if(!part) return null;
+      // base64url -> base64, restoring the padding atob requires.
+      let b64 = part.replace(/-/g, '+').replace(/_/g, '/');
+      while(b64.length % 4) b64 += '=';
+      const bin = atob(b64);
+      const bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
+      const payload = JSON.parse(new TextDecoder().decode(bytes)); // the payload carries a name, so decode as UTF-8, not latin-1
+      const email = payload && payload.email;
+      return email ? String(email).toLowerCase().trim() : null;
+    }catch(e){ return null; }
+  }
   async function onGoogleSignIn(response){
     if(pendingTokenRefreshOnly){
       pendingTokenRefreshOnly = false;
@@ -8809,7 +9002,11 @@
     // permissions re-filter before the next paint, and a transport failure
     // falls back to the offline posture. Nothing here decides access — it
     // only decides how early the last known answer is drawn.
-    const rendered = await bootFromLocalSession_(true);
+    // Whose credential this is decides whose stored data may be painted early —
+    // never lastKnownUserEmail_() on its own, which on a shared device is the
+    // PREVIOUS person. See bootFromLocalSession_.
+    const signingInAs = emailFromCredential_(response.credential);
+    const rendered = await bootFromLocalSession_(true, signingInAs);
 
     try{
       const verified = await sheetsPost({action:'verify'});
@@ -8850,7 +9047,9 @@
         showToast('Sem conexão — trabalhando com os dados salvos neste aparelho.', false, 5000);
         return;
       }
-      const wentOffline = await tryOfflineBoot_();
+      // Same crossover guard as the provisional render above: B's sign-in
+      // failing for a network reason must not fall back to opening A's session.
+      const wentOffline = await bootFromLocalSession_(false, signingInAs);
       if(wentOffline){
         clearBootFailures_();
         showToast('Sem conexão — trabalhando com os dados salvos neste aparelho.', false, 5000);

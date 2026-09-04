@@ -1,0 +1,24 @@
+name: Regression suite
+
+# A retained suite is only protection if something runs it. It needs no
+# dependencies and finishes in well under a second, so it runs on every push
+# and every PR rather than being gated behind a path filter that could let a
+# change to one file quietly skip the tests covering it.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # No install step on purpose — the suite has zero dependencies, same
+      # constraint the app itself ships under.
+      - name: Run regression suite
+        run: node tests/run.js

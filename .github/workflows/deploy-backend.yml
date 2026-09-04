@@ -31,6 +31,13 @@ jobs:
         with:
           node-version: 20
 
+      # The suite drives the real backend/Code.js through real doPost() calls, so
+      # it is the cheapest possible check that this commit's authorization and
+      # conflict handling still behave before it reaches the live Web App.
+      # Failing here means nothing is pushed and nothing is redeployed.
+      - name: Run regression suite
+        run: node tests/run.js
+
       - name: Install clasp
         # Pinned (not "@latest") so this workflow's exact command/output
         # assumptions below don't silently break on some future clasp release.

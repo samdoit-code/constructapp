@@ -81,9 +81,12 @@ One IndexedDB database per account, named `cmoreira_v1_<email>`.
 | `meta` | Session record, last sync time, upload journal, queued Drive file deletions. | as needed |
 | `blobs` | Photo/document bytes that have not reached Drive yet. Deleted the moment Drive has them. | the file picker |
 
-`localStorage` keeps only what must be read **synchronously at boot before the
-database is open**: the active project id, the session hint, the last-account
-pointer, the boot-failure counter.
+`localStorage` keeps what must be read **synchronously at boot before the
+database is open** — the active project id, the session hint, the last-account
+pointer, the boot-failure counter — plus two values that are simply small: the
+Lançamentos sort mode, and the upload journal. The journal is the only thing in
+either store that is **not** scoped to an account, so every path that ends a
+session clears it explicitly (`clearUploadSession_`).
 
 Rebuilding `sheetSnapshot` (the diff baseline) from the `baseline` store is what
 makes `expectedLastModified` correct **across a restart** — which is precisely
@@ -296,7 +299,7 @@ those ids alone until the queue has drained.
 |---|---|---|
 | Derived diff as the outbox | An operation log with idempotency keys | The protocol is already idempotent by id, and the app already maintained a confirmed baseline. An op log would duplicate the diff machinery and add ordering, dedupe and compaction as new places to be wrong. |
 | IndexedDB for the store | Keep localStorage | Not because IndexedDB is faster — **it is not, uniformly**. Measured at ~3,000 entries: single-record write 0.7 ms vs 22 ms whole-blob (30× better, and that is the tap path), but bulk hydration 152 ms vs 22 ms and boot read 42 ms vs 3 ms (both worse, both off the critical path). It wins where this design lives and loses where it does not matter. Quota ~938 MB vs ~5 MB decides the photo question outright. |
-| localStorage retained for four small values | Move everything | They are read synchronously at boot, before the database is open. |
+| localStorage retained for a handful of small values | Move everything | Four of them are read synchronously at boot, before the database is open. The other two (sort mode, upload journal) are small enough that a transaction would cost more than it buys. |
 | `online` event + backoff + foreground check | Background Sync API | iOS Safari, the primary target, does not implement it. It would be dead code on the only device that matters. |
 | Removed `pendingTaskChanges` | Keep it beside the new model | Its three invariants (per-task rollback, newest-intention-wins, no dependence on the user stopping) are all provided structurally by the general model. Keeping it would be a second pending mechanism for one data type. |
 | Removed `cloneState_` / `restoreStateArray_` | Keep whole-array rollback | Rolling back on a network failure *is* the behaviour that destroyed work. A refusal now restores the server's own value for exactly the refused rows — more accurate than any client clone, and structurally immune to the "whole-array restore erases a concurrent mutation" trap that had forced every hot path into bespoke per-record rollback. |

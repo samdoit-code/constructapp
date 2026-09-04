@@ -2,8 +2,8 @@
 // cache-first: an online user must always get whatever index.html/assets
 // are actually live right now — this file only adds a fallback for when
 // there is genuinely no network, so the app shell can still boot offline
-// and hand off to its own localStorage data-cache (see cmoreira_cache_v1 in
-// index.html), rather than showing nothing at all. It must never be the
+// and hand off to its own local store (IndexedDB — see docs/ARCHITECTURE.md),
+// rather than showing nothing at all. It must never be the
 // thing that makes a real deploy look like it didn't happen.
 const CACHE_NAME = 'cmoreira-shell-v1';
 const SHELL_URL = './index.html';
