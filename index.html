@@ -875,20 +875,23 @@
   .t-meta{display:flex; align-items:center; gap:7px; margin-top:5px; flex-wrap:wrap;}
   /* Priority tags — same pill language as .entry-card .tag, but each priority
      gets its own color (a plain dot was too minimal to read at a glance).
-     .prio-toggle is the picker (Nova tarefa / editar tarefa): unselected
-     options sit as a tinted outline, .active fills solid. .is-badge is the
-     read-only version shown on the task card/row itself — always filled,
-     never interactive. */
-  .prio-tag{font-size:var(--fs-eyebrow); font-weight:700; text-transform:uppercase; letter-spacing:0.03em; font-family:'Inter',sans-serif; border-radius:20px; flex:0 0 auto;}
+     .prio-toggle is the picker (Nova tarefa / editar tarefa) and .is-badge is
+     the read-only version on the task card/row — both now render the exact
+     same tinted-background/colored-text tag look (see .entry-card .tag /
+     .t-proj), so the picker previews exactly what the card will show.
+     Selection in the toggle is shown with a solid border ring in the same
+     color plus a deeper tint, since the fill itself can't change color to
+     signal "selected" the way the old solid-fill toggle did. */
+  .prio-tag{font-size:var(--fs-eyebrow); font-weight:700; text-transform:uppercase; letter-spacing:0.03em; font-family:'Inter',sans-serif; border-radius:5px; flex:0 0 auto;}
   .prio-toggle{display:flex; gap:8px;}
-  .prio-toggle .prio-tag{padding:7px 14px; border:1.5px solid transparent; cursor:pointer; background:none; transition:background .15s var(--ease), color .15s var(--ease), border-color .15s var(--ease);}
-  .prio-toggle .prio-tag-baixa{color:var(--green); border-color:var(--green); background:rgba(63,125,85,0.08);}
-  .prio-toggle .prio-tag-baixa.active{background:var(--green); color:#fff;}
-  .prio-toggle .prio-tag-media{color:var(--amber); border-color:var(--amber); background:rgba(198,138,26,0.08);}
-  .prio-toggle .prio-tag-media.active{background:var(--amber); color:#fff;}
-  .prio-toggle .prio-tag-alta{color:var(--red); border-color:var(--red); background:rgba(179,64,47,0.08);}
-  .prio-toggle .prio-tag-alta.active{background:var(--red); color:#fff;}
-  .prio-tag.is-badge{padding:2px 7px; border-radius:5px;}
+  .prio-toggle .prio-tag{padding:7px 14px; border:1.5px solid transparent; cursor:pointer; transition:background .15s var(--ease), border-color .15s var(--ease);}
+  .prio-toggle .prio-tag-baixa{color:var(--green); background:rgba(63,125,85,0.09);}
+  .prio-toggle .prio-tag-baixa.active{border-color:var(--green); background:rgba(63,125,85,0.18);}
+  .prio-toggle .prio-tag-media{color:var(--amber); background:rgba(198,138,26,0.09);}
+  .prio-toggle .prio-tag-media.active{border-color:var(--amber); background:rgba(198,138,26,0.18);}
+  .prio-toggle .prio-tag-alta{color:var(--red); background:rgba(179,64,47,0.09);}
+  .prio-toggle .prio-tag-alta.active{border-color:var(--red); background:rgba(179,64,47,0.18);}
+  .prio-tag.is-badge{padding:2px 7px;}
   .prio-tag.is-badge.prio-tag-baixa{color:var(--green); background:rgba(63,125,85,0.09);}
   .prio-tag.is-badge.prio-tag-media{color:var(--amber); background:rgba(198,138,26,0.09);}
   .prio-tag.is-badge.prio-tag-alta{color:var(--red); background:rgba(179,64,47,0.09);}
