@@ -799,6 +799,7 @@
   }
   #activityHub.show .ah-pill{display:flex;}
   #activityHub.has-body .ah-pill,
+  #activityHub.ah-sync .ah-pill,
   #activityHub.ah-message .ah-pill{pointer-events:auto; cursor:pointer;}
   #activityHub .ah-ico{width:14px; height:14px; flex:0 0 auto; display:flex;}
   #activityHub .ah-ico svg{width:100%; height:100%; stroke:#fff; fill:none; stroke-width:2.4;}
@@ -2464,6 +2465,121 @@
   function syncSheets(sheetRowsMap){
     return enqueueSync_(() => syncSheetsNow_(sheetRowsMap));
   }
+
+  // ---------- Background sync engine ----------
+  // A local write is ACCEPTED the moment it is durable on this device; the
+  // network is a background concern from then on. Nothing the user does waits
+  // on Apps Script any more, and nothing they do is lost because Apps Script
+  // was unreachable — which are the same statement seen from two sides.
+  //
+  // Leading window, not a trailing debounce (the same reasoning the task
+  // flush used): the first unsaved change starts the clock and nothing pushes
+  // it back, so continuous typing can never postpone persistence to the
+  // server indefinitely. Backoff only applies to a TRANSPORT failure; a
+  // server verdict is not retried, because retrying it can only fail again.
+  const SYNC_WINDOW_MS = 150;
+  const SYNC_BACKOFF_MS = [2000, 5000, 15000, 30000, 60000];
+  let syncTimer = null;
+  let syncInFlight = false;
+  let syncFailures = 0;
+  let syncBlockedReason = null;                  // 'offline' | 'auth' | null — drives the hub's pending label
+  // Ids the server has definitively refused. They must not be retried and
+  // must not survive the next hydration, or the app loops forever on a write
+  // that can never succeed.
+  const rejectedIds = new Set();
+
+  function scheduleSync_(delayMs){
+    if(syncTimer || syncInFlight) return;
+    syncTimer = setTimeout(()=>{ syncTimer = null; runSync_(); }, delayMs == null ? SYNC_WINDOW_MS : delayMs);
+  }
+  function syncNowIfPending_(){
+    if(pendingTotal_() > 0){ syncFailures = 0; scheduleSync_(0); }
+  }
+  async function runSync_(){
+    if(syncInFlight) return;
+    if(!pendingTotal_()) { syncBlockedReason = null; renderUploadTray_(); return; }
+    if(!googleIdToken){ syncBlockedReason = 'auth'; renderUploadTray_(); return; }
+    if(typeof navigator !== 'undefined' && navigator.onLine === false){
+      syncBlockedReason = 'offline'; renderUploadTray_();
+      scheduleSync_(SYNC_BACKOFF_MS[Math.min(syncFailures, SYNC_BACKOFF_MS.length - 1)]);
+      return;
+    }
+    syncInFlight = true;
+    renderUploadTray_();
+    let outcome = 'retry';
+    try{
+      outcome = await enqueueSync_(()=> flushPending_());
+    }catch(e){
+      console.error('sync engine error', e);
+      outcome = 'retry';
+    }finally{
+      syncInFlight = false;
+    }
+    if(outcome === 'ok'){
+      syncFailures = 0;
+      syncBlockedReason = null;
+      renderUploadTray_();
+      if(pendingTotal_()) scheduleSync_(0);      // more arrived mid-flight
+      return;
+    }
+    if(outcome === 'verdict'){
+      // Refused, not unreachable. The pending rows involved are gone (see
+      // discardRejected_); anything else still pending is worth another go.
+      syncFailures = 0;
+      syncBlockedReason = null;
+      renderUploadTray_();
+      if(pendingTotal_()) scheduleSync_(SYNC_BACKOFF_MS[0]);
+      return;
+    }
+    syncBlockedReason = (typeof navigator !== 'undefined' && navigator.onLine === false) ? 'offline' : 'retry';
+    const wait = SYNC_BACKOFF_MS[Math.min(syncFailures, SYNC_BACKOFF_MS.length - 1)];
+    syncFailures++;
+    renderUploadTray_();
+    scheduleSync_(wait);
+  }
+
+  // Sends everything currently unsent: the four whole-tab reference lists
+  // first (they are small, and a project must exist server-side before rows
+  // referencing it land), then one batchMulti carrying every row-level sheet.
+  async function flushPending_(){
+    const dirtyKeys = CONFIG_KEYS.filter(k=> dirtyConfig[k]);
+    for(const key of dirtyKeys){
+      const value = key === 'projects' ? projects : key === 'tipos' ? tipos : key === 'unidades' ? unidades : socios;
+      try{
+        await sheetsPost({action:'saveSheet', sheet: SHEET_TAB[key], rows: toSheetRows(key, value)});
+        delete dirtyConfig[key];
+        await persistConfig_();
+      }catch(e){
+        if(isPermissionError(e) || isAuthError(e)){
+          delete dirtyConfig[key];
+          await persistConfig_();
+          reportSyncVerdict_(e);
+          return 'verdict';
+        }
+        return 'retry';
+      }
+    }
+    const fileOutcome = await flushFileDeletes_();
+    if(fileOutcome !== 'ok') return fileOutcome;
+    return await syncSheetsNow_(liveRowsBySheet_());
+  }
+
+  function reportSyncVerdict_(err){
+    showToast(saveErrorMessage(err), false, 5000);
+  }
+  // A row the server has refused can never be sent, so it must stop being
+  // pending — otherwise every later sync carries it along and fails with it.
+  // Dropping it means the SERVER's value wins for those ids, which is exactly
+  // right for a refusal; hydration below is what puts that value back on
+  // screen, and rejectedIds keeps this specific change from being re-applied
+  // on top of it the way every other pending row legitimately is.
+  async function discardRejected_(ids){
+    ids.forEach(id=> rejectedIds.add(String(id)));
+    await persistPending_();
+    const ok = await fetchAndApplyFromServer();
+    ids.forEach(id=> rejectedIds.delete(String(id)));
+    if(ok){ renderAll(); }
+  }
   // A conflict means at least one row's expectedLastModified no longer
   // matches the sheet. Two very different situations produce that: (1) our
   // OWN baseline was stale — most commonly because sheetSnapshot was seeded
@@ -2528,7 +2644,6 @@
     Object.keys(sheetSnapshot).forEach(sheetName=>{
       sheetSnapshot[sheetName] = keep(sheetSnapshot[sheetName] || []);
     });
-    gone.forEach(id=> pendingTaskChanges.delete(id));
     return gone;
   }
   // Removes the same ids from a payload that is about to be retried, so the
@@ -2572,19 +2687,34 @@
     documentos.forEach(patch);
     projectFotos.forEach(patch);
   }
+  // Returns one of three OUTCOMES, not a boolean, because the three demand
+  // opposite handling and collapsing them is what used to turn a bad signal
+  // into a lost write:
+  //   'ok'      everything pending is now on the server.
+  //   'retry'   the server could not be reached or could not answer right
+  //             now. The change stays pending and is retried with backoff.
+  //             This is NOT a failure the user needs to see or redo.
+  //   'verdict' the server refused (no permission, or a real concurrent edit
+  //             that survived a rebase). Retrying can only fail again, so the
+  //             refused rows are dropped and the server's value is restored.
   async function syncSheetsNow_(sheetRowsMap, isRetry){
-    // Only send sheets that actually have an upsert or delete — every save
-    // touching caixaObra/empreiteiro/tasks also calls this with the (usually
-    // unchanged) fotos/notas payloads, and each op the backend receives is a
-    // full readSheet_() of that whole tab in assertBatchAccess_ just to
-    // authorize zero operations against it. An unchanged sheet's snapshot is
-    // already correct by definition, so it needs no update either.
+    // Only send sheets that actually have an upsert or delete — each op the
+    // backend receives costs a full readSheet_() of that whole tab in
+    // assertBatchAccess_ just to authorize zero operations against it. An
+    // unchanged sheet's snapshot is already correct by definition.
     const ops = [];
     Object.keys(sheetRowsMap).forEach(sheetName=>{
-      const {upserts, deletes} = diffRows_(sheetName, sheetRowsMap[sheetName]);
+      let {upserts, deletes} = diffRows_(sheetName, sheetRowsMap[sheetName]);
+      // A photo/document whose Drive file has not been reclaimed yet must keep
+      // its row until flushFileDeletes_ has run: the server resolves the file
+      // FROM the row, so deleting the row first strands the file in Drive with
+      // nothing pointing at it.
+      if(sheetName === 'fotos' || sheetName === 'documentos') deletes = deletes.filter(id=> !fileDeletePending_(id));
       if(upserts.length || deletes.length) ops.push({sheet: sheetName, upserts, deletes});
     });
-    if(!ops.length) return true;
+    if(!ops.length) return 'ok';
+    const prevSnapshot = {};
+    ops.forEach(op=>{ prevSnapshot[op.sheet] = (sheetSnapshot[op.sheet] || []).slice(); });
     try{
       const resp = await sheetsPost({action:'batchMulti', ops});
       if(resp.conflict){
@@ -2603,11 +2733,19 @@
               ? 'Um registro foi excluído por outra pessoa e foi removido daqui.'
               : `${gone.size} registros foram excluídos por outra pessoa e foram removidos daqui.`, false, 4500);
             renderAll();
+            await persistPending_();
           }
           return await syncSheetsNow_(stripIdsFromPayload_(sheetRowsMap, gone), true);
         }
-        showToast('Alguns dados foram alterados por outra pessoa. Recarregue a página antes de salvar de novo.', false, 4500);
-        return false;
+        // Conflicting a SECOND time right after rebasing can only mean real,
+        // ongoing contention — someone else is editing the same row now. This
+        // app has never merged fields anywhere; row-level last-write-wins is
+        // the model. Standing down and taking the server's value is the only
+        // answer that terminates.
+        const stillConflicting = (resp.conflicts || []).map(c=> String(c.id));
+        showToast('Alguns dados foram alterados por outra pessoa. A versão do servidor foi mantida.', false, 5000);
+        await discardRejected_(stillConflicting);
+        return 'verdict';
       }
       ops.forEach(op=>{
         const updatedList = (resp.updated && resp.updated[op.sheet]) || [];
@@ -2617,61 +2755,68 @@
           return lm ? Object.assign({}, r, {lastModified: lm}) : Object.assign({}, r);
         });
       });
-      // The cache is only otherwise refreshed after a getAll (applyServerData_)
-      // — a write that succeeds here without a getAll ever following it would
-      // leave the cache holding this row's PRE-write lastModified indefinitely.
-      // That exact gap was the production root cause: a later session booting
-      // from that stale cache would seed sheetSnapshot with it, and a checkbox
-      // tapped before that boot's own getAll landed would assert an
-      // expectedLastModified the server had already moved past — a false
-      // conflict, rejecting the whole batch (all writes in it, not just the
-      // stale one). Patching live state first is required, not optional: the
-      // cache serializes `tasks`/`caixaObra`/etc as they stand right now, so
-      // if those still carried the client's pre-write guess this write would
-      // just relocate the same bug to a smaller window instead of closing it.
+      // Order is load-bearing. applyServerLastModified_ must run BEFORE
+      // anything is persisted: quickToggleTask (and the other optimistic
+      // writers) stamp a client-side Date.now() purely so a row sorts
+      // correctly before confirmation, and that guess is never what the sheet
+      // ends up holding. Persisting the guess as a confirmed baseline would
+      // reintroduce, in a smaller window, exactly the false-conflict bug this
+      // whole baseline exists to prevent.
       applyServerLastModified_(resp.updated);
-      saveCacheToLocalStorage();
-      return true;
+      writeEpoch++;
+      await persistBaselineDelta_(prevSnapshot);
+      await persistPending_(ops.map(o=>o.sheet));
+      return 'ok';
     }catch(e){
-      console.error('sync error', e);
-      showToast(saveErrorMessage(e), false, 4500);
-      return false;
+      // "I could not reach the server" and "the server said no" are different
+      // answers, and treating the first as the second is what used to make a
+      // bad signal look like lost work. Only a real verdict stops the retry.
+      if(isPermissionError(e)){
+        console.error('sync refused', e);
+        reportSyncVerdict_(e);
+        const refused = [];
+        ops.forEach(op=>{ (op.upserts||[]).forEach(u=> refused.push(String(u.id))); (op.deletes||[]).forEach(id=> refused.push(String(id))); });
+        await discardRejected_(refused);
+        return 'verdict';
+      }
+      if(isAuthError(e)){
+        // The session died, not the data. Leave everything pending: it is
+        // durable, and it goes out on the next successful sign-in.
+        console.error('sync unauthenticated', e);
+        reportSyncVerdict_(e);
+        return 'retry';
+      }
+      console.error('sync deferred', e);
+      return 'retry';
     }
   }
 
-  // ---------- Pending task mutations (checkbox toggles) ----------
-  // Rapid checkbox taps are INDEPENDENT user intentions, not repeated saves of
-  // the whole Tarefas tab. Three invariants keep them correct regardless of
-  // tap speed, network timing, failures, background hydration, DOM re-renders,
-  // or a task card being opened mid-burst:
+  // ---------- Rapid checkbox taps ----------
+  // These were once backed by their own pending-mutation registry
+  // (pendingTaskChanges: a Map of task id -> {desired, baseline}, its own
+  // 120ms flush window, and its own per-task rollback). That machinery existed
+  // to give ONE data type three properties the old whole-array, network-
+  // blocking write path could not: a failure that reverts only the task it
+  // belongs to, a late response that can never overwrite a newer local
+  // intention, and correctness that does not depend on the user stopping.
   //
-  //  1. A failed mutation reverts ONLY its own task. No write may roll a whole
-  //     state array back to a pre-mutation clone while other mutations on that
-  //     same array are still pending — the clone predates them, so restoring
-  //     it silently erases intentions the user already saw applied, and which
-  //     may already have been persisted. This was the actual bug behind
-  //     "I check 5 tarefas and 4 quietly revert."
-  //  2. The newest intention always wins. Every flush records the exact
-  //     desired value it sent; the response is applied to a task ONLY if the
-  //     user has not toggled it again in the meantime, so a late response from
-  //     an older request can never overwrite a newer local intention.
-  //  3. Correctness never depends on the user stopping. TASK_FLUSH_WINDOW_MS
-  //     only decides how many taps share ONE request — a send always starts
-  //     within that window of the first unsaved change however long tapping
-  //     continues, and anything still pending when a flush finishes schedules
-  //     the next one immediately.
+  // The local-first store gives all three to EVERY data type, structurally,
+  // so the registry is gone rather than kept alongside it:
+  //  1. Per-task rollback is moot — a transport failure no longer reverts
+  //     anything, and a server verdict restores the server's own value for
+  //     exactly the refused rows (discardRejected_).
+  //  2. "Newest intention wins" falls out of diffing desired state against a
+  //     confirmed baseline: a sync confirms the values it actually sent, so a
+  //     tap that landed mid-flight is still a difference afterwards and goes
+  //     out on the next pass. There is no response to mis-apply.
+  //  3. Not depending on the user stopping is the sync engine's leading
+  //     window (SYNC_WINDOW_MS), same rule as before.
   //
-  // Keyed by task id: {desired, baseline}. `desired` is the current intention
-  // (already reflected in `tasks` and on screen); `baseline` is the last
-  // server-confirmed value, captured when the task FIRST becomes pending and
-  // refreshed by getAll. A failure reverts to `baseline`, so A✓→A✗→A✓ that
-  // ultimately fails returns to the real server value rather than to some
-  // intermediate tap.
-  const pendingTaskChanges = new Map();
-  const TASK_FLUSH_WINDOW_MS = 120;
+  // What remains here is purely about the SCREEN, which the store has no
+  // opinion about: an in-place class patch so the row never moves out from
+  // under a finger mid-burst, and a trailing settle that re-buckets once the
+  // burst is over.
   const TASK_SETTLE_MS = 600;
-  let taskFlushTimer = null;
-  let taskFlushInFlight = false;
   let taskSettleTimer = null;
 
   // Repaints one task's checkbox state in place, everywhere it is currently on
@@ -2700,75 +2845,11 @@
   // land roughly 200-350ms apart on a phone, so this never reshuffles
   // mid-burst, yet a single deliberate tap still visibly lands in Concluídas a
   // moment later instead of looking stuck. Trailing-edge on purpose — unlike
-  // the flush window, postponing a purely cosmetic re-sort for as long as the
+  // the sync window, postponing a purely cosmetic re-sort for as long as the
   // user keeps tapping is exactly the desired behaviour.
   function scheduleTaskSettle_(){
     if(taskSettleTimer) clearTimeout(taskSettleTimer);
     taskSettleTimer = setTimeout(()=>{ taskSettleTimer = null; renderAll(); }, TASK_SETTLE_MS);
-  }
-  // Leading window, NOT a trailing debounce: the first unsaved change starts
-  // the clock and nothing pushes it back, so continuous tapping can never
-  // postpone persistence indefinitely. While a flush is in flight nothing is
-  // scheduled — that flush's own completion handler reschedules if needed.
-  function scheduleTaskFlush_(){
-    if(taskFlushTimer || taskFlushInFlight) return;
-    taskFlushTimer = setTimeout(()=>{ taskFlushTimer = null; flushTaskChanges_(); }, TASK_FLUSH_WINDOW_MS);
-  }
-  async function flushTaskChanges_(){
-    if(taskFlushInFlight || !pendingTaskChanges.size) return;
-    taskFlushInFlight = true;
-    // Record WHICH intention each pending task had at send time. The payload
-    // itself is built from live `tasks` inside saveKey, so a tap landing
-    // microseconds before the request goes out rides along instead of costing
-    // another round trip.
-    const sent = new Map();
-    pendingTaskChanges.forEach((v, id)=> sent.set(id, v.desired));
-    let ok = false;
-    try{
-      ok = await saveKey('tasks', tasks); // no previousValue — rollback is per-task, below
-    } finally {
-      taskFlushInFlight = false;
-    }
-    let reverted = 0;
-    sent.forEach((desiredAtSend, id)=>{
-      const cur = pendingTaskChanges.get(id);
-      if(!cur) return;                          // already resolved by another flush
-      if(cur.desired !== desiredAtSend) return; // newer intention exists — this response is stale for this task; leave it pending
-      if(ok){
-        pendingTaskChanges.delete(id);          // confirmed: the sent value is now the baseline
-        return;
-      }
-      const t = tasks.find(x=>x.id===id);
-      if(t && t.feito !== cur.baseline){
-        t.feito = cur.baseline;
-        patchTaskRowClass_(id, cur.baseline);
-        syncTaskModalToggleLabel_(id);
-        reverted++;
-      }
-      pendingTaskChanges.delete(id);
-    });
-    if(reverted){
-      showToast(reverted === 1
-        ? 'Não consegui atualizar a tarefa. Tente novamente.'
-        : 'Não consegui atualizar ' + reverted + ' tarefas. Tente novamente.', false, 4500);
-      scheduleTaskSettle_();
-    }
-    if(pendingTaskChanges.size) scheduleTaskFlush_(); // intentions that arrived mid-flight
-  }
-  // A background getAll must never discard an optimistic change the user can
-  // already see:  displayed state = server snapshot + pending local mutations.
-  // Order matters — this runs AFTER rebuildSheetSnapshot_(), so the snapshot
-  // holds the server's value and diffRows_ still sees each pending toggle as a
-  // genuine unsaved delta. Re-applying before the rebuild would bake the
-  // pending change into the baseline and it would never be sent at all.
-  function reapplyPendingTaskChanges_(){
-    if(!pendingTaskChanges.size) return;
-    pendingTaskChanges.forEach((p, id)=>{
-      const t = tasks.find(x=>x.id===id);
-      if(!t){ pendingTaskChanges.delete(id); return; } // deleted server-side; nothing left to reconcile
-      p.baseline = t.feito; // the server's value is the new confirmed baseline for any future rollback
-      t.feito = p.desired;  // the user's unsaved intention still wins on screen
-    });
   }
 
   // The photo counterpart of reapplyPendingTaskChanges_. A getAll rebuilds
@@ -2823,7 +2904,7 @@
         // already did; this one didn't, so a user deactivated mid-session left
         // the business data sitting on the device. Same reasoning as there —
         // a revoked device shouldn't keep old business data around.
-        try{ localStorage.removeItem(CACHE_KEY); }catch(e){}
+        purgeLocalData_();
         showAuthGate(String(err.message || err), true);
         renderGoogleButton(); // the slot may still hold the "Entrando..." spinner from original sign-in — must restore the actual button or there's nothing left to click
       }, 800);
@@ -2833,75 +2914,55 @@
     return 'Erro ao salvar no Google Sheets. Tente novamente.';
   }
 
-  // Deep clone via JSON — safe here because every state array holds only
-  // plain data (ids, strings, numbers, nested arrays of plain objects), the
-  // exact same shape that already round-trips through JSON on every sync.
-  function cloneState_(v){ return v === undefined ? v : JSON.parse(JSON.stringify(v)); }
-
-  // Reassigns the module-level array a given saveKey() key actually writes to.
-  // Needed because saveKey() only ever receives a VALUE, not a settable
-  // reference to the outer `let` variable — this is the one place that knows
-  // the mapping, so a failed save can put the in-memory state back exactly
-  // where it was before the optimistic mutation, instead of leaving a
-  // phantom record on screen that was never actually persisted.
-  function restoreStateArray_(key, previousValue){
-    if(key === 'caixaObra') caixaObra = previousValue;
-    else if(key === 'empreiteiro') empreiteiro = previousValue;
-    else if(key === 'tasks') tasks = previousValue;
-    else if(key === 'notes') notes = previousValue;
-    else if(key === 'documentos') documentos = previousValue;
-    else if(key === 'projectFotos') projectFotos = previousValue;
-    else if(key === 'projects') projects = previousValue;
-    else if(key === 'socios') socios = previousValue;
-  }
 
   // Every write in this app is optimistic: the caller mutates in-memory state
-  // and renders immediately, THEN calls saveKey to persist. If the save
-  // fails, leaving that mutation in place is what makes a failed save look
-  // identical to a successful one — the exact bug a financial ledger can't
-  // have. Callers that mutate a top-level state array pass the pre-mutation
-  // value as `previousValue` (a cheap JSON clone taken before mutating); on
-  // failure this restores it before returning, so the caller's own
-  // (unconditional) renderAll() afterward redraws the REAL, unsaved state
-  // rather than the phantom one.
-  async function saveKey(key, value, previousValue){
-    const ok = await saveKeyInner_(key, value);
-    if(!ok && previousValue !== undefined) restoreStateArray_(key, previousValue);
-    return ok;
+  // and renders immediately, THEN calls saveKey to persist. What changed with
+  // the local-first store is what "persist" means and what a failure is.
+  //
+  // saveKey now resolves as soon as the change is DURABLE ON THIS DEVICE —
+  // not when Apps Script has confirmed it. It returns false only when the
+  // change could not be written locally at all, which on a device with
+  // working storage does not happen. A slow, flaky or absent network is no
+  // longer a failure the caller has to react to: the change is safely
+  // pending and the sync engine keeps trying.
+  //
+  // The old `previousValue` parameter — a pre-mutation clone to roll back to
+  // when the network failed — is gone, along with cloneState_ and
+  // restoreStateArray_. That rollback is precisely the behaviour that made
+  // poor connectivity destroy work. Rolling back is still correct for a
+  // server VERDICT (no permission, a real concurrent edit), but that is
+  // handled centrally now by restoring the SERVER's own value for exactly the
+  // refused rows (discardRejected_) — which is more accurate than any
+  // client-side clone, and structurally immune to the "whole-array restore
+  // erases a concurrent mutation" trap that had forced every hot path into
+  // its own bespoke per-record rollback.
+  async function saveKey(key, value){
+    return await saveKeyInner_(key, value);
   }
 
   async function saveKeyInner_(key, value){
     if(key === 'activeProjectId'){
       // Purely a personal "last viewed" preference — not shared data, so it
-      // stays local rather than round-tripping through the spreadsheet.
+      // stays local rather than round-tripping through the spreadsheet, and
+      // stays in localStorage because it is read synchronously at boot before
+      // the database is open.
       try{ localStorage.setItem('cmoreira_activeProjectId', JSON.stringify(value)); }catch(e){}
       return true;
     }
     if(LEGACY_WHOLE_TAB_KEYS.has(key)){
-      try{
-        await sheetsPost({action:'saveSheet', sheet: SHEET_TAB[key], rows: toSheetRows(key, value)});
-        return true;
-      }catch(e){
-        console.error('sheets save error', key, e);
-        showToast(saveErrorMessage(e), false, 4500);
-        return false;
-      }
+      dirtyConfig[key] = true;
+      await persistConfig_();
+      scheduleSync_();
+      return true;
     }
-    if(key === 'notes'){
-      return await syncSheets({notas: computeNotasRows(), fotos: computeFotosRows()});
-    }
-    if(key === 'projectFotos'){
-      // Fotos is a flattened tab shared across every parent type (see
-      // computeFotosRows) — a project photo has no own tab, so its save just
-      // resyncs that one shared tab, same as notes above.
-      return await syncSheets({fotos: computeFotosRows()});
-    }
-    if(SHEET_TAB[key]){
-      const payload = {}; payload[SHEET_TAB[key]] = toSheetRows(key, value);
-      if(key==='caixaObra' || key==='empreiteiro' || key==='tasks') payload.fotos = computeFotosRows();
-      if(key==='caixaObra' || key==='empreiteiro') payload.notas = computeNotasRows();
-      return await syncSheets(payload);
-    }
+    // Every row-level sheet is re-diffed, not just the one this key names.
+    // The diff is cheap (measured ~22ms across the whole dataset at ~3,000
+    // entries) and it removes an entire class of bug: a key whose write also
+    // touches Notas/Fotos and forgets to say so would leave that sheet's
+    // change durable nowhere. Recomputing everything makes "what is unsent"
+    // a property of the data rather than of the call site.
+    await persistPending_();
+    scheduleSync_();
     return true;
   }
 
@@ -2957,25 +3018,69 @@
   // and bounded, and each chunk that lands is durably done — a failure part
   // way through leaves the earlier chunks deleted rather than rolling back.
   const DELETE_CHUNK_SIZE = 12;
+  // Queued, not sent. Trashing a Drive file is a server-side action that
+  // cannot be expressed as a row diff, so it gets its own small durable
+  // queue — but it is still LOCAL-FIRST: the caller has already removed the
+  // record from state and painted, and this only records that the file still
+  // has to be reclaimed. Deleting a task with sixty photos used to hold the
+  // modal open for the length of five sequential chunked requests.
+  let pendingFileDeletes = {photo: [], doc: []};
   async function deletePhotoRecords_(ids, kind){
     const sheetName = kind === 'doc' ? 'documentos' : 'fotos';
+    const bucket = kind === 'doc' ? 'doc' : 'photo';
     const persisted = (ids || []).filter(id => hasPersistedRow_(sheetName, id));
     if(!persisted.length) return true;
-    for(let i = 0; i < persisted.length; i += DELETE_CHUNK_SIZE){
-      const chunk = persisted.slice(i, i + DELETE_CHUNK_SIZE);
-      const resp = await sheetsPost({
-        action: kind === 'doc' ? 'deleteDocumentos' : 'deletePhotos',
-        ids: chunk,
-      });
-      const gone = new Set((resp.deleted || []).map(String));
-      // Keep the diff baseline honest, so the next sync neither re-sends nor
-      // re-deletes these rows.
-      if(sheetSnapshot[sheetName]){
-        sheetSnapshot[sheetName] = sheetSnapshot[sheetName].filter(r => !gone.has(String(r.id)));
+    persisted.forEach(id=>{ if(pendingFileDeletes[bucket].indexOf(String(id)) < 0) pendingFileDeletes[bucket].push(String(id)); });
+    await persistMeta_('fileDeletes', pendingFileDeletes);
+    // The caller has already removed the record from state; persist that too,
+    // or the photo reappears on the next boot while its Drive file is queued
+    // for deletion.
+    await persistPending_([sheetName]);
+    scheduleSync_();
+    return true;
+  }
+  // Runs BEFORE the row-level batch, and the batch is told to leave these ids
+  // alone until it has (see syncSheetsNow_). Order is the whole point: if the
+  // batch deleted the Fotos row first, the server would no longer be able to
+  // resolve which Drive file the row pointed at — the file would survive with
+  // nothing referencing it, which is precisely the orphan this action exists
+  // to avoid.
+  async function flushFileDeletes_(){
+    for(const bucket of ['photo', 'doc']){
+      const sheetName = bucket === 'doc' ? 'documentos' : 'fotos';
+      while(pendingFileDeletes[bucket].length){
+        const chunk = pendingFileDeletes[bucket].slice(0, DELETE_CHUNK_SIZE);
+        const prevSnapshot = {}; prevSnapshot[sheetName] = (sheetSnapshot[sheetName] || []).slice();
+        let resp;
+        try{
+          resp = await sheetsPost({action: bucket === 'doc' ? 'deleteDocumentos' : 'deletePhotos', ids: chunk});
+        }catch(e){
+          if(isPermissionError(e)){
+            // Refused, not unreachable — retrying can only fail again.
+            pendingFileDeletes[bucket] = pendingFileDeletes[bucket].filter(id=> chunk.indexOf(id) < 0);
+            await persistMeta_('fileDeletes', pendingFileDeletes);
+            reportSyncVerdict_(e);
+            return 'verdict';
+          }
+          return 'retry';
+        }
+        const gone = new Set((resp.deleted || []).map(String));
+        // Ids the server did not report as deleted are ones it no longer has a
+        // row for — already gone. Dropping them is correct; keeping them would
+        // queue a request that can never do anything.
+        pendingFileDeletes[bucket] = pendingFileDeletes[bucket].filter(id=> chunk.indexOf(id) < 0);
+        if(sheetSnapshot[sheetName]){
+          sheetSnapshot[sheetName] = sheetSnapshot[sheetName].filter(r => !gone.has(String(r.id)));
+        }
+        await persistMeta_('fileDeletes', pendingFileDeletes);
+        await persistBaselineDelta_(prevSnapshot);
       }
     }
-    saveCacheToLocalStorage();
-    return true;
+    await persistPending_(['fotos', 'documentos']);
+    return 'ok';
+  }
+  function fileDeletePending_(id){
+    return pendingFileDeletes.photo.indexOf(String(id)) > -1 || pendingFileDeletes.doc.indexOf(String(id)) > -1;
   }
 
   function compressImageFile(file, maxDim, quality){
@@ -3135,7 +3240,19 @@
     catch(e){ console.error('photo cascade delete error (non-fatal)', e); }
   }
 
-  const CACHE_KEY = 'cmoreira_cache_v1';
+  const LEGACY_CACHE_KEY = 'cmoreira_cache_v1';   // pre-local-first blob; removed on first boot
+  // Everything this account had on this device. Called when the server says
+  // the session is no longer valid, and on explicit sign-out. Deliberately
+  // NOT called when the network simply could not be reached — that
+  // conflation is what used to delete a working device's entire dataset
+  // because it was launched with no signal.
+  function purgeLocalData_(){
+    const email = (currentUser && currentUser.email) || lastKnownUserEmail_();
+    try{ localStorage.removeItem(LEGACY_CACHE_KEY); }catch(e){}
+    try{ localStorage.removeItem(LAST_USER_KEY); }catch(e){}
+    if(email) dropUserDatabase_(email).catch(e=> console.error('purge failed', e));
+    sheetSnapshot = {}; pendingCounts = {}; dirtyConfig = {};
+  }
   // ---------- Durable upload journal ----------
   // The gap between "the bytes are in Drive" and "the app has a row for them"
   // is where photos went missing. A record whose upload succeeded but whose
@@ -3210,6 +3327,145 @@
   }
   let lastSyncTime = null;
 
+  // ==================================================================
+  // LOCAL-FIRST STORE (IndexedDB)
+  // ------------------------------------------------------------------
+  // Replaces the single `cmoreira_cache_v1` localStorage blob. Three things
+  // made that blob the wrong container once writes had to survive a failed
+  // network: it is capped near 5MB (measured 987KB for ~3,000 entries, and
+  // persisting a confirmed-server baseline alongside it roughly doubles
+  // that), every write re-serialises the WHOLE dataset (measured 22ms) where
+  // a per-record store costs 0.7ms, and photo bytes have no home in it at
+  // all. IndexedDB is not uniformly faster — bulk hydration (152ms) and boot
+  // read (42ms) are slower than the blob's 22ms/3ms — but both of those run
+  // off the critical path, and the two places it wins are exactly the two
+  // this architecture depends on.
+  //
+  // THE CENTRAL IDEA: there is no operation log. What still needs sending is
+  // DERIVED, always, as diff(local desired state, last server-confirmed
+  // baseline). Persist both sides and "pending" survives reload, crash and
+  // iOS suspension by construction — with no idempotency keys, no dedupe, no
+  // compaction and no replay ordering to get wrong. This is only safe
+  // because the wire protocol is already idempotent: applyBatch_ upserts by
+  // a client-minted id, deletes are by id and no-op when absent, and
+  // deletePhotos treats "already gone" as success. Re-sending a batch whose
+  // response was lost therefore cannot duplicate anything.
+  //
+  // Stores:
+  //   baseline  one flat sheet row per record, exactly the shape toSheetRows
+  //             emits — the last value the SERVER confirmed. Rebuilding
+  //             sheetSnapshot from it is what makes expectedLastModified
+  //             correct across a restart.
+  //   pending   one entry per record that differs from baseline: the unsent
+  //             delta, i.e. the outbox, derived not journalled.
+  //   config    the four whole-tab reference lists (projects/tipos/unidades/
+  //             socios) as whole arrays plus which of them are unsent. They
+  //             have no row-level conflict tracking on the wire either, so
+  //             giving them row-level pending here would be a mechanism the
+  //             protocol can't use.
+  //   meta      session record, last sync time, upload journal.
+  //   blobs     photo bytes still to be uploaded (see the upload pipeline).
+  //
+  // Scoped per user: the database name carries the account's email, and
+  // signing in drops every OTHER account's database. The old cache was
+  // global, so a second account on the same device loaded the first
+  // account's data into memory before the permission filter ran.
+  // ==================================================================
+  const LOCAL_DB_PREFIX = 'cmoreira_v1_';
+  const LOCAL_DB_VERSION = 1;
+  const LOCAL_STORES = ['baseline', 'pending', 'config', 'meta', 'blobs'];
+  // Row-level sheets only. The four reference lists live in `config`.
+  const ROW_LEVEL_SHEETS = ['caixaObra', 'empreiteiro', 'tarefas', 'notas', 'fotos', 'documentos'];
+  const CONFIG_KEYS = ['projects', 'tipos', 'unidades', 'socios'];
+  // Which account this device last had open, so boot knows which database to
+  // open before it knows anyone's email. Not a credential and not proof of
+  // anything — the session record inside that database is what is checked.
+  const LAST_USER_KEY = 'cmoreira_last_user_v1';
+
+  let localDb = null;
+  let localDbEmail = null;
+
+  function dbNameFor_(email){ return LOCAL_DB_PREFIX + String(email || '').toLowerCase().trim(); }
+
+  function idbReq_(req){
+    return new Promise((resolve, reject)=>{
+      req.onsuccess = ()=> resolve(req.result);
+      req.onerror = ()=> reject(req.error);
+    });
+  }
+  function openLocalDb_(email){
+    if(localDb && localDbEmail === email) return Promise.resolve(localDb);
+    if(localDb){ try{ localDb.close(); }catch(e){} localDb = null; }
+    return new Promise((resolve, reject)=>{
+      let req;
+      try{ req = indexedDB.open(dbNameFor_(email), LOCAL_DB_VERSION); }
+      catch(e){ reject(e); return; }
+      req.onupgradeneeded = ()=>{
+        const db = req.result;
+        LOCAL_STORES.forEach(name=>{ if(!db.objectStoreNames.contains(name)) db.createObjectStore(name); });
+      };
+      req.onsuccess = ()=>{ localDb = req.result; localDbEmail = email; resolve(localDb); };
+      req.onerror = ()=> reject(req.error);
+      req.onblocked = ()=> reject(new Error('indexeddb bloqueado'));
+    });
+  }
+  // Every store access goes through here so a device with IndexedDB
+  // unavailable (private mode on some browsers, storage disabled) degrades to
+  // exactly the pre-local-first behaviour — nothing persists, everything
+  // still works online — instead of throwing on the boot path.
+  async function idbTx_(stores, mode, fn){
+    if(!localDb) return null;
+    return new Promise((resolve, reject)=>{
+      let tx;
+      try{ tx = localDb.transaction(stores, mode); }
+      catch(e){ reject(e); return; }
+      let out;
+      tx.oncomplete = ()=> resolve(out);
+      tx.onerror = ()=> reject(tx.error);
+      tx.onabort = ()=> reject(tx.error);
+      try{
+        const map = {};
+        stores.forEach(s=>{ map[s] = tx.objectStore(s); });
+        out = fn(map, tx);
+      }catch(e){ try{ tx.abort(); }catch(e2){} reject(e); }
+    });
+  }
+  async function idbAll_(store){
+    if(!localDb) return [];
+    const tx = localDb.transaction(store);
+    const s = tx.objectStore(store);
+    const [keys, vals] = await Promise.all([idbReq_(s.getAllKeys()), idbReq_(s.getAll())]);
+    return keys.map((k, i)=> ({key: k, value: vals[i]}));
+  }
+  async function idbGet_(store, key){
+    if(!localDb) return undefined;
+    return await idbReq_(localDb.transaction(store).objectStore(store).get(key));
+  }
+  async function idbSet_(store, key, value){
+    return await idbTx_([store], 'readwrite', (s)=>{ s[store].put(value, key); });
+  }
+  async function idbDel_(store, key){
+    return await idbTx_([store], 'readwrite', (s)=>{ s[store].delete(key); });
+  }
+
+  function rowKey_(sheet, id){ return sheet + '|' + id; }
+
+  // Signing in as someone else must not leave the previous account's data on
+  // the device. Databases are named by email, so anything with our prefix
+  // that is not the current account's goes.
+  async function dropOtherUserDatabases_(keepEmail){
+    if(!indexedDB.databases) return;            // Safari < 14 has no enumeration; sign-out still deletes explicitly
+    let list = [];
+    try{ list = await indexedDB.databases(); }catch(e){ return; }
+    const keep = dbNameFor_(keepEmail);
+    await Promise.all(list.filter(d=> d.name && d.name.indexOf(LOCAL_DB_PREFIX) === 0 && d.name !== keep)
+      .map(d=> new Promise(res=>{ const r = indexedDB.deleteDatabase(d.name); r.onsuccess = r.onerror = r.onblocked = ()=> res(); })));
+  }
+  async function dropUserDatabase_(email){
+    if(localDb && localDbEmail === email){ try{ localDb.close(); }catch(e){} localDb = null; localDbEmail = null; }
+    await new Promise(res=>{ const r = indexedDB.deleteDatabase(dbNameFor_(email)); r.onsuccess = r.onerror = r.onblocked = ()=> res(); });
+  }
+
   // Serialising the whole dataset and writing it to localStorage is a
   // synchronous, main-thread-blocking operation measured in hundreds of
   // milliseconds at a few thousand rows — and nothing on screen depends on
@@ -3217,78 +3473,336 @@
   // (and can use) their data first, and the cache is written in the idle gap
   // afterwards. requestIdleCallback where available, a macrotask otherwise
   // (notably iOS Safari, which is the primary target and has no rIC).
-  // Strips every still-in-flight upload out of the cached copy. Caching one
-  // would be actively harmful in both directions: a photo with no Drive file
-  // yet comes back on the next boot as a permanently broken thumbnail with no
-  // pending record left to explain or retry it, and — worse — because
-  // loadCacheFromLocalStorage() seeds sheetSnapshot from this same state, a
-  // never-persisted row would appear in BOTH state and snapshot, so the diff
-  // would see no change and the photo would silently never be written at all.
-  // The cache is a performance store; anything not yet confirmed server-side
-  // has no business in it.
-  function cacheableState_(){
-    if(!pendingUploads.size) return {caixaObra, empreiteiro, tasks, notes, documentos, projectFotos};
-    const strip = list => list.map(rec => (rec.fotos && rec.fotos.some(f => pendingUploads.has(f.id)))
-      ? {...rec, fotos: rec.fotos.filter(f => !pendingUploads.has(f.id))}
-      : rec);
-    return {
-      caixaObra: strip(caixaObra), empreiteiro: strip(empreiteiro),
-      tasks: strip(tasks), notes: strip(notes),
-      documentos: documentos.filter(d => !pendingUploads.has(d.id)),
-      projectFotos: projectFotos.filter(f => !pendingUploads.has(f.id)),
-    };
+  // ---------- Flat sheet row -> live nested state ----------
+  // The inverse of toSheetRows/computeNotasRows/computeFotosRows. Needed in
+  // two places that both matter: rebuilding state from the local baseline at
+  // boot, and re-applying an unsent local change on top of freshly hydrated
+  // server data. The second one is the load-bearing use — without it a
+  // background getAll silently discards whatever the user has typed but not
+  // yet synced. reapplyPendingTaskChanges_ used to do exactly this, but only
+  // for a task's `feito` flag; an entry edit, a note, a new lançamento or a
+  // deletion had no equivalent protection at all.
+  function entryFromRow_(row, existing){
+    const base = existing || {notas: [], fotos: []};
+    return Object.assign({}, base, {
+      id: row.id, projectId: row.projeto, nome: row.nome, tipo: row.tipo, qtd: row.qtd,
+      unidade: row.unidade, data: row.data, valor: row.valor, fornecedor: row.fornecedor,
+      socio: row.socio, criadoEm: row.criadoEm, lastModified: row.lastModified,
+      notas: base.notas || [], fotos: base.fotos || [],
+    });
   }
-  let cacheWriteScheduled = false;
-  function saveCacheToLocalStorage(){
-    if(cacheWriteScheduled) return; // one pending write is enough; it'll serialise whatever is current when it runs
-    cacheWriteScheduled = true;
-    const write = ()=>{
-      cacheWriteScheduled = false;
-      try{
-        const snap = cacheableState_();
-        localStorage.setItem(CACHE_KEY, JSON.stringify({
-          projects, caixaObra: snap.caixaObra, empreiteiro: snap.empreiteiro, tasks: snap.tasks,
-          notes: snap.notes, documentos: snap.documentos, projectFotos: snap.projectFotos, tipos, unidades, socios,
-          savedAt: lastSyncTime,
-        }));
-      }catch(e){
-        console.error('cache save error', e);
-        // A full localStorage quota fails silently otherwise — the app keeps
-        // working but boots from progressively staler data with no signal
-        // that the cache has effectively stopped updating.
-        showToast('Não consegui salvar os dados localmente neste aparelho (armazenamento cheio).', false, 4500);
+  function findParentFor_(refTipo, refId){
+    if(refTipo === 'caixa') return caixaObra.find(x=>x.id === refId);
+    if(refTipo === 'emp') return empreiteiro.find(x=>x.id === refId);
+    if(refTipo === 'tasks') return tasks.find(x=>x.id === refId);
+    if(refTipo === 'notes') return notes.find(x=>x.id === refId);
+    return null;
+  }
+  function upsertInto_(list, id, make){
+    const i = list.findIndex(x=>x.id === id);
+    if(i > -1){ list[i] = make(list[i]); return list[i]; }
+    const rec = make(null); list.push(rec); return rec;
+  }
+  function applyRowToState_(sheet, row){
+    const id = String(row.id);
+    if(sheet === 'caixaObra'){ upsertInto_(caixaObra, id, (ex)=> entryFromRow_(row, ex)); return; }
+    if(sheet === 'empreiteiro'){ upsertInto_(empreiteiro, id, (ex)=> entryFromRow_(row, ex)); return; }
+    if(sheet === 'tarefas'){
+      upsertInto_(tasks, id, (ex)=> Object.assign({}, ex || {fotos: []}, {
+        id, projectId: row.projeto || null, texto: row.texto, prazo: row.prazo,
+        prioridade: row.prioridade || 'media', feito: !!row.feito,
+        fotos: (ex && ex.fotos) || [], criadoEm: row.criadoEm, lastModified: row.lastModified,
+      }));
+      return;
+    }
+    if(sheet === 'documentos'){
+      upsertInto_(documentos, id, ()=> ({
+        id, projectId: row.projeto, nome: row.nome, mimeType: row.mimeType,
+        driveFileId: row.driveFileId, driveUrl: row.driveUrl, criadoEm: row.criadoEm, lastModified: row.lastModified,
+      }));
+      return;
+    }
+    if(sheet === 'notas'){
+      const nota = {id, texto: row.texto, criadoEm: row.criadoEm, lastModified: row.lastModified};
+      if(row.refTipo === 'caixa' || row.refTipo === 'emp'){
+        const parent = findParentFor_(row.refTipo, row.refId);
+        if(!parent) return;                     // parent gone — the row has nowhere to live
+        parent.notas = parent.notas || [];
+        upsertInto_(parent.notas, id, ()=> nota);
+      } else {
+        upsertInto_(notes, id, (ex)=> Object.assign({fotos: (ex && ex.fotos) || []}, nota, {projectId: row.projeto || null}));
       }
-    };
-    if(typeof requestIdleCallback === 'function') requestIdleCallback(write, {timeout: 2000});
-    else setTimeout(write, 0);
+      return;
+    }
+    if(sheet === 'fotos'){
+      const foto = {id, criadoEm: row.criadoEm, driveFileId: row.driveFileId, driveUrl: row.driveUrl, lastModified: row.lastModified};
+      if(row.refTipo === 'projeto'){
+        upsertInto_(projectFotos, id, ()=> Object.assign({}, foto, {projectId: row.refId}));
+        return;
+      }
+      const parent = findParentFor_(row.refTipo, row.refId);
+      if(!parent) return;
+      parent.fotos = parent.fotos || [];
+      upsertInto_(parent.fotos, id, ()=> foto);
+    }
   }
-  function loadCacheFromLocalStorage(){
+  // Removes an id from wherever it actually lives. Same flat-scan shape as
+  // dropDeletedRows_, for the same reason: ids are unique across every sheet
+  // (prefix_timestamp_random), so nothing needs to know in advance which
+  // sheet or parent a given id belongs to.
+  function removeIdFromState_(id){
+    const keep = (list)=> list.filter(r => String(r.id) !== String(id));
+    const keepNested = (rec)=>{
+      if(rec.notas) rec.notas = keep(rec.notas);
+      if(rec.fotos) rec.fotos = keep(rec.fotos);
+      return rec;
+    };
+    caixaObra = keep(caixaObra).map(keepNested);
+    empreiteiro = keep(empreiteiro).map(keepNested);
+    tasks = keep(tasks).map(keepNested);
+    notes = keep(notes).map(keepNested);
+    documentos = keep(documentos);
+    projectFotos = keep(projectFotos);
+  }
+
+  // ---------- Pending = diff(state, baseline) ----------
+  // Computed, never journalled. Call BEFORE state is rebuilt from the server.
+  function capturePendingRows_(){
+    const out = {};
+    const live = liveRowsBySheet_();
+    ROW_LEVEL_SHEETS.forEach(sheet=>{
+      const {upserts, deletes} = diffRows_(sheet, live[sheet]);
+      if(upserts.length || deletes.length) out[sheet] = {upserts, deletes};
+    });
+    return out;
+  }
+  function applyPendingRows_(pending){
+    if(!pending) return;
+    ROW_LEVEL_SHEETS.forEach(sheet=>{
+      const p = pending[sheet];
+      if(!p) return;
+      (p.deletes || []).forEach(id=>{ if(!rejectedIds.has(String(id))) removeIdFromState_(id); });
+      (p.upserts || []).forEach(u=>{ if(!rejectedIds.has(String(u.id))) applyRowToState_(sheet, u.row); });
+    });
+  }
+  // Every row-level sheet's CURRENT desired rows, in one place, so the diff
+  // used for persistence, for sending and for hydration is always the same
+  // computation rather than three that could drift.
+  function liveRowsBySheet_(){
+    return {
+      caixaObra: toSheetRows('caixaObra', caixaObra),
+      empreiteiro: toSheetRows('empreiteiro', empreiteiro),
+      tarefas: toSheetRows('tasks', tasks),
+      documentos: toSheetRows('documentos', documentos),
+      notas: computeNotasRows(),
+      fotos: computeFotosRows(),
+    };
+  }
+
+  // ---------- Persistence ----------
+  // The durability point of every local write. Persists the unsent delta for
+  // the sheets that just changed; the caller has already mutated state and
+  // painted. Deliberately replaces each touched sheet's whole pending set
+  // rather than appending: a record created and then deleted before either
+  // reached the server leaves no diff at all, and an append-only outbox would
+  // keep a stale entry for it forever.
+  let pendingCounts = {};                        // sheet -> unsent row count, for the activity hub
+  async function persistPending_(sheets){
+    const live = liveRowsBySheet_();
+    const list = sheets && sheets.length ? sheets : ROW_LEVEL_SHEETS;
+    const next = {};
+    list.forEach(sheet=>{
+      if(ROW_LEVEL_SHEETS.indexOf(sheet) < 0) return;
+      next[sheet] = diffRows_(sheet, live[sheet]);
+    });
+    Object.keys(next).forEach(sheet=>{
+      pendingCounts[sheet] = next[sheet].upserts.length + next[sheet].deletes.length;
+    });
+    renderUploadTray_();
+    if(!localDb) return;
     try{
-      const raw = localStorage.getItem(CACHE_KEY);
-      if(!raw) return false;
-      const payload = JSON.parse(raw);
-      if(!payload.projects || !payload.projects.length) return false;
-      projects = payload.projects;
-      caixaObra = payload.caixaObra || [];
-      empreiteiro = payload.empreiteiro || [];
-      tasks = payload.tasks || [];
-      notes = payload.notes || [];
-      documentos = payload.documentos || [];
-      projectFotos = payload.projectFotos || [];
-      tipos = (payload.tipos && payload.tipos.length) ? payload.tipos : DEFAULT_TIPOS.slice();
-      unidades = (payload.unidades && payload.unidades.length) ? payload.unidades : DEFAULT_UNIDADES.slice();
-      socios = payload.socios || [];
-      // A cache written before this feature shipped carries projects as
-      // {id,name} with no socios key at all. That absence is deliberately NOT
-      // normalized to [] here: [] means "nobody is assigned" (a real state,
-      // which hides the selector), while absent means "not known yet" —
-      // resolvedProjectSocios_ falls back to this project's own history for
-      // the one boot until getAll lands, exactly as the backend migration
-      // does. See resolvedProjectSocios_.
-      rebuildSheetSnapshot_();
-      lastSyncTime = payload.savedAt || null;
-      return true;
-    }catch(e){ console.error('cache load error', e); return false; }
+      const existing = await idbAll_('pending');
+      await idbTx_(['pending'], 'readwrite', (s)=>{
+        existing.forEach(e=>{ if(next[e.value && e.value.sheet]) s.pending.delete(e.key); });
+        Object.keys(next).forEach(sheet=>{
+          next[sheet].upserts.forEach(u=>{
+            s.pending.put({sheet, id: String(u.id), op: 'upsert', row: u.row, expectedLastModified: u.expectedLastModified}, rowKey_(sheet, u.id));
+          });
+          next[sheet].deletes.forEach(id=>{
+            s.pending.put({sheet, id: String(id), op: 'delete'}, rowKey_(sheet, id));
+          });
+        });
+      });
+    }catch(e){ console.error('persist pending failed', e); }
+  }
+  // Baseline is the server's confirmed truth, so it is only ever written from
+  // a getAll or from a batchMulti's own response. Writes only what actually
+  // changed: a routine hydration where nothing moved costs nothing, instead
+  // of the 152ms a full bulk rewrite would.
+  async function persistBaselineDelta_(prevSnapshot){
+    if(!localDb) return;
+    try{
+      await idbTx_(['baseline'], 'readwrite', (s)=>{
+        ROW_LEVEL_SHEETS.forEach(sheet=>{
+          const oldRows = (prevSnapshot && prevSnapshot[sheet]) || [];
+          const newRows = sheetSnapshot[sheet] || [];
+          const oldById = new Map(oldRows.map(r=>[String(r.id), r]));
+          const newById = new Map(newRows.map(r=>[String(r.id), r]));
+          newById.forEach((row, id)=>{
+            const old = oldById.get(id);
+            if(!old || JSON.stringify(old) !== JSON.stringify(row)) s.baseline.put({sheet, id, row}, rowKey_(sheet, id));
+          });
+          oldById.forEach((_row, id)=>{ if(!newById.has(id)) s.baseline.delete(rowKey_(sheet, id)); });
+        });
+      });
+    }catch(e){ console.error('persist baseline failed', e); }
+  }
+  // The four whole-tab reference lists. They have no row-level conflict
+  // tracking on the wire (saveSheet replaces the entire tab), so giving them
+  // a row-level outbox here would model something the protocol cannot use:
+  // `dirty` simply records that this device's copy has not been sent, and the
+  // send always re-serialises whatever the list holds at that moment.
+  let dirtyConfig = {};
+  async function persistConfig_(){
+    if(!localDb) return;
+    try{
+      await idbTx_(['config'], 'readwrite', (s)=>{
+        s.config.put({projects, tipos, unidades, socios}, 'lists');
+        s.config.put(dirtyConfig, 'dirty');
+      });
+    }catch(e){ console.error('persist config failed', e); }
+  }
+  async function persistMeta_(key, value){
+    try{ await idbSet_('meta', key, value); }catch(e){ console.error('persist meta failed', e); }
+  }
+
+  // ---------- Offline session continuity ----------
+  // The last identity+permissions the SERVER confirmed, with the moment it
+  // did. This is what lets the app open with no connectivity at all, and it
+  // is deliberately not a credential: it carries no token, grants no server
+  // access, and every request still needs a fresh Google ID token that the
+  // backend verifies independently. All it can do is decide whether to render
+  // data that is already sitting on this device.
+  //
+  // The window is a real trade-off, stated plainly rather than hidden: for up
+  // to SESSION_GRACE_MS after the last successful verify, a user who has been
+  // deactivated or demoted keeps READ access to what this one device already
+  // downloaded. They cannot read anything new (no token, so no request can be
+  // made) and cannot write anything the server will accept (queued writes are
+  // authorized when they are finally sent, not when they were made). The
+  // moment connectivity returns, verify runs and a refusal purges the device.
+  const SESSION_GRACE_MS = 30 * 24 * 60 * 60 * 1000;   // 30 days
+  async function persistSessionRecord_(){
+    if(!currentUser) return;
+    await persistMeta_('session', {
+      email: currentUser.email, nome: currentUser.nome, role: currentUser.role,
+      projects: currentUser.projects, sections: currentUser.sections,
+      verifiedAt: Date.now(),
+    });
+  }
+  async function readSessionRecord_(){
+    try{
+      const rec = await idbGet_('meta', 'session');
+      if(!rec || !rec.email || !rec.verifiedAt) return null;
+      if(Date.now() - rec.verifiedAt > SESSION_GRACE_MS) return null;
+      return rec;
+    }catch(e){ return null; }
+  }
+  // True when the app is running on this device's stored session because the
+  // server could not be reached — not because anyone was refused. There is no
+  // token in this state, so no request can be made at all; everything visible
+  // was already downloaded by a previously verified session.
+  let offlineMode = false;
+  // Consecutive boots that failed for a NON-auth reason. Purging the device on
+  // the first one is what used to delete a working dataset because the phone
+  // had no signal; never purging would lose the original recovery property
+  // (if the stored data is itself what breaks the boot, keeping it guarantees
+  // the next attempt breaks identically). Two strikes keeps both.
+  const BOOT_FAIL_KEY = 'cmoreira_boot_fail_v1';
+  const BOOT_FAIL_LIMIT = 2;
+  function bumpBootFailure_(){
+    let n = 0;
+    try{ n = parseInt(localStorage.getItem(BOOT_FAIL_KEY) || '0', 10) || 0; }catch(e){}
+    n++;
+    try{ localStorage.setItem(BOOT_FAIL_KEY, String(n)); }catch(e){}
+    return n;
+  }
+  function clearBootFailures_(){ try{ localStorage.removeItem(BOOT_FAIL_KEY); }catch(e){} }
+
+  function lastKnownUserEmail_(){
+    try{
+      const raw = localStorage.getItem(LAST_USER_KEY);
+      const v = raw ? JSON.parse(raw) : null;
+      return (v && v.email) || null;
+    }catch(e){ return null; }
+  }
+
+  // Rebuilds every in-memory array from the local database, then puts the
+  // unsent delta back on top. Order is load-bearing and mirrors hydration
+  // exactly: state is assembled from BASELINE alone, sheetSnapshot is rebuilt
+  // from that (so it holds the server's confirmed values and every pending
+  // row stays a genuine unsent delta), and only then is pending re-applied.
+  // Assembling from baseline+pending together and then rebuilding the
+  // snapshot would bake the unsent change into its own baseline and it would
+  // never be sent at all.
+  async function loadLocalStore_(){
+    if(!localDb) return false;
+    let baselineRows, pendingRows, lists, dirty, meta;
+    try{
+      [baselineRows, pendingRows, lists, dirty, meta] = await Promise.all([
+        idbAll_('baseline'), idbAll_('pending'),
+        idbGet_('config', 'lists'), idbGet_('config', 'dirty'), idbGet_('meta', 'sync'),
+      ]);
+    }catch(e){ console.error('local store read failed', e); return false; }
+    if(!lists || !lists.projects) return false;
+
+    projects = lists.projects || [];
+    tipos = (lists.tipos && lists.tipos.length) ? lists.tipos : DEFAULT_TIPOS.slice();
+    unidades = (lists.unidades && lists.unidades.length) ? lists.unidades : DEFAULT_UNIDADES.slice();
+    socios = lists.socios || [];
+    dirtyConfig = dirty || {};
+
+    caixaObra = []; empreiteiro = []; tasks = []; notes = []; documentos = []; projectFotos = [];
+    const bySheet = {};
+    baselineRows.forEach(e=>{
+      const v = e.value; if(!v || !v.sheet) return;
+      (bySheet[v.sheet] = bySheet[v.sheet] || []).push(v.row);
+    });
+    // Parents before children: a Notas/Fotos row resolves its owner by
+    // walking up to it, so the owner has to exist first.
+    ['caixaObra', 'empreiteiro', 'tarefas', 'documentos', 'notas', 'fotos'].forEach(sheet=>{
+      (bySheet[sheet] || []).forEach(row=> applyRowToState_(sheet, row));
+    });
+    rebuildSheetSnapshot_();
+
+    const pending = {};
+    pendingRows.forEach(e=>{
+      const v = e.value; if(!v || !v.sheet) return;
+      const bucket = pending[v.sheet] = pending[v.sheet] || {upserts: [], deletes: []};
+      if(v.op === 'delete') bucket.deletes.push(v.id);
+      else bucket.upserts.push({id: v.id, row: v.row});
+    });
+    // Same order as applyPendingRows_ for the same reason: an upsert whose
+    // parent arrives in the same batch must find it already in place.
+    ['caixaObra', 'empreiteiro', 'tarefas', 'documentos', 'notas', 'fotos'].forEach(sheet=>{
+      const p = pending[sheet]; if(!p) return;
+      p.deletes.forEach(id=> removeIdFromState_(id));
+      p.upserts.forEach(u=> applyRowToState_(sheet, u.row));
+    });
+    Object.keys(pending).forEach(sheet=>{
+      pendingCounts[sheet] = pending[sheet].upserts.length + pending[sheet].deletes.length;
+    });
+    lastSyncTime = (meta && meta.lastSyncTime) || null;
+    try{
+      const fd = await idbGet_('meta', 'fileDeletes');
+      if(fd && fd.photo && fd.doc) pendingFileDeletes = fd;
+    }catch(e){}
+    return true;
+  }
+  function pendingTotal_(){
+    return Object.keys(pendingCounts).reduce((n, k)=> n + (pendingCounts[k] || 0), 0)
+      + Object.keys(dirtyConfig).filter(k=> dirtyConfig[k]).length
+      + pendingFileDeletes.photo.length + pendingFileDeletes.doc.length;
   }
 
   function isNetworkError(err){
@@ -3354,19 +3868,46 @@
   // delay an already-safe pending write. See hydrateFromServerAtBoot_ below
   // for the one case — a cache-first boot — where the fetch itself must also
   // be gated, because the snapshot isn't trustworthy yet.
+  // Incremented every time a write is confirmed by the server. A background
+  // refresh reads it before its fetch and again before applying: if it moved,
+  // the response in hand was computed before that write landed, so applying it
+  // would erase a change the user can already see AND that the server has
+  // already accepted. The fetch deliberately stays outside the sync queue (a
+  // slow refresh must not delay pending writes), which is exactly why the
+  // response needs its own freshness check.
+  let writeEpoch = 0;
   async function fetchAndApplyFromServer(){
     try{
+      const epochBefore = writeEpoch;
       const data = await sheetsPost({action:'getAll'});
+      if(writeEpoch !== epochBefore){
+        scheduleRefreshSoon_();
+        return false;
+      }
       // The fetch stays OUTSIDE the sync queue — a slow background refresh
       // must never delay a user's checkbox save. Only the apply is queued, so
       // it can never land between a write's request and its response and
       // rewrite sheetSnapshot underneath it.
-      return await enqueueSync_(()=>{ applyServerData_(data); return true; });
+      return await enqueueSync_(()=>{
+        if(writeEpoch !== epochBefore){ scheduleRefreshSoon_(); return false; }
+        applyServerData_(data);
+        return true;
+      });
     }catch(err){
       console.error('Erro ao carregar do Google Sheets', err);
       if(isAuthError(err)) throw err; // let the sign-in flow handle this specifically, not the generic offline path
       return false;
     }
+  }
+  // Re-runs a background refresh shortly after one was discarded as stale.
+  let refreshSoonTimer = null;
+  function scheduleRefreshSoon_(){
+    if(refreshSoonTimer) return;
+    refreshSoonTimer = setTimeout(async ()=>{
+      refreshSoonTimer = null;
+      const ok = await fetchAndApplyFromServer();
+      if(ok){ finishLoadSetup(); renderAll(); updateSyncStatusText(); }
+    }, 1200);
   }
   // INVARIANT — a cache-first boot's in-memory snapshot is UNVERIFIED. It's
   // seeded straight from localStorage (loadCacheFromLocalStorage), which is
@@ -3413,7 +3954,17 @@
       }
     });
   }
+  // INVARIANT — a background refresh may never overwrite a local change the
+  // user has already seen accepted but which has not yet reached the server.
+  // The unsent delta is captured BEFORE anything is rebuilt, the server's
+  // data becomes the new confirmed baseline, and then the delta is put back
+  // on top. Ordering is load-bearing in both directions: capture after the
+  // rebuild and there is nothing left to capture; re-apply before the
+  // snapshot rebuild and the unsent change gets baked into its own baseline
+  // and is never sent at all.
   function applyServerData_(data){
+      const pending = capturePendingRows_();
+      const prevSnapshot = sheetSnapshot;
       projects = (data.projetos||[]).filter(p => p.ativo !== false)
         .map(p => ({id: p.id, name: p.id, socios: parseSociosCell_(p.socios)}));
       // NO invented fallback here. There used to be a hardcoded
@@ -3479,9 +4030,9 @@
       // only sends whatever actually changes from here — and so conflict checks
       // compare against the lastModified values we actually just saw.
       rebuildSheetSnapshot_();
-      // Server snapshot is now the confirmed baseline; the user's still-unsaved
-      // checkbox intentions go back on top of it (see reapplyPendingTaskChanges_).
-      reapplyPendingTaskChanges_();
+      // The server's values are now the confirmed baseline. Everything the
+      // user has done since goes back on top of it, unchanged.
+      applyPendingRows_(pending);
       // Same rule for photos still uploading: the server has never heard of
       // them (they are withheld until their bytes land), so the rebuild above
       // dropped them. Put them back BEFORE anything can conclude they belong
@@ -3491,8 +4042,27 @@
       reapplyPendingUploads_();
 
       lastSyncTime = Date.now();
-      saveCacheToLocalStorage();
       currentUser = data.currentUser || currentUser;
+      schedulePersistHydration_(prevSnapshot);
+  }
+
+  // Writing ~3,460 baseline records costs about 150ms; writing only what
+  // actually moved since the last hydration usually costs nothing. Neither is
+  // on the critical path, so it happens in the idle gap after the paint —
+  // the same reasoning the old whole-blob cache write followed, kept.
+  let hydrationPersistScheduled_ = false;
+  function schedulePersistHydration_(prevSnapshot){
+    if(hydrationPersistScheduled_) return;
+    hydrationPersistScheduled_ = true;
+    const run = async ()=>{
+      hydrationPersistScheduled_ = false;
+      await persistBaselineDelta_(prevSnapshot);
+      await persistConfig_();
+      await persistPending_();
+      await persistMeta_('sync', {lastSyncTime});
+    };
+    if(typeof requestIdleCallback === 'function') requestIdleCallback(run, {timeout: 2000});
+    else setTimeout(run, 0);
   }
 
   // Generic (section, action) permission check against whatever the backend
@@ -3661,9 +4231,85 @@
   // hydrates the real, authoritative data in the background. Only a
   // brand-new device with no cache at all waits on the real fetch before
   // anything is shown, same as before this existed.
+  // ---------- Offline boot ----------
+  // Opening the app with no connectivity used to be impossible AND
+  // destructive: onGoogleSignIn awaited verify(), the failure was treated as
+  // a rejected identity, and the catch deleted the entire local dataset
+  // (measured: 987KB -> 0KB on a single signal-less launch). Google's own
+  // sign-in script also comes from accounts.google.com, so offline the button
+  // never even rendered — the gate was simply dead.
+  //
+  // This is the same distinction the backend already learned to make in
+  // verifyIdToken_: "I could not check who you are" is not "you are not who
+  // you say you are". A stored session that the server confirmed within
+  // SESSION_GRACE_MS is enough to render data this device already has. It is
+  // not a credential: no token exists in this state, so nothing new can be
+  // read, and any write made here is authorized by the server when it is
+  // finally sent, not when it was made.
+  async function tryOfflineBoot_(){
+    if(googleIdToken) return false;                 // a real session is in progress
+    const email = lastKnownUserEmail_();
+    if(!email) return false;
+    try{ await openLocalDb_(email); }catch(e){ return false; }
+    const rec = await readSessionRecord_();
+    if(!rec) return false;
+    currentUser = {email: rec.email, nome: rec.nome, role: rec.role, projects: rec.projects, sections: rec.sections};
+    const had = await loadLocalStore_();
+    if(!had){ currentUser = null; return false; }
+    // The permissions applied here are the last ones the SERVER confirmed.
+    // They are re-checked, and re-applied, the moment a real verify succeeds.
+    filterCacheAgainstCurrentPermissions();
+    offlineMode = true;
+    hideAuthGate();
+    finishLoadSetup();
+    renderAll();
+    updateSyncStatusText();
+    renderUploadTray_();
+    return true;
+  }
+  // Google Identity Services is loaded from accounts.google.com, so a launch
+  // with no connectivity leaves window.google undefined forever. Re-injecting
+  // the tag is the only way to get it once the network returns.
+  function ensureGisLoaded_(){
+    if(window.google && google.accounts && google.accounts.id) return;
+    if(document.getElementById('gisReload')) return;
+    const el = document.createElement('script');
+    el.id = 'gisReload';
+    el.src = 'https://accounts.google.com/gsi/client';
+    el.async = true; el.defer = true;
+    el.onload = ()=> initAuth();
+    el.onerror = ()=>{ el.remove(); };            // still offline; try again on the next online event
+    document.head.appendChild(el);
+  }
+  // Connectivity is back but this device is running on a stored session. The
+  // app stays open and usable — putting the gate back in front of someone
+  // mid-task would be hostile, and their pending writes are safe either way.
+  // All that is offered is a way to sign in again so the queue can drain.
+  function offerReconnect_(){
+    if(!offlineMode) return;
+    ensureGisLoaded_();
+    if(window.google && google.accounts && google.accounts.id && hasFreshSessionHint() && !isStandalone){
+      pendingTokenRefreshOnly = false;
+      google.accounts.id.prompt();               // may silently succeed in a browser tab
+    }
+  }
+
   async function loadAll(){
-    const hadCache = loadCacheFromLocalStorage();
-    if(hadCache){
+    // The database is named after the account, and every OTHER account's
+    // database is dropped here. The old single localStorage cache was global:
+    // signing in as a second person loaded the first person's data into memory
+    // before the permission filter had a chance to run.
+    try{
+      await openLocalDb_(currentUser.email);
+      localStorage.setItem(LAST_USER_KEY, JSON.stringify({email: currentUser.email}));
+      dropOtherUserDatabases_(currentUser.email);   // best-effort, not awaited
+    }catch(e){
+      console.error('local store unavailable', e);  // degrade to online-only rather than block sign-in
+    }
+    await persistSessionRecord_();
+
+    const hadLocal = await loadLocalStore_();
+    if(hadLocal){
       filterCacheAgainstCurrentPermissions();
       hideAuthGate();
       saveSessionHint(currentUser.email); // written only after the backend has independently verified the token
@@ -3671,9 +4317,13 @@
       finishLoadSetup();
       renderAll();
       updateSyncStatusText();
+      // Anything this device accepted locally and never managed to send goes
+      // out now, without waiting for the hydration below — it is already
+      // durable, and the sync queue keeps the two correctly ordered.
+      syncNowIfPending_();
       // hydrateFromServerAtBoot_, not fetchAndApplyFromServer — see its
-      // comment above for why a cache-first boot needs the fetch itself
-      // gated, not just the apply.
+      // comment above for why a boot from local data gates the fetch itself,
+      // not just the apply.
       const ok = await hydrateFromServerAtBoot_();
       if(ok){
         finishLoadSetup();
@@ -3688,7 +4338,7 @@
       return;
     }
 
-    // No cache on this device — nothing safe to render early, so this
+    // Nothing stored on this device — nothing safe to render early, so this
     // still waits on the real fetch, and a failure is still a hard failure
     // (never silently smoothed over by made-up defaults during sign-in).
     const ok = await fetchAndApplyFromServer();
@@ -4012,7 +4662,20 @@
   $('#ahPill').addEventListener('click', ()=>{
     if(hubMessage){ hideToast(); return; }
     const hub = document.getElementById('activityHub');
-    if(!hub || !hub.classList.contains('has-body')) return;
+    if(hub && !hub.classList.contains('has-body')){
+      // Running on the stored session, or holding changes that need a live
+      // session to go out: the one useful thing a tap can do is offer to sign
+      // in again. Everything stays where it is either way.
+      if(offlineMode || syncBlockedReason === 'auth'){
+        offerReconnect_();
+        if(!googleIdToken) showAuthGate('Entre novamente para sincronizar suas alterações.');
+        return;
+      }
+      // A pending queue with a live session just needs a nudge past its backoff.
+      if(pendingTotal_() > 0 && !syncInFlight){ syncNowIfPending_(); return; }
+      return;
+    }
+    if(!hub) return;
     trayOpen = !trayOpen;
     hub.classList.toggle('open', trayOpen);
     if(trayOpen) renderTrayBody_();
@@ -4731,6 +5394,19 @@
     renderFormPhotoThumbs();
   }
 
+  // Local-first: the lançamento is on screen and the form is clear before the
+  // save is even attempted. This was the last hot path still waiting on Apps
+  // Script — measured at 1,598ms on a 1.5s connection and 4,070ms on a 4s one,
+  // against 14-25ms for the task and note paths that had already been
+  // converted, and 92 SECONDS on a connection that opens but never answers.
+  // That wait is the whole of the "it feels slower than the spreadsheet"
+  // complaint: entering a row in Excel has never taken a round trip.
+  //
+  // No rollback path any more. saveKey resolves once the entry is durable on
+  // this device; a network that is slow, flaky or absent no longer costs the
+  // user their typing, because the entry is genuinely saved — just not yet
+  // synchronised. A server REFUSAL still reverts it, centrally, by restoring
+  // the server's own value (see discardRejected_).
   const submitEntryGuarded = withGuard(async ()=>{
     const nome = normStore($('#f_nome').value);
     const data = $('#f_data').value;
@@ -4755,51 +5431,31 @@
     if(addKind === 'caixa') payload.tipo = $('#f_tipo').value === '__novo__' ? '' : $('#f_tipo').value;
 
     const list = addKind === 'caixa' ? caixaObra : empreiteiro;
-    const prevList = cloneState_(list);
-    const btn = $('#saveEntryBtn');
-    const prevBtnText = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = 'Salvando...';
-
-    let ok;
-    if(editingId){
+    const wasEditing = !!editingId;
+    if(wasEditing){
       const idx = list.findIndex(x=>x.id === editingId);
       if(idx > -1){
         list[idx] = {...list[idx], ...payload};
         if(notaTxt) list[idx].notas = [...(list[idx].notas||[]), {id: uid('n'), texto: notaTxt, criadoEm: Date.now()}];
       }
-      ok = await saveKey(addKind === 'caixa' ? 'caixaObra' : 'empreiteiro', list, prevList);
-      if(ok) showToast('Lançamento atualizado.');
     } else {
-      const pendingFotos = draftFotos.slice();
-      const newEntry = {id: uid('e'), projectId: activeProjectId, criadoEm: Date.now(), notas: notaTxt ? [{id: uid('n'), texto: notaTxt, criadoEm: Date.now()}] : [], fotos: pendingFotos, ...payload};
+      const newEntry = {id: uid('e'), projectId: activeProjectId, criadoEm: Date.now(), notas: notaTxt ? [{id: uid('n'), texto: notaTxt, criadoEm: Date.now()}] : [], fotos: draftFotos.slice(), ...payload};
       list.push(newEntry);
-      ok = await saveKey(addKind === 'caixa' ? 'caixaObra' : 'empreiteiro', list, prevList);
-      if(ok){
-        draftFotos = []; // now owned by the saved entry — clear without deleting their blobs
-        showToast('Lançamento salvo.');
-      }
-      // On failure the entry (and its draft photos) never actually got
-      // persisted — leave draftFotos as-is so the thumbnails and a retry
-      // still work, instead of orphaning already-uploaded Drive files.
+      draftFotos = [];   // now owned by the saved entry — cleared without touching their blobs or in-flight uploads
     }
 
-    btn.disabled = false;
-    btn.textContent = prevBtnText;
-    if(!ok){
-      // Keep the form exactly as the user left it — nothing was actually
-      // saved, so there is nothing safe to reset or navigate away from.
-      renderFormPhotoThumbs();
-      renderAll();
-      return;
-    }
+    // Paint BEFORE persisting, exactly as the task and note forms already do.
+    const kindJustSaved = addKind;
     resetForm();
     renderAll();
     switchView('entries');
-    entriesKind = addKind;
+    entriesKind = kindJustSaved;
     entriesPage = 1;
-    $all('.segmented button[data-kind]').forEach(b=>b.classList.toggle('active', b.dataset.kind===addKind));
+    $all('.segmented button[data-kind]').forEach(b=>b.classList.toggle('active', b.dataset.kind===kindJustSaved));
     renderEntries();
+    showToast(wasEditing ? 'Lançamento atualizado.' : 'Lançamento salvo.');
+
+    await saveKey(kindJustSaved === 'caixa' ? 'caixaObra' : 'empreiteiro', list);
   });
   form.addEventListener('submit', (e)=>{
     // preventDefault must run on every submit event unconditionally — if a
@@ -5269,6 +5925,11 @@
   // non-upload request > nothing. A layer that isn't currently "on top"
   // still keeps its own state (uploadBatch, busyCount) ticking underneath —
   // it just doesn't get to paint until the layer above it steps aside.
+  // A cloud with a slash (no connection) and a small clock (queued). Same
+  // stroke weight and 20x20 box as the existing hub glyphs.
+  const AH_ICON_OFFLINE = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M5.5 15.5h8a3.5 3.5 0 0 0 .8-6.9A4.8 4.8 0 0 0 6.3 6.6"/><path d="M3 3l14 14"/></svg>';
+  const AH_ICON_PENDING = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="10" cy="10" r="7"/><path d="M10 6v4l2.6 1.6"/></svg>';
+
   function renderUploadTray_(){
     const hub = document.getElementById('activityHub');
     if(!hub) return;
@@ -5285,7 +5946,7 @@
       txt.textContent = hubMessage.text;
       return;
     }
-    hub.classList.remove('ah-message');
+    hub.classList.remove('ah-message', 'ah-sync');
 
     const {total, done, failed} = uploadBatch;
     if(total){
@@ -5337,7 +5998,38 @@
       txt.textContent = busyLabel;
       return;
     }
-    hub.classList.remove('show');
+
+    // ---------- Sync layer ----------
+    // Lowest priority of all, and deliberately quiet: an unsent change is a
+    // normal, safe state, not a problem to alarm anyone about. It says only
+    // what is true — how many changes are saved here but not yet on Google
+    // Sheets, and why. Nothing here is a toast: the whole point of a durable
+    // queue is that a failed request stops being an event the user must read
+    // and acknowledge.
+    const unsent = pendingTotal_();
+    if(unsent > 0 || offlineMode){
+      hub.classList.add('show', 'ah-sync');
+      syncTrayOffset();
+      icon.classList.remove('spin');
+      let msg;
+      if(syncInFlight){
+        icon.innerHTML = AH_ICON_SPIN;
+        msg = unsent === 1 ? 'Sincronizando 1 alteração...' : `Sincronizando ${unsent} alterações...`;
+      } else if(offlineMode || syncBlockedReason === 'offline' || (typeof navigator !== 'undefined' && navigator.onLine === false)){
+        icon.innerHTML = AH_ICON_OFFLINE;
+        msg = unsent === 0 ? 'Sem conexão' :
+          (unsent === 1 ? 'Sem conexão · 1 alteração salva aqui' : `Sem conexão · ${unsent} alterações salvas aqui`);
+      } else if(syncBlockedReason === 'auth'){
+        icon.innerHTML = AH_ICON_OFFLINE;
+        msg = unsent === 1 ? '1 alteração aguardando entrar na conta' : `${unsent} alterações aguardando entrar na conta`;
+      } else {
+        icon.innerHTML = AH_ICON_PENDING;
+        msg = unsent === 1 ? '1 alteração para enviar' : `${unsent} alterações para enviar`;
+      }
+      txt.textContent = msg;
+      return;
+    }
+    hub.classList.remove('show', 'ah-sync');
   }
   const UPLOAD_STATUS_LABEL = {
     pending:'Na fila', uploading:'Enviando', saving:'Salvando',
@@ -5959,9 +6651,8 @@
       if(!n) return;
       current = n.texto;
       applyEdit = async (txt)=>{
-        const prevNotes = cloneState_(notes);
         n.texto = txt;
-        return await saveKey('notes', notes, prevNotes);
+        return await saveKey('notes', notes);
       };
     } else {
       const list = ref.origin === 'caixa' ? caixaObra : empreiteiro;
@@ -5971,11 +6662,9 @@
       if(!n) return;
       current = n.texto;
       applyEdit = async (txt)=>{
-        const prevList = cloneState_(list);
         n.texto = txt;
-        const ok = await saveKey(ref.origin === 'caixa' ? 'caixaObra' : 'empreiteiro', list, prevList);
         refreshNoteViewsFor(ref.origin, ref.entryId);
-        return ok;
+        return await saveKey(ref.origin === 'caixa' ? 'caixaObra' : 'empreiteiro', list);
       };
     }
     const nt = await showPrompt(current, {title:'Editar nota'});
@@ -5991,26 +6680,25 @@
     if(!ok) return;
     let saveOk;
     if(ref.origin === 'standalone'){
-      const prevNotes = cloneState_(notes);
       const target = notes.find(x=>x.id===ref.id);
       // Photos FIRST, while the note still exists: the server resolves each
       // photo's authorization through its parent, so once the note row is gone
       // the photos can no longer be authorized and their Drive files leak.
       if(target) await deletePhotoBlobs(target.fotos);
       notes = notes.filter(x=>x.id!==ref.id);
-      saveOk = await saveKey('notes', notes, prevNotes);
+      renderAll();
+      showToast('Nota excluída.');
+      saveOk = await saveKey('notes', notes);
     } else {
       const list = ref.origin === 'caixa' ? caixaObra : empreiteiro;
-      const prevList = cloneState_(list);
       const entry = list.find(x=>x.id===ref.entryId);
       if(!entry) return;
       entry.notas = (entry.notas||[]).filter(x=>x.id!==ref.noteId);
-      saveOk = await saveKey(ref.origin === 'caixa' ? 'caixaObra' : 'empreiteiro', list, prevList);
       refreshNoteViewsFor(ref.origin, ref.entryId);
+      renderAll();
+      showToast('Nota excluída.');
+      saveOk = await saveKey(ref.origin === 'caixa' ? 'caixaObra' : 'empreiteiro', list);
     }
-    renderAll();
-    if(saveOk) showToast('Nota excluída.');
-    else showToast('Não consegui excluir a nota. Tente novamente.', false, 4500);
   }
 
   $('#modalAddNoteBtn').addEventListener('click', withGuard(async ()=>{
@@ -6019,19 +6707,14 @@
     const txt = input.value.trim();
     if(!txt) return;
     const list = getList(activeModal.kind);
-    const prevList = cloneState_(list);
     const e = list.find(x=>x.id === activeModal.id);
     if(!e) return;
     e.notas = [...(e.notas||[]), {id: uid('n'), texto: txt, criadoEm: Date.now()}];
-    const saveOk4 = await saveKey(activeModal.kind === 'caixa' ? 'caixaObra' : 'empreiteiro', list, prevList);
-    // Only clear the input once the note is actually saved — on failure the
-    // user should still have their unsent text to retry with.
-    if(saveOk4) input.value = '';
-    const current = getList(activeModal.kind).find(x=>x.id === activeModal.id);
-    renderModalNotes(current ? current.notas : []);
+    input.value = '';
+    renderModalNotes(e.notas);
     renderAll();
-    if(saveOk4) showToast('Nota adicionada.');
-    else showToast('Não consegui salvar a nota. Tente novamente.', false, 4500);
+    showToast('Nota adicionada.');
+    await saveKey(activeModal.kind === 'caixa' ? 'caixaObra' : 'empreiteiro', list);
   }));
 
   $all('[data-close]').forEach(btn=>{
@@ -6094,19 +6777,19 @@
     if(!ok) return;
     const key = activeModal.kind === 'caixa' ? 'caixaObra' : 'empreiteiro';
     const list = getList(activeModal.kind);
-    const prevList = cloneState_(list);
     const target = list.find(x=>x.id === activeModal.id);
-    // Photos FIRST, while the entry still exists — see deletePhotoBlobs.
+    // Photos FIRST, while the entry still exists — the server resolves a
+    // photo's authorization through its parent, so once the parent row is gone
+    // the photo can no longer be authorized and its Drive file leaks. This is
+    // now a queue rather than a request, so it no longer holds the modal open.
     if(target) await deletePhotoBlobs(target.fotos);
     if(activeModal.kind === 'caixa') caixaObra = caixaObra.filter(x=>x.id !== activeModal.id);
     else empreiteiro = empreiteiro.filter(x=>x.id !== activeModal.id);
-    const saveOk5 = await saveKey(key, activeModal.kind === 'caixa' ? caixaObra : empreiteiro, prevList);
-    if(saveOk5){
-      $('#detailModal').classList.remove('open');
-      activeModal = null;
-      showToast('Lançamento excluído.');
-    }
+    $('#detailModal').classList.remove('open');
+    activeModal = null;
     renderAll();
+    showToast('Lançamento excluído.');
+    await saveKey(key, key === 'caixaObra' ? caixaObra : empreiteiro);
   }));
 
   // ---------- Tasks ----------
@@ -6180,9 +6863,6 @@
     const t = tasks.find(x=>x.id===id);
     if(!t) return;
     const desired = !t.feito;
-    const existing = pendingTaskChanges.get(id);
-    if(existing) existing.desired = desired;                  // keep the ORIGINAL baseline: it's the last server-confirmed value
-    else pendingTaskChanges.set(id, {desired, baseline: t.feito}); // t.feito is still the confirmed value at this point
     t.feito = desired;
     // Bumped locally so the settle re-render sorts a just-completed task to
     // the top of Concluídas straight away. Safe: diffRows_ compares rows with
@@ -6191,7 +6871,7 @@
     t.lastModified = Date.now();
     patchTaskRowClass_(id, desired);
     syncTaskModalToggleLabel_(id);
-    scheduleTaskFlush_();
+    saveKey('tasks', tasks);   // durable locally within a few ms; the network is the sync engine's problem
     scheduleTaskSettle_();
   }
 
@@ -6265,23 +6945,8 @@
     renderTaskFormPhotoThumbs();
     renderAll();
 
-    const saveOk = await saveKey('tasks', tasks);
-    if(saveOk){
-      showToast('Tarefa adicionada.');
-    } else {
-      const i = tasks.findIndex(x=>x.id===newTask.id);
-      if(i >= 0) tasks.splice(i, 1);
-      // Restore the form too, so nothing the user typed is lost.
-      $('#t_texto').value = texto;
-      $('#t_prazo').value = prazo;
-      refreshTPrazo();
-      setPrioToggleValue('#t_prioridadeToggle', prioridade);
-      $('#t_projeto').value = projectId || '';
-      draftTaskFotos = fotos;
-      renderTaskFormPhotoThumbs();
-      renderAll();
-      showToast('Não consegui salvar a tarefa. Tente novamente.', false, 4500);
-    }
+    showToast('Tarefa adicionada.');
+    await saveKey('tasks', tasks);
   }));
 
   function showTaskViewMode(){
@@ -6350,21 +7015,18 @@
     if(!t) return;
     // Per-field revert, not a whole-array clone: this save can overlap a
     // checkbox burst, and restoring an array snapshot would wipe those toggles.
-    const prevFields = {texto: t.texto, prazo: t.prazo, prioridade: t.prioridade, projectId: t.projectId};
     t.texto = texto;
     t.prazo = $('#te_prazo').value || '';
     t.prioridade = getPrioToggleValue('#te_prioridadeToggle');
     t.projectId = $('#te_projeto').value || null;
-    const saveOk6 = await saveKey('tasks', tasks);
-    if(!saveOk6){
-      Object.assign(t, prevFields);
-      showToast('Não consegui salvar a tarefa. Tente novamente.', false, 4500);
-      return; // leave the edit form open with the user's input intact
-    }
+    // Close and repaint first; the save is local and the sync is the engine's
+    // problem. Keeping the modal open for a round trip is what made editing a
+    // task feel slow on a bad connection.
     $('#taskModal').classList.remove('open');
     activeTaskId = null;
     renderAll();
     showToast('Tarefa atualizada.');
+    await saveKey('tasks', tasks);
   }));
 
   $('#deleteTaskBtn').addEventListener('click', withGuard(async ()=>{
@@ -6380,18 +7042,11 @@
     // Photos FIRST, while the task still exists — see deletePhotoBlobs.
     if(target) await deletePhotoBlobs(target.fotos);
     tasks.splice(removedIdx, 1);
-    const saveOk7 = await saveKey('tasks', tasks);
-    if(!saveOk7){
-      tasks.splice(removedIdx, 0, target);
-      showToast('Não consegui excluir a tarefa. Tente novamente.', false, 4500);
-      renderAll();
-      return;
-    }
-    pendingTaskChanges.delete(target.id); // nothing left to reconcile for a deleted task
     $('#taskModal').classList.remove('open');
     activeTaskId = null;
     renderAll();
     showToast('Tarefa excluída.');
+    await saveKey('tasks', tasks);
   }));
 
   // ---------- Notes feed ----------
@@ -6614,21 +7269,8 @@
     renderNotesFeed();
     scheduleFullRenderAfterNote_();
 
-    const saveOk = await saveKey('notes', notes);
-    if(saveOk){
-      showToast('Nota adicionada.');
-    } else {
-      const i = notes.findIndex(x=>x.id===newNote.id);
-      if(i >= 0) notes.splice(i, 1);
-      // Restore the composer too, so nothing the user typed (or attached) is
-      // lost — restoring only the state array would silently drop it.
-      $('#noteInput').value = txt;
-      draftNoteFotos = pendingFotos;
-      autoGrowNoteInput_();
-      renderNoteFormPhotoThumbs();
-      renderNotesFeed();
-      showToast('Não consegui salvar a nota. Tente novamente.', false, 4500);
-    }
+    showToast('Nota adicionada.');
+    await saveKey('notes', notes);
   }
   // Coalesced so posting several notes in a row costs ONE full re-render, not
   // one per note. Nothing on screen waits for it.
@@ -7025,7 +7667,7 @@
     googleIdToken = null;
     currentUser = null;
     clearSessionHint();
-    try{ localStorage.removeItem(CACHE_KEY); }catch(e){}
+    purgeLocalData_();
     // The upload journal is per-device, not per-account, and survived sign-out
     // — so the next person to sign in on a shared device resumed the previous
     // user's photo job under their own token. Cancel anything still in flight
@@ -7063,7 +7705,7 @@
       if(isAuthError(err)){
         googleIdToken = null;
         clearSessionHint();
-        try{ localStorage.removeItem(CACHE_KEY); }catch(e){}
+        purgeLocalData_();
         showAuthGate(String(err.message || err), true);
         renderGoogleButton();
       } else {
@@ -7186,14 +7828,8 @@
       return;
     }
     if(!existing){
-      const prevSocios = cloneState_(socios);
       socios = socios.concat([name]);
-      const okList = await saveKey('socios', socios, prevSocios);
-      // If this half fails nothing was created; saveKey has already restored
-      // the list and shown the error. If it succeeds but the assignment below
-      // fails, the socio exists and is simply unassigned — a visible,
-      // one-tap-recoverable state, never a lost or duplicated record.
-      if(!okList){ renderSettingsProjects(); return; }
+      await saveKey('socios', socios);
     }
     openSocioPickerFor = null;
     const finalName = existing || name;
@@ -7371,7 +8007,6 @@
         showToast('Já existe um projeto com esse nome.');
         return;
       }
-      const prevProjects = cloneState_(projects);
       // A new project starts with Dalmir assigned — the one socio every
       // project in this business has by default, so the common case ("Obra X,
       // paid by Dalmir") needs no setup at all and Adicionar shows no
@@ -7384,13 +8019,7 @@
       const defaultSocio = caseInsensitiveMatch(socios, DEFAULT_PROJECT_SOCIO) || DEFAULT_PROJECT_SOCIO;
       const np = {id: nn, name: nn, socios: [defaultSocio]}; // Sheets uses the project name as its id
       projects.push(np);
-      const ok = await saveKey('projects', projects, prevProjects);
-      if(!ok){
-        showToast('Não consegui adicionar o projeto. Tente novamente.', false, 4500);
-        renderSettingsProjects();
-        renderProjectPills();
-        return;
-      }
+      await saveKey('projects', projects);
       activeProjectId = np.id;
       await saveKey('activeProjectId', activeProjectId);
       renderSettingsProjects();
@@ -7875,21 +8504,36 @@
       // from local cache immediately and hydrates the real data behind it.
       const verified = await sheetsPost({action:'verify'});
       currentUser = verified.currentUser;
+      offlineMode = false;
+      clearBootFailures_();
       await loadAll();
     }catch(err){
       googleIdToken = null;
-      clearSessionHint();
-      const msg = isAuthError(err) ? String(err.message) : 'Não consegui entrar. Tente novamente.';
-      // Drop the local cache on ANY sign-in failure, not just an auth one.
-      // For an auth error the reason is "don't let a revoked device keep old
-      // business data around". For every other failure the reason is
-      // recovery: if something about the cached data itself is what broke
-      // this boot, keeping it guarantees the next attempt breaks identically,
-      // and a non-technical user has no way out short of reinstalling the
-      // app. The cache is a performance store — throwing it away costs one
-      // slower sign-in and can never lose data.
-      try{ localStorage.removeItem(CACHE_KEY); }catch(e){}
-      showAuthGate(msg, true);
+      if(isAuthError(err)){
+        // A VERDICT: this account is no longer allowed in. Everything it had
+        // on this device goes, which is the whole point of the check.
+        clearSessionHint();
+        purgeLocalData_();
+        showAuthGate(String(err.message), true);
+        renderGoogleButton();
+        return;
+      }
+      // An OUTAGE, not a refusal. The old code deleted the entire local
+      // dataset here, which is how a single launch with no signal cost a
+      // device 987KB of data and left it unable to work at all. Fall back to
+      // the stored session instead; the data is already on the device and the
+      // server gets to re-check the moment it can be reached.
+      const wentOffline = await tryOfflineBoot_();
+      if(wentOffline){
+        clearBootFailures_();
+        showToast('Sem conexão — trabalhando com os dados salvos neste aparelho.', false, 5000);
+        return;
+      }
+      // Nothing usable stored. Keep the original recovery property: if the
+      // stored data itself is what breaks the boot, a second consecutive
+      // failure clears it rather than looping forever.
+      if(bumpBootFailure_() >= BOOT_FAIL_LIMIT){ clearSessionHint(); purgeLocalData_(); }
+      showAuthGate('Não consegui entrar. Tente novamente.', true);
       renderGoogleButton();
     }
   }
@@ -8002,9 +8646,20 @@
   // mechanism already proven for cold launches (google.accounts.id.prompt()),
   // triggered by "we just became visible again" instead of "just launched."
   const TOKEN_REFRESH_THRESHOLD_MS = 45 * 60 * 1000; // well before the ~60min expiry, not cutting it close
+  // Connectivity came back: stop waiting out the backoff and go now. This is
+  // deliberately the plain `online` event rather than the Background Sync API,
+  // which iOS Safari — the primary target — does not implement at all.
+  window.addEventListener('online', ()=>{ offerReconnect_(); syncNowIfPending_(); });
+  window.addEventListener('offline', ()=>{ renderUploadTray_(); });
+
   document.addEventListener('visibilitychange', ()=>{
     if(document.visibilityState !== 'visible') return;
     checkForUpdate(); // catch a version bump immediately on foreground return, not just on the next poll
+    // iOS suspends a backgrounded PWA outright, so a timer scheduled before it
+    // went away may simply never have fired. Coming back to the foreground is
+    // the reliable moment to re-check.
+    syncNowIfPending_();
+    startUploadRunner_();
     if(!googleIdToken || !googleIdTokenObtainedAt) return; // not signed in / gate already showing — nothing to proactively refresh
     if($('#authGate').style.display !== 'none') return; // already on the sign-in screen for some other reason
     const age = Date.now() - googleIdTokenObtainedAt;
