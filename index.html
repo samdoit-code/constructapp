@@ -2513,7 +2513,6 @@
       return;
     }
     syncInFlight = true;
-    renderUploadTray_();
     let outcome = 'retry';
     try{
       outcome = await enqueueSync_(()=> flushPending_());
@@ -2524,18 +2523,22 @@
       syncInFlight = false;
     }
     if(outcome === 'ok'){
+      const wasVisible = syncFailures || syncBlockedReason;
       syncFailures = 0;
       syncBlockedReason = null;
-      renderUploadTray_();
+      if(wasVisible) renderUploadTray_();        // clear a state the user was shown
       if(pendingTotal_()) scheduleSync_(0);      // more arrived mid-flight
       return;
     }
     if(outcome === 'verdict'){
       // Refused, not unreachable. The pending rows involved are gone (see
       // discardRejected_); anything else still pending is worth another go.
+      // The refusal itself was already reported by reportSyncVerdict_ — that
+      // one IS a message the user needs.
+      const wasVisible = syncFailures || syncBlockedReason;
       syncFailures = 0;
       syncBlockedReason = null;
-      renderUploadTray_();
+      if(wasVisible) renderUploadTray_();
       if(pendingTotal_()) scheduleSync_(SYNC_BACKOFF_MS[0]);
       return;
     }
@@ -3260,6 +3263,16 @@
     try{ localStorage.removeItem(LAST_USER_KEY); }catch(e){}
     if(email) dropUserDatabase_(email).catch(e=> console.error('purge failed', e));
     sheetSnapshot = {}; pendingCounts = {}; dirtyConfig = {};
+    pendingFileDeletes = {photo: [], doc: []};
+  }
+  // Companion to purgeLocalData_ for the one path that needs it: a refusal
+  // that arrives AFTER the app has already drawn this account's data. Wiping
+  // storage alone would leave the rows sitting in memory behind the gate.
+  function clearInMemoryData_(){
+    projects = []; caixaObra = []; empreiteiro = []; tasks = [];
+    notes = []; documentos = []; projectFotos = []; socios = [];
+    currentUser = null;
+    renderAll();
   }
   // ---------- Durable upload journal ----------
   // The gap between "the bytes are in Drive" and "the app has a row for them"
@@ -3737,7 +3750,10 @@
     Object.keys(next).forEach(sheet=>{
       pendingCounts[sheet] = next[sheet].upserts.length + next[sheet].deletes.length;
     });
-    renderUploadTray_();
+    // Only repaint when the hub could actually be showing something about this
+    // — otherwise every keystroke-sized write triggered a hub render for a
+    // counter nobody is being shown.
+    if(offlineMode || syncBlockedReason || syncFailures) renderUploadTray_();
     if(!localDb) return;
     try{
       const existing = await idbAll_('pending');
@@ -4311,6 +4327,7 @@
   // follows re-applies the same rule server-side regardless.
   function filterCacheAgainstCurrentPermissions(){
     if(!currentUser || !currentUser.sections) return;
+    const before = collectStateIds_();
     const sections = currentUser.sections;
     const allowedProjects = currentUser.projects; // '*' or an array of allowed project ids
     // Mirrors the backend's hasProjectAccess_ EXACTLY, including the part
@@ -4342,6 +4359,42 @@
       projectFotos = projectFotos.filter(f => projOk(f.projectId));
     }
     if(allowedProjects !== '*'){ projects = projects.filter(p => projOk(p.id)); }
+
+    // CRITICAL: whatever this just removed must leave the diff baseline too.
+    // sheetSnapshot is the "last value the server confirmed" side of
+    // diff(desired, baseline) — so trimming only the desired side turns every
+    // row this user may no longer see into a pending DELETE, and the next sync
+    // would erase from the spreadsheet exactly the data their permissions were
+    // narrowed to protect. Dropping the ids from both sides removes them from
+    // the diff universe entirely, which is the honest model: the server never
+    // sent them to this user, so this device has no opinion about them.
+    const after = collectStateIds_();
+    const gone = [];
+    before.forEach(id=>{ if(!after.has(id)) gone.push(id); });
+    if(gone.length){
+      const goneSet = new Set(gone);
+      Object.keys(sheetSnapshot).forEach(sheet=>{
+        sheetSnapshot[sheet] = (sheetSnapshot[sheet] || []).filter(r => !goneSet.has(String(r.id)));
+      });
+      persistPending_();   // clears any stored pending entry for those ids
+    }
+  }
+  // Every id currently in memory, including the nested notas/fotos that the
+  // Notas and Fotos rows actually live in. Same flat-scan shape as
+  // dropDeletedRows_ and applyServerLastModified_, for the same reason: ids are
+  // unique across every sheet, so nothing needs to know which sheet an id
+  // belongs to.
+  function collectStateIds_(){
+    const ids = new Set();
+    const add = (o)=>{ if(o && o.id !== undefined) ids.add(String(o.id)); };
+    const walk = (list)=> list.forEach(rec=>{
+      add(rec);
+      (rec.notas || []).forEach(add);
+      (rec.fotos || []).forEach(add);
+    });
+    walk(caixaObra); walk(empreiteiro); walk(tasks); walk(notes);
+    documentos.forEach(add); projectFotos.forEach(add);
+    return ids;
   }
 
   // Called once, from onGoogleSignIn, AFTER verify() has already proven the
@@ -4365,8 +4418,24 @@
   // not a credential: no token exists in this state, so nothing new can be
   // read, and any write made here is authorized by the server when it is
   // finally sent, not when it was made.
-  async function tryOfflineBoot_(){
-    if(googleIdToken) return false;                 // a real session is in progress
+  // Renders the app from the last session the SERVER confirmed. Two callers,
+  // one body, because the work is identical and only the posture differs:
+  //
+  //  provisional=true   a token has just arrived and verify is in flight. This
+  //                     is the fast path for a returning user — the app is on
+  //                     screen in tens of milliseconds instead of after a
+  //                     round trip. Whatever verify says wins the moment it
+  //                     lands (see onGoogleSignIn): narrowed permissions
+  //                     re-filter, a refusal purges and gates.
+  //  provisional=false  the server could not be reached at all. Same render,
+  //                     but the app stays on the stored session until
+  //                     connectivity returns (offlineMode).
+  //
+  // In both cases the permissions applied are the last ones the server
+  // confirmed, and in both cases they are provisional until it confirms them
+  // again. The difference is only how long that takes.
+  async function bootFromLocalSession_(provisional){
+    if(!provisional && googleIdToken) return false;   // a real session is in progress
     const email = lastKnownUserEmail_();
     if(!email) return false;
     try{ await openLocalDb_(email); }catch(e){ return false; }
@@ -4375,21 +4444,20 @@
     currentUser = {email: rec.email, nome: rec.nome, role: rec.role, projects: rec.projects, sections: rec.sections};
     const had = await loadLocalStore_();
     if(!had){ currentUser = null; return false; }
-    // The permissions applied here are the last ones the SERVER confirmed.
-    // They are re-checked, and re-applied, the moment a real verify succeeds.
     filterCacheAgainstCurrentPermissions();
-    offlineMode = true;
+    offlineMode = !provisional;
     hideAuthGate();
     finishLoadSetup();
     renderAll();
     updateSyncStatusText();
     // Photos picked before the app was closed are still on this device. Put
-    // them back on screen now, even though nothing can be sent yet — the
-    // runner declines to drain while offline and restarts on reconnect.
+    // them back on screen now — the runner declines to drain while offline or
+    // unauthenticated and restarts once neither is true.
     await resumeJournaledUploads_();
     renderUploadTray_();
     return true;
   }
+  function tryOfflineBoot_(){ return bootFromLocalSession_(false); }
   // Google Identity Services is loaded from accounts.google.com, so a launch
   // with no connectivity leaves window.google undefined forever. Re-injecting
   // the tag is the only way to get it once the network returns.
@@ -4417,7 +4485,14 @@
     }
   }
 
-  async function loadAll(){
+  // `alreadyRendered` means bootFromLocalSession_ has already put this
+  // account's data on screen and the user may have been typing into it for a
+  // round trip. Re-reading the store here would rebuild every array from
+  // IndexedDB — and a write made moments ago whose persist has not landed yet
+  // would be rebuilt away, in memory AND on disk, which is exactly the class
+  // of bug this whole architecture exists to prevent. So the reconciliation
+  // path deliberately touches permissions and the server hydration only.
+  async function loadAll(alreadyRendered){
     // The database is named after the account, and every OTHER account's
     // database is dropped here. The old single localStorage cache was global:
     // signing in as a second person loaded the first person's data into memory
@@ -4435,12 +4510,36 @@
     }
     await persistSessionRecord_();
 
+    if(alreadyRendered){
+      // The authoritative answer just arrived. Re-apply it to what is already
+      // on screen: anything the freshly-verified permissions no longer allow
+      // is dropped (from state AND from the diff baseline) before the next
+      // paint, so a narrowed role can never keep seeing rows the server would
+      // no longer send.
+      filterCacheAgainstCurrentPermissions();
+      saveSessionHint(currentUser.email);
+      finishLoadSetup();
+      renderAll();
+      updateSyncStatusText();
+      syncNowIfPending_();
+      const okReconciled = await hydrateFromServerAtBoot_();
+      if(okReconciled){
+        finishLoadSetup();
+        renderAll();
+        updateSyncStatusText();
+        resumeJournaledUploads_();
+        startUploadRunner_();
+      } else if(!navigator.onLine){
+        showToast('Sem internet — mostrando os últimos dados salvos neste aparelho.');
+      }
+      return;
+    }
+
     const hadLocal = await loadLocalStore_();
     if(hadLocal){
       filterCacheAgainstCurrentPermissions();
       hideAuthGate();
       saveSessionHint(currentUser.email); // written only after the backend has independently verified the token
-      showToast('Bem-vindo, ' + (currentUser.nome || currentUser.email) + '.');
       finishLoadSetup();
       renderAll();
       updateSyncStatusText();
@@ -4473,7 +4572,6 @@
     if(!ok) throw new Error('Não foi possível confirmar sua sessão.');
     hideAuthGate();
     saveSessionHint(currentUser.email);
-    showToast('Bem-vindo, ' + (currentUser.nome || currentUser.email) + '.');
     finishLoadSetup();
     renderAll();
     updateSyncStatusText();
@@ -6146,31 +6244,43 @@
     }
 
     // ---------- Sync layer ----------
-    // Lowest priority of all, and deliberately quiet: an unsent change is a
-    // normal, safe state, not a problem to alarm anyone about. It says only
-    // what is true — how many changes are saved here but not yet on Google
-    // Sheets, and why. Nothing here is a toast: the whole point of a durable
-    // queue is that a failed request stops being an event the user must read
-    // and acknowledge.
+    // Deliberately narrow. Routine synchronisation is NOT an event: a write is
+    // already durable before a request is even made, so "sincronizando..." and
+    // "N alterações para enviar" were reporting internal bookkeeping that
+    // resolves in about 150ms and that the user can do nothing with. Showing
+    // them meant the hub blinked on essentially every tap — turning the one
+    // surface that should mean "read this" into background noise, which is the
+    // opposite of why the three previous indicators were consolidated into it.
+    //
+    // What survives is only what a person can act on or genuinely needs to
+    // know: there is no connection, they need to sign in again, or the app has
+    // actually been failing to sync and is backing off. Everything else — the
+    // verify handshake, the boot reconciliation, the successful round trips —
+    // happens silently, exactly as before. Nothing about the sync engine,
+    // its status tracking, its error handling or its retry schedule changes
+    // here; this only decides what gets drawn.
     const unsent = pendingTotal_();
-    if(unsent > 0 || offlineMode){
+    const noConnection = offlineMode || syncBlockedReason === 'offline'
+      || (typeof navigator !== 'undefined' && navigator.onLine === false);
+    const needsSignIn = syncBlockedReason === 'auth' && unsent > 0;
+    // syncFailures only becomes non-zero after a real round trip has failed,
+    // so this cannot fire during the ordinary sub-second pending window.
+    const stalled = unsent > 0 && syncFailures > 0 && !noConnection;
+    if(noConnection || needsSignIn || stalled){
       hub.classList.add('show', 'ah-sync');
       syncTrayOffset();
       icon.classList.remove('spin');
       let msg;
-      if(syncInFlight){
-        icon.innerHTML = AH_ICON_SPIN;
-        msg = unsent === 1 ? 'Sincronizando 1 alteração...' : `Sincronizando ${unsent} alterações...`;
-      } else if(offlineMode || syncBlockedReason === 'offline' || (typeof navigator !== 'undefined' && navigator.onLine === false)){
+      if(noConnection){
         icon.innerHTML = AH_ICON_OFFLINE;
         msg = unsent === 0 ? 'Sem conexão' :
           (unsent === 1 ? 'Sem conexão · 1 alteração salva aqui' : `Sem conexão · ${unsent} alterações salvas aqui`);
-      } else if(syncBlockedReason === 'auth'){
+      } else if(needsSignIn){
         icon.innerHTML = AH_ICON_OFFLINE;
         msg = unsent === 1 ? '1 alteração aguardando entrar na conta' : `${unsent} alterações aguardando entrar na conta`;
       } else {
         icon.innerHTML = AH_ICON_PENDING;
-        msg = unsent === 1 ? '1 alteração para enviar' : `${unsent} alterações para enviar`;
+        msg = unsent === 1 ? '1 alteração ainda não enviada' : `${unsent} alterações ainda não enviadas`;
       }
       txt.textContent = msg;
       return;
@@ -8686,33 +8796,60 @@
     googleIdToken = response.credential;
     googleIdTokenObtainedAt = Date.now();
     $('#googleSignInSlot').innerHTML = '<div class="auth-spinner">Entrando...</div>';
+
+    // RACE, don't wait. A returning user's data is already on this device and
+    // was already authorized by the server when it got here, so making them
+    // watch a spinner for a round trip before seeing any of it buys nothing:
+    // verify's answer is needed to RECONCILE what is shown, not to decide
+    // whether to show it. Measured at 3,241ms to the gate opening on a 3s
+    // connection when this was awaited.
+    //
+    // The authoritative result still wins, unconditionally and in every
+    // branch below: a refusal purges the device and gates, narrowed
+    // permissions re-filter before the next paint, and a transport failure
+    // falls back to the offline posture. Nothing here decides access — it
+    // only decides how early the last known answer is drawn.
+    const rendered = await bootFromLocalSession_(true);
+
     try{
-      // Prove the session FIRST, on its own tiny request — no sheet data at
-      // all. This is what the gate waits for, instead of the full getAll:
-      // identity is the only thing that actually gates entry, and it can be
-      // answered in a fraction of the time. loadAll() below then renders
-      // from local cache immediately and hydrates the real data behind it.
       const verified = await sheetsPost({action:'verify'});
       currentUser = verified.currentUser;
       offlineMode = false;
       clearBootFailures_();
-      await loadAll();
+      await loadAll(rendered);
+      // Only greet someone who actually just watched the app open. After a
+      // provisional render they have been using it for a round trip already,
+      // and a "Bem-vindo" arriving seconds later reads as a stray
+      // notification rather than a welcome.
+      if(!rendered) showToast('Bem-vindo, ' + (currentUser.nome || currentUser.email) + '.');
     }catch(err){
       googleIdToken = null;
       if(isAuthError(err)){
         // A VERDICT: this account is no longer allowed in. Everything it had
-        // on this device goes, which is the whole point of the check.
+        // on this device goes, which is the whole point of the check — and
+        // that includes whatever the provisional render just put on screen,
+        // so the in-memory copy is cleared too, not just the stored one.
         clearSessionHint();
         purgeLocalData_();
+        clearInMemoryData_();
+        offlineMode = false;
         showAuthGate(String(err.message), true);
         renderGoogleButton();
         return;
       }
       // An OUTAGE, not a refusal. The old code deleted the entire local
       // dataset here, which is how a single launch with no signal cost a
-      // device 987KB of data and left it unable to work at all. Fall back to
-      // the stored session instead; the data is already on the device and the
+      // device 987KB of data and left it unable to work at all. Stay on the
+      // stored session instead; the data is already on the device and the
       // server gets to re-check the moment it can be reached.
+      if(rendered){
+        // Already on screen from the stored session — just change posture.
+        offlineMode = true;
+        renderUploadTray_();
+        clearBootFailures_();
+        showToast('Sem conexão — trabalhando com os dados salvos neste aparelho.', false, 5000);
+        return;
+      }
       const wentOffline = await tryOfflineBoot_();
       if(wentOffline){
         clearBootFailures_();

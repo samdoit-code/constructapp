@@ -160,6 +160,52 @@ started before a write landed would erase that write from the screen even though
 the server had accepted it. `writeEpoch` is incremented on every confirmed
 write and checked before the response is applied.
 
+### 2.6a Boot reconciliation — render first, let verify win
+
+A returning user's data is already on this device and the server already
+authorized it when it got here. So `verify`'s answer is needed to RECONCILE
+what is shown, not to decide whether to show it, and awaiting it before drawing
+anything bought nothing but a round trip of blank screen (measured 3,241 ms on
+a 3 s connection).
+
+`onGoogleSignIn` now races them:
+
+```
+credential arrives
+   ├─ bootFromLocalSession_(provisional: true)   → app on screen in ~75ms
+   └─ verify()                                   → reconciles when it lands
+```
+
+`bootFromLocalSession_` is the same function the offline path uses; the only
+difference is `offlineMode`, and whether the app expects an answer shortly.
+
+**The authoritative result always wins**, in every branch:
+
+| verify says | What happens |
+|---|---|
+| valid, same permissions | nothing visibly changes; hydration proceeds |
+| valid, permissions narrowed | `filterCacheAgainstCurrentPermissions()` re-runs against the fresh answer, dropping the now-disallowed rows from state **and from the diff baseline**, before the next paint |
+| refused (revoked / deactivated) | local database purged, in-memory state cleared, gate back up |
+| unreachable | posture switches to `offlineMode`; nothing is purged |
+
+Two things make this safe rather than merely fast:
+
+1. **The reconciliation path never re-reads the local store.** `loadAll(alreadyRendered)`
+   skips `loadLocalStore_()` entirely. The user may have been typing for a
+   whole round trip; rebuilding every array from IndexedDB would erase a write
+   whose persist had not landed yet — from memory *and* from disk. So
+   reconciliation touches permissions and the server hydration only.
+2. **Narrowing permissions must not delete data.** `filterCacheAgainstCurrentPermissions()`
+   trims the desired state; `sheetSnapshot` is the confirmed-baseline side of
+   `diff(desired, baseline)`. Trimming only the desired side turns every row
+   the user may no longer see into a pending DELETE, and the next sync would
+   erase from the spreadsheet exactly the data the narrower scope was meant to
+   protect. Both sides are trimmed, so those rows leave the diff universe
+   entirely — which is the honest model, since the server never sent them to
+   this user in the first place. (This was a latent bug from the moment the
+   baseline became persistent: it could only fire for a project-scoped role,
+   and the `'*'` admin used in earlier tests made the filter a no-op.)
+
 ### 2.7 Offline boot and the 30-day session
 
 Before: launching with no signal was impossible *and* destructive. `verify` was
@@ -207,6 +253,32 @@ turning "no signal" into a tray full of manual retries.
 Budget: 200 MB of queued bytes (the browser reported ~938 MB of quota here);
 beyond that the picker says so rather than failing quietly.
 
+### 2.8a What the activity hub is for
+
+The hub has four layers in strict priority: outcome message > active uploads >
+a slow foreground request > sync state. The sync layer is deliberately the
+narrowest of the four.
+
+**Routine synchronisation is not an event.** A write is durable before a
+request is even made, so "sincronizando…" and "N alterações para enviar" were
+reporting internal bookkeeping that resolves in about 150 ms and that the user
+can do nothing with. Drawing them meant the hub blinked on essentially every
+tap, which turns the one surface that should mean *read this* into background
+noise — the exact opposite of why three separate indicators were consolidated
+into it.
+
+The sync layer now draws only what a person can act on or genuinely needs to
+know: **no connection**, **needs to sign in again**, or **actually failing and
+backing off** (`syncFailures > 0`, which can only become non-zero after a real
+round trip has failed, so it cannot fire during the ordinary sub-second pending
+window). The verify handshake, boot reconciliation and every successful round
+trip are silent.
+
+Nothing about the sync engine changed: the same states are tracked, the same
+errors are classified, the same retry schedule runs. This decides only what is
+drawn. Save confirmations, refusals, conflicts, deleted-elsewhere notices and
+offline state are all still shown, because those are things the user needs.
+
 ### 2.9 Drive file deletions
 
 Trashing a Drive file is a server-side action that cannot be expressed as a row
@@ -230,6 +302,8 @@ those ids alone until the queue has drained.
 | Removed `cloneState_` / `restoreStateArray_` | Keep whole-array rollback | Rolling back on a network failure *is* the behaviour that destroyed work. A refusal now restores the server's own value for exactly the refused rows — more accurate than any client clone, and structurally immune to the "whole-array restore erases a concurrent mutation" trap that had forced every hot path into bespoke per-record rollback. |
 | Project rename/delete stay online-only | Make them work offline | They are server-side bulk rewrites across thousands of rows in six sheets. A half-applied local cascade is far worse than "precisa de conexão". |
 | Whole-tab lists resend current state | Row-level pending for them | `saveSheet` replaces the entire tab; there is no row-level conflict tracking on the wire for these. Modelling something the protocol cannot use would be fiction. |
+| Render from the local store before `verify` returns | Await `verify` as the gate | The data is already on the device and the server already authorized it; `verify` reconciles what is shown rather than deciding whether to show it. 3,241 ms → 71 ms for a returning user on a slow link, with the authoritative result still winning in every branch. |
+| Routine sync draws nothing in the hub | Show a "sincronizando" pill | It resolves in ~150 ms and the user can do nothing with it, so it made the hub blink on every tap and devalued the messages that matter. |
 | No backend changes | Add a `since` cursor / change feed | Once writes are local-first, the full `getAll` is off the perceived path entirely. An incremental read would need server-side tombstones to report deletions correctly, and this project has a documented history of Apps Script deploys that look green and ship nothing. Not worth the risk for something the user cannot feel. |
 
 ---
@@ -272,15 +346,18 @@ commit served from a second directory — identical script, both runs in the sam
 process: *"the offline write reached the server"* false before / true after, and
 *"app usable with no connectivity"* false before / true after.
 
-**Boot (credential accepted → gate open)** is deliberately unchanged: 156 ms /
-1,751 ms / 6,154 ms cold and 254 ms / 1,018 ms / 3,241 ms warm at 0 / 800 ms /
-3 s. Sign-in still costs one `verify` round trip before anything renders.
-Rendering the local store *before* `verify` returns would remove that — the
-machinery already exists in `tryOfflineBoot_` — but it would change the launch
-flow for the online case (the app would open before the user has signed in, and
-in a standalone iOS PWA there is no silent restore to close the gap), which is
-a UX redesign rather than the infrastructure work this pass is scoped to. Noted
-as a candidate, not done.
+**Boot (credential accepted → app on screen)**
+
+| Network | First-time user | Returning user |
+|---|---|---|
+| 0 ms | 99 ms | **78 ms** |
+| 800 ms | 1,702 ms | **73 ms** |
+| 3 s | 6,111 ms | **71 ms** |
+
+A returning user no longer waits for the network at all — 46× faster than the
+3,241 ms this cost when `verify` was awaited before anything rendered. A
+first-time user is unchanged and still waits, correctly: there is nothing
+stored to render, so there is nothing to be early about.
 
 ---
 
