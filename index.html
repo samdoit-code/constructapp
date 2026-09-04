@@ -6833,16 +6833,19 @@
   // same per-note hidden file input, that the old inline buttons called.
   let noteActionMenuCtx_ = null;
   let noteActionMenuHost_ = null; // the card the shared overlay node is currently living inside
-  // Set true for the instant the menu opens and cleared on the very next
-  // tick. A double tap that lands where an icon happens to render can still
-  // produce a trailing synthesized 'click' for that same touch (iOS doesn't
-  // always honor touchend's preventDefault inside a home-screen PWA
-  // WKWebView) — that click fires synchronously, before this flag is
-  // cleared, so it's swallowed here rather than acting on whichever button
-  // now sits under the finger. A genuine third tap always arrives after this
-  // tick (a real finger lift + re-tap takes far longer than one JS tick), so
-  // it is never affected.
-  let noteActionMenuJustOpened_ = false;
+  // Timestamp of the moment the menu opened. A double tap that lands where an
+  // icon happens to render can still produce a trailing synthesized 'click'
+  // for that same gesture — sometimes more than one: iOS doesn't always honor
+  // touchend's preventDefault inside a home-screen PWA WKWebView, AND the
+  // first tap's own (separately delayed) click can land after the second
+  // tap's touchend already opened the menu, since both taps land within
+  // TAP_SLOP_PX of each other by definition of a double tap. A single
+  // "swallow the very next click" flag only absorbs one of those and let the
+  // other through — this is a time window instead, long enough to cover
+  // every trailing click the OPENING gesture itself can produce, but far
+  // shorter than a real finger lift + re-aim + third tap ever takes.
+  const NOTE_ACTION_MENU_GUARD_MS = 400;
+  let noteActionMenuOpenedAt_ = 0;
   function openNoteActionMenu_(card, ctx){
     const menu = document.getElementById('noteActionMenu');
     if(!menu || !card) return;
@@ -6861,10 +6864,7 @@
     card.classList.toggle('nam-compact', card.offsetHeight < 76);
     noteActionMenuHost_ = card;
     menu.classList.add('open');
-    // Swallow exactly one trailing click on the menu itself — see the flag's
-    // own comment above.
-    noteActionMenuJustOpened_ = true;
-    setTimeout(()=>{ noteActionMenuJustOpened_ = false; }, 0);
+    noteActionMenuOpenedAt_ = Date.now();
     // Dismiss-on-outside-tap, armed a tick later so the very interaction that
     // opened this (a dblclick's own trailing click, say) can't immediately
     // close it again. Capture phase, so it runs before anything underneath.
@@ -6892,7 +6892,7 @@
     if(noteActionMenuHost_) noteActionMenuHost_.classList.remove('nam-compact');
     noteActionMenuHost_ = null;
     noteActionMenuCtx_ = null;
-    noteActionMenuJustOpened_ = false;
+    noteActionMenuOpenedAt_ = 0;
   }
   function noteActionMenuOpen_(){
     const menu = document.getElementById('noteActionMenu');
@@ -6900,11 +6900,10 @@
   }
   $('#noteActionMenu').addEventListener('click', (e)=>{
     e.stopPropagation(); // never let a tap on the overlay reach the card underneath
-    if(noteActionMenuJustOpened_){
-      // The trailing synthesized click from the gesture that just opened the
+    if(Date.now() - noteActionMenuOpenedAt_ < NOTE_ACTION_MENU_GUARD_MS){
+      // A trailing synthesized click from the gesture that just opened the
       // menu — ignore it without acting AND without closing, so the menu
-      // stays up waiting for a real follow-up tap. See the flag's comment.
-      noteActionMenuJustOpened_ = false;
+      // stays up waiting for a real follow-up tap. See the guard's comment.
       return;
     }
     const btn = e.target.closest('.nam-btn');
