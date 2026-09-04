@@ -2276,7 +2276,15 @@
     // busy pill for it would mean the hub flashes constantly during ordinary
     // use. The one getAll a user DOES ask for (the "Sincronizar agora" gear)
     // already spins its own button — see the #syncBtn click handler.
-    const showBusy = act && act !== 'uploadFile' && act !== 'verify' && act !== 'getAll';
+    // Everything the sync engine drives is BACKGROUND work now — the user is
+    // never waiting on it, and the hub's own sync layer already reports how
+    // many changes are unsent and why. A "Salvando..." pill for a request
+    // nobody is waiting for is exactly the noise the consolidated hub exists
+    // to remove. What is left here is genuinely foreground: the actions the
+    // user triggers and then waits on (rename/delete a project), which stay
+    // online-only precisely because they are server-side bulk rewrites.
+    const BACKGROUND_ACTIONS = {uploadFile:1, verify:1, getAll:1, batchMulti:1, saveSheet:1, deletePhotos:1, deleteDocumentos:1};
+    const showBusy = act && !BACKGROUND_ACTIONS[act];
     if(showBusy) beginBusy_(BUSY_LABELS[act]);
     try{
       const resp = await fetch(APPS_SCRIPT_URL, {
@@ -3271,6 +3279,65 @@
   // and the next boot finishes the job instead of losing it. Only metadata is
   // stored, never bytes: by this point the expensive part is already done and
   // all that remains is writing a row.
+  // ---------- Durable photo bytes ----------
+  // The journal above records a job only once the bytes are ALREADY in Drive,
+  // which leaves the other half of the gap open: a photo picked with no
+  // connectivity existed solely as an in-memory File and an object URL, so a
+  // reload — or iOS simply discarding the webview while its own photo picker
+  // was loading a large library, which is routine — lost it with no trace and
+  // no error. On a job site with no signal that is exactly when photos get
+  // taken. localStorage could never hold these (a compressed phone photo is
+  // 200-400KB against a ~5MB origin cap); IndexedDB reports ~938MB here.
+  //
+  // The bytes live only until Drive has them. Once an upload succeeds the blob
+  // is deleted immediately — the journal takes over from there, and keeping
+  // both would double the storage for no benefit.
+  const UPLOAD_BLOB_BUDGET = 200 * 1024 * 1024;   // refuse to queue beyond this
+  let queuedBlobBytes = 0;
+  async function storeUploadBlob_(rec){
+    if(!localDb || !rec.file) return true;
+    if(queuedBlobBytes + rec.file.size > UPLOAD_BLOB_BUDGET) return false;
+    try{
+      await idbSet_('blobs', rec.id, {
+        id: rec.id, blob: rec.file, size: rec.file.size, kind: rec.kind,
+        filename: rec.filename, origName: rec.origName || '', mimeType: rec.file.type || rec.mimeType || '',
+        projectName: rec.projectName, section: rec.section, owner: rec.owner || null,
+        criadoEm: rec.criadoEm,
+      });
+      queuedBlobBytes += rec.file.size;
+      return true;
+    }catch(e){ console.error('blob store failed', e); return true; }  // storage trouble must not block the upload itself
+  }
+  // A photo picked into a draft form has owner.id === null until that draft is
+  // actually saved. Recording the real parent at that moment is what lets a
+  // relaunch put the photo back where it belongs: after a reload the draft
+  // arrays are empty, and the Fotos row is deliberately withheld from the
+  // sheet (and from the pending delta) until the bytes land, so the owner
+  // recorded here is the only thing that still knows where it goes.
+  function adoptDraftUploads_(fotos, kind, parentId){
+    (fotos || []).forEach(f=>{
+      const rec = pendingUploads.get(f.id);
+      if(!rec) return;
+      rec.owner = {kind, id: parentId};
+      if(!localDb) return;
+      idbGet_('blobs', rec.id).then(b=>{
+        if(!b) return;
+        b.owner = rec.owner;
+        return idbSet_('blobs', rec.id, b);
+      }).catch(()=>{});
+    });
+  }
+  async function dropUploadBlob_(id){
+    try{
+      const rec = await idbGet_('blobs', id);
+      if(rec && rec.size) queuedBlobBytes = Math.max(0, queuedBlobBytes - rec.size);
+      await idbDel_('blobs', id);
+    }catch(e){}
+  }
+  async function loadUploadBlob_(id){
+    try{ return await idbGet_('blobs', id); }catch(e){ return null; }
+  }
+
   const UPLOAD_JOURNAL_KEY = 'cmoreira_upload_journal_v1';
   function saveUploadJournal_(){
     try{
@@ -3299,14 +3366,14 @@
   // since Drive already has the bytes.
   async function resumeJournaledUploads_(){
     const jobs = readUploadJournal_();
-    if(!jobs.length) return;
     const persistedFotos = new Set((sheetSnapshot.fotos || []).map(r => String(r.id)));
     const persistedDocs = new Set((sheetSnapshot.documentos || []).map(r => String(r.id)));
     const unfinished = jobs.filter(j =>
       !(j.kind === 'doc' ? persistedDocs : persistedFotos).has(String(j.id)));
-    if(!unfinished.length){ try{ localStorage.removeItem(UPLOAD_JOURNAL_KEY); }catch(e){} return; }
+    if(!unfinished.length){ try{ localStorage.removeItem(UPLOAD_JOURNAL_KEY); }catch(e){} }
 
     unfinished.forEach(j=>{
+      if(pendingUploads.has(j.id)) return;
       // Rebuild a minimal job. There is no File and no preview — the bytes are
       // already in Drive, so all that is left is the row.
       pendingUploads.set(j.id, {
@@ -3317,13 +3384,65 @@
       });
       uploadBatch.total++;
     });
+
+    // The other half: bytes this device still holds that never reached Drive
+    // at all — a photo picked with no signal, or with the app closed mid-batch.
+    // The journal cannot know about these by construction (it only records a
+    // job once Drive already has it), which is exactly why they used to
+    // vanish.
+    const stranded = [];
+    try{
+      const blobs = await idbAll_('blobs');
+      queuedBlobBytes = 0;
+      blobs.forEach(e=>{
+        const b = e.value;
+        if(!b || !b.blob) return;
+        queuedBlobBytes += (b.size || 0);
+        const persisted = (b.kind === 'doc' ? persistedDocs : persistedFotos).has(String(b.id));
+        if(persisted || pendingUploads.has(b.id)){ return; }
+        pendingUploads.set(b.id, {
+          id: b.id, kind: b.kind || 'photo', status: 'pending', file: b.blob,
+          previewUrl: safeObjectURL_(b.blob), filename: b.filename, origName: b.origName,
+          mimeType: b.mimeType, projectName: b.projectName, section: b.section,
+          owner: b.owner || null, criadoEm: b.criadoEm, resumed: true,
+        });
+        uploadBatch.total++;
+        stranded.push(b.id);
+        uploadQueue.push(b.id);   // already 'pending', so retryUpload_ would no-op
+      });
+      // A blob whose row is already on the server has served its purpose.
+      blobs.forEach(e=>{
+        const b = e.value;
+        if(b && b.blob && (b.kind === 'doc' ? persistedDocs : persistedFotos).has(String(b.id))) dropUploadBlob_(b.id);
+      });
+    }catch(e){ console.error('blob resume failed', e); }
+
     reapplyPendingUploads_();   // put their records back on the right parents
+    // Only now can "does this photo still belong anywhere?" be answered. A
+    // photo picked into a draft that was never saved has no parent after a
+    // relaunch (the draft itself was never persisted), so uploading it would
+    // create a Drive file with no row — precisely the orphan the backend
+    // sweeper exists to clean up. Drop those bytes here instead, BEFORE any
+    // upload, rather than discovering it after the file is already in Drive.
+    for(let i = stranded.length - 1; i >= 0; i--){
+      const id = stranded[i];
+      if(findUploadHome_(id)) continue;
+      const rec = pendingUploads.get(id);
+      if(rec) forgetUpload_(rec);
+      const qi = uploadQueue.indexOf(id);
+      if(qi > -1) uploadQueue.splice(qi, 1);
+      uploadBatch.total--;
+      stranded.splice(i, 1);
+    }
+    const total = unfinished.length + stranded.length;
+    if(!total){ renderUploadTray_(); return; }
     refreshPhotoSurfaces_();
     renderAll();
-    showToast(unfinished.length === 1
+    showToast(total === 1
       ? 'Retomando 1 envio interrompido...'
-      : `Retomando ${unfinished.length} envios interrompidos...`, false, 3500);
+      : `Retomando ${total} envios interrompidos...`, false, 3500);
     unfinished.forEach(j=> retryUpload_(j.id));
+    if(stranded.length) startUploadRunner_();
   }
   let lastSyncTime = null;
 
@@ -4264,6 +4383,10 @@
     finishLoadSetup();
     renderAll();
     updateSyncStatusText();
+    // Photos picked before the app was closed are still on this device. Put
+    // them back on screen now, even though nothing can be sent yet — the
+    // runner declines to drain while offline and restarts on reconnect.
+    await resumeJournaledUploads_();
     renderUploadTray_();
     return true;
   }
@@ -4332,6 +4455,7 @@
         // Only once the server's truth is in: anything still journaled here
         // genuinely never got its row written.
         resumeJournaledUploads_();
+        startUploadRunner_();   // a queue held back while offline/unauthenticated can move now
       } else if(!navigator.onLine){
         showToast('Sem internet — mostrando os últimos dados salvos neste aparelho.');
       }
@@ -4350,6 +4474,7 @@
     renderAll();
     updateSyncStatusText();
     resumeJournaledUploads_();
+    startUploadRunner_();
   }
 
   // Wraps an async click/submit handler so a second tap while the first is
@@ -4660,7 +4785,15 @@
   // uploads are the ambient state; does nothing for a plain busy pill (there
   // is nothing to expand into).
   $('#ahPill').addEventListener('click', ()=>{
-    if(hubMessage){ hideToast(); return; }
+    if(hubMessage){
+      hideToast();
+      // Dismissing a message normally ends the tap — but while the app is
+      // running on its stored session the pill's real job is to offer sign-in,
+      // and making that take two taps (one to clear a message the app itself
+      // put there) is exactly the kind of small friction this hub exists to
+      // remove. Fall through instead.
+      if(!offlineMode) return;
+    }
     const hub = document.getElementById('activityHub');
     if(hub && !hub.classList.contains('has-body')){
       // Running on the stored session, or holding changes that need a live
@@ -5439,8 +5572,10 @@
         if(notaTxt) list[idx].notas = [...(list[idx].notas||[]), {id: uid('n'), texto: notaTxt, criadoEm: Date.now()}];
       }
     } else {
-      const newEntry = {id: uid('e'), projectId: activeProjectId, criadoEm: Date.now(), notas: notaTxt ? [{id: uid('n'), texto: notaTxt, criadoEm: Date.now()}] : [], fotos: draftFotos.slice(), ...payload};
+      const adopted = draftFotos.slice();
+      const newEntry = {id: uid('e'), projectId: activeProjectId, criadoEm: Date.now(), notas: notaTxt ? [{id: uid('n'), texto: notaTxt, criadoEm: Date.now()}] : [], fotos: adopted, ...payload};
       list.push(newEntry);
+      adoptDraftUploads_(adopted, addKind === 'caixa' ? 'caixa' : 'emp', newEntry.id);
       draftFotos = [];   // now owned by the saved entry — cleared without touching their blobs or in-flight uploads
     }
 
@@ -5838,6 +5973,7 @@
     }
   }
   function forgetUpload_(rec){
+    dropUploadBlob_(rec.id);
     releasePreview_(rec);
     rec.file = null;              // let the browser reclaim the picked file
     pendingUploads.delete(rec.id);
@@ -5967,8 +6103,14 @@
       // nothing is actively moving any more.
       icon.innerHTML = active ? AH_ICON_SPIN : AH_ICON_UPLOAD;
 
+      const held = active && ((typeof navigator !== 'undefined' && navigator.onLine === false) || !googleIdToken);
       let msg;
-      if(active) msg = `Enviando ${Math.min(settled + 1, total)} de ${total}...`;
+      if(held){
+        const waiting = total - settled;
+        icon.innerHTML = AH_ICON_OFFLINE;
+        msg = waiting === 1 ? '1 foto aguardando conexão' : `${waiting} fotos aguardando conexão`;
+      }
+      else if(active) msg = `Enviando ${Math.min(settled + 1, total)} de ${total}...`;
       else if(failed) msg = `${done} de ${total} enviadas`;
       else msg = `${done} ${done === 1 ? 'arquivo enviado' : 'arquivos enviados'}`;
       txt.innerHTML = escapeHTML(msg) + (failed ? ` <span class="ah-fail">· ${failed} ${failed===1?'falhou':'falharam'}</span>` : '');
@@ -6137,6 +6279,13 @@
     uploadQueue.push(rec.id);
     uploadBatch.total++;
     updateUploadProgressToast_();
+    // Persist the bytes before anything else touches them, so a reload (or
+    // iOS discarding the webview) cannot lose a photo that has not reached
+    // Drive yet. Deliberately not awaited: the upload runner starts now, and
+    // whichever finishes first, the other is harmless.
+    storeUploadBlob_(rec).then(stored=>{
+      if(!stored) showToast('Espaço local cheio — envie as fotos pendentes antes de adicionar mais.', false, 5000);
+    });
     startUploadRunner_();
   }
   // Tops up the worker pool to UPLOAD_CONCURRENCY (never more workers than
@@ -6149,6 +6298,17 @@
   // next iteration checks the counters they already reflect that worker —
   // no two workers can ever be spawned for the same queued item.
   function startUploadRunner_(){
+    // With no connectivity there is nothing to drain, and draining anyway
+    // would burn every queued file's 90s deadline and mark them all 'failed',
+    // turning an ordinary "no signal" into a tray full of manual retries. The
+    // queue simply waits; the online event and the foreground-return handler
+    // both restart it.
+    if(typeof navigator !== 'undefined' && navigator.onLine === false) return;
+    // Same reasoning for a missing session: every request would come back
+    // 'não autenticado', every file would be marked failed, and a tray full of
+    // manual retries would be waiting after the user signs back in. The queue
+    // waits instead; loadAll restarts it once the token is real.
+    if(!googleIdToken) return;
     while(activeUploadWorkers < UPLOAD_CONCURRENCY && activeUploadWorkers < uploadQueue.length){
       activeUploadWorkers++;
       runUploadWorker_();   // deliberately NOT awaited — the caller must never block on uploads
@@ -6231,12 +6391,34 @@
       // orphan sweeper reclaims exactly that.
       if(!rec.file){
         console.warn('upload resumido descartado: registro pai não existe mais', rec.id);
+        dropUploadBlob_(rec.id);
         uploadBatch.cancelled++;
         forgetUpload_(rec);   // also drops it from the journal
         patchPhotoThumbState_(rec.id);
         renderUploadTray_();
         return;
       }
+    }
+    // After a reload the File object is gone from memory, but the bytes are
+    // in the blob store. Recovering them here is what makes a photo picked
+    // offline actually survive the app being closed.
+    if(!rec.file){
+      const stored = await loadUploadBlob_(rec.id);
+      if(stored && stored.blob){
+        rec.file = stored.blob;
+        rec.mimeType = rec.mimeType || stored.mimeType;
+        rec.previewUrl = rec.previewUrl || safeObjectURL_(stored.blob);
+      }
+    }
+    if(!rec.file && !rec.driveFileId){
+      // No bytes anywhere and nothing in Drive — there is nothing left to
+      // send. Dropping it beats retrying forever on every launch.
+      console.warn('upload sem bytes descartado', rec.id);
+      uploadBatch.cancelled++;
+      forgetUpload_(rec);
+      patchPhotoThumbState_(rec.id);
+      renderUploadTray_();
+      return;
     }
     rec.status = 'uploading';
     patchPhotoThumbState_(rec.id);
@@ -6283,6 +6465,7 @@
     home.target.driveFileId = uploaded.driveFileId;
     home.target.driveUrl = uploaded.driveUrl;
     rec.status = 'saving';   // from here on the row is eligible for the sheet
+    dropUploadBlob_(rec.id);  // Drive has them; the journal covers the rest
     // Journal BEFORE attempting the row write. If anything from here on goes
     // wrong — a failed write, a closed tab, iOS discarding the webview — the
     // next boot still knows a Drive file exists and finishes the job.
@@ -6932,6 +7115,7 @@
     // makes while this save is in flight, so restoring it would erase them.
     const newTask = { id: uid('t'), feito:false, criadoEm: Date.now(), texto, prazo, prioridade, projectId, fotos };
     tasks.push(newTask);
+    adoptDraftUploads_(fotos, 'tasks', newTask.id);
 
     // Optimistic: clear the form and show the new task immediately — the
     // save happens in the background. Only the (rare) failure path below
@@ -7253,6 +7437,7 @@
     // form and the checkbox path follow.
     const newNote = {id: uid('sn'), projectId: activeProjectId, texto: txt, criadoEm: Date.now(), fotos: pendingFotos};
     notes.push(newNote);
+    adoptDraftUploads_(pendingFotos, 'notes', newNote.id);
 
     // Optimistic: clear the composer and show the note immediately. Only the
     // (rare) failure path below pays for a second render.
@@ -7666,6 +7851,7 @@
     if(!ok) return;
     googleIdToken = null;
     currentUser = null;
+    offlineMode = false;
     clearSessionHint();
     purgeLocalData_();
     // The upload journal is per-device, not per-account, and survived sign-out
@@ -8597,8 +8783,20 @@
   // lets the app stop pretending a restore might work in that specific case.
   const isStandalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 
+  let gisWaitTicks = 0;
   function initAuth(){
     if(!window.google || !google.accounts || !google.accounts.id){
+      // Google's script comes from accounts.google.com, so with no
+      // connectivity this condition is permanent — the old code retried every
+      // 300ms forever and the sign-in button never appeared at all, leaving a
+      // gate with nothing to tap. After a short grace period, fall back to the
+      // session this device already has.
+      gisWaitTicks++;
+      if(gisWaitTicks === 7){
+        tryOfflineBoot_().then(went=>{
+          if(went) showToast('Sem conexão — trabalhando com os dados salvos neste aparelho.', false, 5000);
+        });
+      }
       setTimeout(initAuth, 300);
       return;
     }
@@ -8649,7 +8847,7 @@
   // Connectivity came back: stop waiting out the backoff and go now. This is
   // deliberately the plain `online` event rather than the Background Sync API,
   // which iOS Safari — the primary target — does not implement at all.
-  window.addEventListener('online', ()=>{ offerReconnect_(); syncNowIfPending_(); });
+  window.addEventListener('online', ()=>{ offerReconnect_(); syncNowIfPending_(); startUploadRunner_(); });
   window.addEventListener('offline', ()=>{ renderUploadTray_(); });
 
   document.addEventListener('visibilitychange', ()=>{
