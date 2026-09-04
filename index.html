@@ -4425,6 +4425,10 @@
     try{
       await openLocalDb_(currentUser.email);
       localStorage.setItem(LAST_USER_KEY, JSON.stringify({email: currentUser.email}));
+      // The pre-local-first blob is dead weight from here on — roughly 1MB of
+      // this origin's ~5MB localStorage budget, holding a copy of data the
+      // database now owns.
+      localStorage.removeItem(LEGACY_CACHE_KEY);
       dropOtherUserDatabases_(currentUser.email);   // best-effort, not awaited
     }catch(e){
       console.error('local store unavailable', e);  // degrade to online-only rather than block sign-in
