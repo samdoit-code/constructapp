@@ -9140,10 +9140,29 @@
       setTimeout(initAuth, 300);
       return;
     }
+    // login_hint names the account that is signing in, so Google's own chooser
+    // can skip straight past "escolha uma conta" — the SECOND of the two taps a
+    // returning user makes on every cold launch. The first (our button) is not
+    // removable here: the popup needs a real user gesture, and prompt() has no
+    // session to find inside a standalone PWA's WKWebView partition (above).
+    // Sourced from the DURABLE last-account pointer rather than the 5-minute
+    // session hint, because the case being optimised is precisely a cold launch
+    // hours later, when that hint has long expired. purgeLocalData_ clears the
+    // pointer, so an explicit sign-out or any auth refusal correctly stops
+    // presuming who is holding the device and the chooser returns for the next
+    // person on a shared phone.
+    // This is a hint to Google's UI, NOT a trust decision: the credential that
+    // comes back is whatever account the user actually picked (they can still
+    // switch), emailFromCredential_ still decides whose local data may be
+    // painted, and the backend still verifies the token independently on every
+    // request. Omitted entirely when unknown — sending an empty login_hint is
+    // not the same as sending none.
+    const loginHint = lastKnownUserEmail_();
     google.accounts.id.initialize({
       client_id: GOOGLE_CLIENT_ID,
       callback: onGoogleSignIn,
       cancel_on_tap_outside: true,
+      ...(loginHint ? {login_hint: loginHint} : {}),
     });
     renderGoogleButton();
     if(hasFreshSessionHint() && !isStandalone){
