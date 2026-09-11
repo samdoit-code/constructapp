@@ -9140,29 +9140,53 @@
       setTimeout(initAuth, 300);
       return;
     }
-    // login_hint names the account that is signing in, so Google's own chooser
-    // can skip straight past "escolha uma conta" — the SECOND of the two taps a
-    // returning user makes on every cold launch. The first (our button) is not
-    // removable here: the popup needs a real user gesture, and prompt() has no
-    // session to find inside a standalone PWA's WKWebView partition (above).
-    // Sourced from the DURABLE last-account pointer rather than the 5-minute
-    // session hint, because the case being optimised is precisely a cold launch
-    // hours later, when that hint has long expired. purgeLocalData_ clears the
-    // pointer, so an explicit sign-out or any auth refusal correctly stops
-    // presuming who is holding the device and the chooser returns for the next
-    // person on a shared phone.
-    // This is a hint to Google's UI, NOT a trust decision: the credential that
-    // comes back is whatever account the user actually picked (they can still
-    // switch), emailFromCredential_ still decides whose local data may be
-    // painted, and the backend still verifies the token independently on every
-    // request. Omitted entirely when unknown — sending an empty login_hint is
-    // not the same as sending none.
+    // Two taps stand between a returning user and their data: our own sign-in
+    // button, then "escolha uma conta" on accounts.google.com. Tap 1 is not
+    // removable in the standalone PWA — the GIS popup needs a real user
+    // gesture, and prompt() has no session to find in that WKWebView storage
+    // partition (see above). Tap 2 is Google's chooser.
+    //
+    // login_hint ALONE CANNOT SKIP THAT CHOOSER, and this was verified against
+    // the real accounts.google.com/gsi/client rather than inferred from the
+    // docs. Both button code paths do, verbatim:
+    //     a.o.hint && (b.login_hint = a.o.hint);
+    //     _.I("disable_prompt_select_account") || (b.prompt = "select_account");
+    // — the hint is attached and then prompt=select_account is appended to the
+    // same request, which in OIDC means "always show the chooser" and overrides
+    // login_hint by spec. The escape hatch is a Google-side experiment flag
+    // keyed to the client, not anything this app can set, and no public config
+    // key suppresses it. The doc sentence about account selection being skipped
+    // describes One Tap, not the button. login_hint is kept only because
+    // button_auto_select needs to know WHICH account it is selecting.
+    //
+    // button_auto_select is the button-flow analogue of the documented
+    // (One-Tap-only) auto_select. It is UNDOCUMENTED — it appears in the GIS
+    // config schema and is forwarded to Google's button iframe, where the
+    // decision is made server-side, so its behaviour cannot be read off the
+    // client bundle and Google may change or ignore it. It is the only
+    // remaining lever; if it does nothing, the flow degrades to exactly the two
+    // taps it has always had.
+    //
+    // Both are gated on the DURABLE last-account pointer (lastKnownUserEmail_ /
+    // cmoreira_last_user_v1), never the 5-minute session hint, because the case
+    // being optimised is a cold launch hours later when that hint has expired.
+    // That gate is also the shared-device escape hatch: purgeLocalData_ clears
+    // the pointer, so an explicit sign-out or any auth refusal drops BOTH keys
+    // and the chooser comes back for whoever is holding the phone next — auto-
+    // select can only ever re-pick an account this device already had. Neither
+    // key is sent when the pointer is absent; an empty login_hint is not the
+    // same as none.
+    //
+    // Neither is a trust decision: the credential that comes back is whatever
+    // account Google actually returns, emailFromCredential_ still decides whose
+    // local data may be painted before verify answers, and the backend still
+    // verifies the token independently on every request.
     const loginHint = lastKnownUserEmail_();
     google.accounts.id.initialize({
       client_id: GOOGLE_CLIENT_ID,
       callback: onGoogleSignIn,
       cancel_on_tap_outside: true,
-      ...(loginHint ? {login_hint: loginHint} : {}),
+      ...(loginHint ? {login_hint: loginHint, button_auto_select: true} : {}),
     });
     renderGoogleButton();
     if(hasFreshSessionHint() && !isStandalone){

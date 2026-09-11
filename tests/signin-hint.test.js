@@ -1,11 +1,15 @@
-// login_hint on the sign-in gate.
+// login_hint + button_auto_select on the sign-in gate.
 //
 // A returning user on the iPhone PWA makes TWO taps on every cold launch: our
 // own sign-in button, then "escolha uma conta" on accounts.google.com. The
 // first is not removable (the popup needs a real user gesture, and prompt()
-// has no session to find inside a standalone PWA's WKWebView partition). The
-// second is Google's own chooser, and login_hint is the documented way to skip
-// it.
+// has no session to find inside a standalone PWA's WKWebView partition).
+//
+// login_hint alone does NOT remove the second — verified against the real GIS
+// client, which attaches the hint and then appends prompt=select_account to the
+// same request, overriding it by OIDC spec. It is kept only so that
+// button_auto_select (undocumented, decided inside Google's button iframe)
+// knows which account it is selecting.
 //
 // What these tests protect is not the tap count — that is Google's UI and no
 // test here can observe it — but the two properties the app is responsible for:
@@ -62,7 +66,7 @@ function buildAuth(opts) {
   return { ctx, calls, cfg: calls[0] };
 }
 
-test('login_hint: the stored account is handed to Google so its chooser can be skipped', () => {
+test('login_hint: the stored account is what gets handed to Google', () => {
   const { cfg } = buildAuth({ storedEmail: 'samuel@example.com' });
   equal(cfg.login_hint, 'samuel@example.com');
 });
@@ -83,6 +87,21 @@ test('login_hint: absent entirely when no account is stored — never an empty s
   // as no login_hint.
   const { cfg } = buildAuth({ storedEmail: null });
   notOk('login_hint' in cfg, 'the key itself must be omitted, not sent blank');
+});
+
+test('button_auto_select: rides along with the hint, so the chooser can be skipped', () => {
+  const { cfg } = buildAuth({ storedEmail: 'samuel@example.com' });
+  equal(cfg.button_auto_select, true);
+});
+
+test('button_auto_select: withheld with the hint — the shared-device escape hatch', () => {
+  // purgeLocalData_ clears LAST_USER_KEY, so this is the state after an explicit
+  // sign-out. Auto-select must not survive it: whoever picks the phone up next
+  // has to get a real chooser, not the previous person's account selected for
+  // them. Gating BOTH keys on the same pointer is what guarantees that.
+  const { cfg } = buildAuth({ storedEmail: null });
+  notOk('button_auto_select' in cfg, 'must not auto-select an account this device no longer knows');
+  notOk('login_hint' in cfg);
 });
 
 test('login_hint: a first-ever sign-in on a fresh device is unaffected', () => {
