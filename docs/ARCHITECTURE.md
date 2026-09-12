@@ -20,7 +20,7 @@ is describe a guarantee the system does not actually provide.
 | Local store | IndexedDB, one database per signed-in account. Holds the server-confirmed baseline, the unsent delta, the reference lists, the session record, and photo bytes awaiting upload. |
 | Transport | `fetch` POST to a Google Apps Script Web App. `text/plain` content type deliberately, to avoid a CORS preflight Apps Script cannot answer. |
 | Backend | `backend/Code.js`, a container-bound Apps Script. Verifies a Google ID token on every request, then authorizes on two independent axes (section/action, project). |
-| Database | Google Sheets. Six row-level tabs with `lastModified` conflict tracking; four whole-tab reference lists. |
+| Database | Google Sheets. Row-level tabs with `lastModified` conflict tracking — Tarefas, Notas, Fotos, Documentos plus **one CaixaObra and one Empreiteiro tab per project** — and four whole-tab reference lists. The per-project fan-out lives entirely behind `readSheet_`/`applyBatch_`: the logical sheet keys the sync engine uses are unchanged. |
 | Files | Google Drive, per-project folders with `Fotos/` and `Documentos/` subfolders. |
 | Auth | Google Identity Services (Sign-In / One Tap). The raw ID token lives only in memory. |
 | Service worker | App-shell fallback only, network-first. Never caches the backend, never caches `version.json`, never caches a non-GET. |
@@ -376,6 +376,16 @@ data. That is an optimisation, and these are the places it is load-bearing:
 2. **The four whole-tab reference lists have no conflict tracking at all.** An
    offline edit to the project list replays as a whole-tab replace against
    whatever the server holds by then.
+2a. **The spreadsheet is also edited by hand, and that is a supported second
+   writer.** Rows typed directly into a project's tab get their `id`,
+   `criadoEm`, `projeto` and `lastModified` filled in (by `onEdit` at edit
+   time, and by `backfillRowMetadata_` at the top of every `getAll` as the
+   actual guarantee). A hand edit bumps `lastModified`, so the existing
+   conflict path reports it rather than silently overwriting the person —
+   which is the single-writer assumption being honoured, not bypassed. What
+   is NOT protected is a hand-inserted or reordered COLUMN: `SHEETS[key].cols`
+   is authoritative and positional, so `verifySchemaHeaders()` reports a
+   mismatch and `onEdit` refuses to stamp such a tab, but nothing repairs it.
 3. **Deletions made elsewhere are only learned through a full `getAll`.** There
    are no server-side tombstones, so a device that has not refreshed does not
    know a row is gone until it tries to write it (which is correctly reported as

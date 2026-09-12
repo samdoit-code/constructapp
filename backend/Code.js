@@ -490,7 +490,7 @@ function assertBatchAccess_(user, ops) {
   // the same reason.
   function deleteTargetExists_(sheet, id) {
     const cfg = SHEETS[sheet];
-    if (!cfg || cfg.cols[0] !== 'id') return true; // not an id-keyed sheet — nothing to look up
+    if (!cfg || !hasIdCol_(cfg)) return true; // not an id-keyed sheet — nothing to look up
     return idExists_(sheet, id);
   }
 
@@ -675,7 +675,7 @@ function findProjectFolder_(projectName) {
 // Column index computed lazily (not at module top-level, which runs before
 // SHEETS below is defined) — cheap, and cols never changes at runtime.
 function projetosFolderIdCol_() {
-  return SHEETS.projetos.cols.indexOf('driveFolderId') + 1;
+  return colOf_(SHEETS.projetos, 'driveFolderId');
 }
 // Single-cell, single-row write — never writeSheet_, which would read-modify-
 // write the WHOLE tab and race a concurrent add/rename of a different
@@ -860,9 +860,45 @@ const SHEETS = {
   // it decides which socios a project OFFERS when creating a lancamento, and
   // never touches the `socio` already recorded on an existing CaixaObra /
   // Empreiteiro row (see normalizeSociosCell_ / ensureSociosSchema_).
-  projetos:    { name: 'Projetos',    cols: ['id', 'ativo', 'driveFolderId', 'socios'] },
-  caixaObra:   { name: 'CaixaObra',   cols: ['id','projeto','data','nome','tipo','qtd','unidade','valor','fornecedor','socio','criadoEm','lastModified'], rowLevel: true },
-  empreiteiro: { name: 'Empreiteiro', cols: ['id','projeto','data','nome','qtd','unidade','valor','fornecedor','socio','criadoEm','lastModified'], rowLevel: true },
+  // caixaSheetId/empSheetId are BACKEND-OWNED, exactly like driveFolderId
+  // above and for exactly the same reason one layer over: each project's
+  // lançamentos live in their OWN pair of tabs, and a tab is resolved by its
+  // stable numeric getSheetId() rather than by its current NAME (which a
+  // person can change in the spreadsheet at any time, silently breaking a
+  // name lookup). Resolved lazily, self-healing, and never sent by or
+  // accepted from the client — see preserveProjectFolderIds_.
+  projetos:    { name: 'Projetos',    cols: ['id', 'ativo', 'driveFolderId', 'socios', 'caixaSheetId', 'empSheetId'] },
+  // PARTITIONED: one physical tab per project ('<Projeto> - CaixaObra'),
+  // never one shared tab. The logical key stays 'caixaObra' everywhere else
+  // in this file, on the wire, and in the frontend — the partitioning lives
+  // entirely behind readSheet_/applyBatch_, which is what keeps the sync
+  // engine, the diff baseline and the permission model out of it. Each row's
+  // own `projeto` column is the routing key (and still what
+  // hasProjectAccess_ reads), so it is kept even though the tab implies it.
+  //
+  // Column order is the ACCOUNTANT's, not the app's: this is the flow of the
+  // spreadsheet the owner's father audits by hand. `id`/`criadoEm`/
+  // `lastModified` are machine fields and sit at the end, out of the way.
+  // NOTHING in this file may hardcode a column position — see colOf_.
+  //
+  // legacyName/legacyCols describe the pre-migration shared tabs. While those
+  // still exist, every read and write routes to them in their old shape, so
+  // the app keeps working between the deploy and the moment
+  // migrateToPerProjectTabs runs. See entryPartitions_.
+  caixaObra: {
+    name: 'CaixaObra',
+    cols: ['nome','qtd','unidade','data','valor','fornecedor','nota','socio','tipo','projeto','id','criadoEm','lastModified'],
+    rowLevel: true, partitioned: true, sheetIdCol: 'caixaSheetId', tabSuffix: 'CaixaObra',
+    legacyName: 'CaixaObra',
+    legacyCols: ['id','projeto','data','nome','tipo','qtd','unidade','valor','fornecedor','socio','criadoEm','lastModified'],
+  },
+  empreiteiro: {
+    name: 'Empreiteiro',
+    cols: ['nome','qtd','unidade','data','valor','fornecedor','nota','socio','projeto','id','criadoEm','lastModified'],
+    rowLevel: true, partitioned: true, sheetIdCol: 'empSheetId', tabSuffix: 'Empreiteiro',
+    legacyName: 'Empreiteiro',
+    legacyCols: ['id','projeto','data','nome','qtd','unidade','valor','fornecedor','socio','criadoEm','lastModified'],
+  },
   tarefas:     { name: 'Tarefas',     cols: ['id','projeto','texto','prazo','prioridade','feito','criadoEm','lastModified'], rowLevel: true },
   notas:       { name: 'Notas',       cols: ['id','projeto','texto','criadoEm','refTipo','refId','lastModified'], rowLevel: true },
   fotos:       { name: 'Fotos',       cols: ['id','refTipo','refId','driveFileId','driveUrl','criadoEm','lastModified'], rowLevel: true },
@@ -925,21 +961,332 @@ function coerceTimestamp_(v) {
   return v instanceof Date ? v.getTime() : v;
 }
 
+// ------------------------------------------------------------
+// COLUMN ORDER — ONE SOURCE OF TRUTH.
+//
+// SHEETS[key].cols is the only place a column order is written down. No other
+// line of code in this file may contain a column number or a column letter:
+// every position is looked up by FIELD NAME through colOf_. That is what makes
+// the accountant-facing A:M order in SHEETS above a thing you can rearrange by
+// editing one array, rather than a number scattered across a dozen ranges.
+//
+// This mattered the moment `id` stopped being the first column. Seven places
+// used to read `getRange(2, 1, ...)` or test `cfg.cols[0] === 'id'` purely
+// because cols[0] HAPPENED to be the id — none of them meant "column A", they
+// all meant "the id column", and the difference was invisible until it moved.
+// ------------------------------------------------------------
+function colOf_(cfg, field) {
+  return cfg && cfg.cols ? cfg.cols.indexOf(field) + 1 : 0;
+}
+function idCol_(cfg) {
+  return colOf_(cfg, 'id');
+}
+function hasIdCol_(cfg) {
+  return idCol_(cfg) > 0;
+}
+
+// ============================================================
+// PER-PROJECT ENTRY TABS
+//
+// Each project's lançamentos live in their own pair of tabs so the father can
+// audit one obra without filtering a mixed sheet. The logical keys
+// 'caixaObra'/'empreiteiro' are unchanged everywhere else — on the wire, in
+// SECTIONS/SHEET_TO_SECTION, in the frontend's sheetSnapshot and IndexedDB
+// baseline — so none of the sync engine, the derived-diff outbox, conflict
+// detection or the two-axis permission model knows this exists.
+//
+// A tab is identified by its stable numeric getSheetId(), stored on the
+// project's Projetos row, NOT by its name. This is the driveFolderId pattern
+// applied one layer over, including its hard-won rule: "could not resolve"
+// has two causes that demand opposite handling, so the lookup returns a STATE
+// rather than a sheet-or-null. A caller writing
+// `resolveById(x) || findByName(x)` would silently reinstate exactly the name
+// guess the null return exists to prevent.
+// ============================================================
+const ENTRY_TAB_UNSET = 'unset';      // no id stored yet — a name search IS legitimate
+const ENTRY_TAB_STALE = 'stale';      // an id IS stored but no longer resolves — never name-guess
+const ENTRY_TAB_RESOLVED = 'resolved';
+const ENTRY_TAB_UNAVAILABLE = 'aba do projeto indisponível na planilha';
+
+// Google Sheets rejects these in a tab name outright, and caps the name at
+// 100 characters. A project name is free text from the app's own Settings
+// screen, so it has to be cleaned rather than trusted.
+function sanitizeSheetName_(name) {
+  const cleaned = String(name || '').replace(/[\[\]\*\?:\/\\]/g, ' ').replace(/\s+/g, ' ').trim();
+  return cleaned.slice(0, 100);
+}
+// '<Projeto> - CaixaObra' — project first, so a project's two tabs sit
+// together when the tab strip is read alphabetically.
+function entryTabName_(cfg, projeto) {
+  const suffix = ' - ' + cfg.tabSuffix;
+  return sanitizeSheetName_(projeto).slice(0, 100 - suffix.length) + suffix;
+}
+
+// The pre-migration shared tab, if it is still there. Its presence is the
+// single switch between the transitional mode and the partitioned one — the
+// sheet's own shape as the guard, never a stored flag, so there is nothing
+// that can drift from what it describes (the ensureSociosSchema_ rule).
+function legacyEntrySheet_(cfg) {
+  return cfg.legacyName ? ss_().getSheetByName(cfg.legacyName) : null;
+}
+// A cfg whose `cols` describe the tab actually being read/written. In legacy
+// mode that is the OLD column order, so the app keeps working unchanged
+// between the backend deploy and the moment the migration is run.
+function partitionCfg_(cfg, legacy) {
+  if (!legacy) return cfg;
+  return {
+    name: cfg.legacyName, cols: cfg.legacyCols, rowLevel: cfg.rowLevel,
+    partitioned: false, legacy: true, tabSuffix: cfg.tabSuffix, sheetIdCol: cfg.sheetIdCol,
+  };
+}
+
+// Every physical tab backing a logical key, as
+// [{sheet, cfg, projeto, legacy}]. Memoized for the life of one execution
+// (Apps Script runs are short and single-threaded); invalidated whenever a
+// tab is created, renamed or deleted.
+let entryPartitionCache_ = {};
+function invalidateEntryPartitions_() { entryPartitionCache_ = {}; }
+
+function entryPartitions_(key) {
+  if (entryPartitionCache_[key]) return entryPartitionCache_[key];
+  const cfg = SHEETS[key];
+  if (!cfg || !cfg.partitioned) return [];
+
+  const legacy = legacyEntrySheet_(cfg);
+  if (legacy) {
+    // Transitional mode: one pseudo-partition, the old shared tab in its old
+    // shape. `projeto` is null because the tab spans every project and each
+    // row's own column is the only answer.
+    const out = [{ sheet: legacy, cfg: partitionCfg_(cfg, true), projeto: null, legacy: true }];
+    entryPartitionCache_[key] = out;
+    return out;
+  }
+
+  // Partitioned mode. Built from BOTH directions on purpose:
+  //   - by stored id, which is authoritative and survives a hand-rename;
+  //   - by name pattern, so a tab whose project row has vanished is still
+  //     read rather than silently dropped. Losing rows quietly is the one
+  //     outcome this must never have.
+  const projetos = readSheet_('projetos');
+  const idCol = cfg.sheetIdCol;
+  const projectByStoredId = {};
+  projetos.forEach(function (p) {
+    const stored = String(p[idCol] || '').trim();
+    if (stored) projectByStoredId[stored] = p.id;
+  });
+
+  const suffix = ' - ' + cfg.tabSuffix;
+  const out = [];
+  const seen = {};
+  ss_().getSheets().forEach(function (sheet) {
+    let sheetId = '';
+    try { sheetId = String(sheet.getSheetId()); } catch (e) { sheetId = ''; }
+    const name = sheet.getName();
+    const claimed = sheetId && projectByStoredId[sheetId];
+    // A stored id wins over the name: that is the whole point of storing it.
+    const projeto = claimed || (name.length > suffix.length && name.slice(-suffix.length) === suffix
+      ? name.slice(0, name.length - suffix.length)
+      : null);
+    if (!projeto || seen[name]) return;
+    seen[name] = true;
+    out.push({ sheet: sheet, cfg: cfg, projeto: projeto, legacy: false });
+  });
+  entryPartitionCache_[key] = out;
+  return out;
+}
+
+function projetosSheetIdCol_(cfg) {
+  return colOf_(SHEETS.projetos, cfg.sheetIdCol);
+}
+// Single-cell write, never writeSheet_ — the same reasoning as
+// persistProjectFolderId_: a whole-tab read-modify-write here would race a
+// concurrent add or rename of a DIFFERENT project.
+function persistEntrySheetId_(cfg, projeto, sheetId) {
+  const sheet = ss_().getSheetByName(SHEETS.projetos.name);
+  const col = projetosSheetIdCol_(cfg);
+  if (!sheet || col < 1) return;
+  const rowIdx = findRowIndexById_(sheet, projeto);
+  if (rowIdx === -1) return;
+  sheet.getRange(rowIdx, col).setValue(String(sheetId));
+}
+
+function sheetById_(sheetId) {
+  const wanted = String(sheetId);
+  const all = ss_().getSheets();
+  for (let i = 0; i < all.length; i++) {
+    let id = '';
+    try { id = String(all[i].getSheetId()); } catch (e) { id = ''; }
+    if (id === wanted) return all[i];
+  }
+  return null;
+}
+
+function lookupEntrySheet_(cfg, projeto, projetosRows) {
+  if (!projeto) return { state: ENTRY_TAB_UNSET, sheet: null, storedId: '' };
+  const rows = projetosRows || readSheet_('projetos');
+  const row = rows.find(function (p) { return p.id === projeto; });
+  const storedId = String((row && row[cfg.sheetIdCol]) || '').trim();
+  if (!storedId) return { state: ENTRY_TAB_UNSET, sheet: null, storedId: '' };
+  const sheet = sheetById_(storedId);
+  if (!sheet) return { state: ENTRY_TAB_STALE, sheet: null, storedId: storedId };
+  return { state: ENTRY_TAB_RESOLVED, sheet: sheet, storedId: storedId };
+}
+
+function writeEntryHeader_(sheet, cfg) {
+  sheet.getRange(1, 1, 1, cfg.cols.length).setValues([cfg.cols.slice()]);
+  try { sheet.setFrozenRows(1); } catch (e) { /* cosmetic */ }
+}
+
+// THE canonical resolver for a write. Id first; a name search only for a
+// project that has never been resolved through here; then create.
+//
+// DELIBERATELY TAKES NO LOCK OF ITS OWN, unlike its Drive counterparts
+// resolveOrCreateProjectFolder_/resolveOrCreateSubfolderLocked_ — and the
+// difference is the whole reason to say so here. Those are reachable from
+// `uploadFile`, which runs OUTSIDE doPost's script lock, so their
+// check-then-create genuinely races. Every caller of this one
+// (applyBatch_ via batchMulti, ensureProjectTabs_ via saveProjetos_,
+// renameProject_, deleteProject_) already runs INSIDE that write lock, which
+// serializes the sequence for free.
+//
+// Taking a second script lock here would be worse than redundant: LockService
+// hands out a lock per call, so a nested waitLock from an execution that
+// already holds it cannot be granted — it would burn its full 15s timeout on
+// EVERY write that creates a tab, and then proceed anyway. The existing code
+// avoids nesting for exactly this reason (note that uploadFile is outside the
+// lock precisely so its folder resolver can take one).
+//
+// If this ever gains a caller outside the write lock, that caller must take
+// the lock — not this function.
+//
+// A STALE stored id THROWS rather than falling back to a name guess. Guessing
+// could attach every future write to an unrelated tab AND overwrite the
+// canonical id with that guess, permanently — the same trap documented on
+// lookupProjectFolder_.
+function resolveOrCreateEntrySheet_(key, projeto) {
+  const cfg = SHEETS[key];
+  const legacy = legacyEntrySheet_(cfg);
+  if (legacy) return { sheet: legacy, cfg: partitionCfg_(cfg, true) };
+
+  const name = String(projeto || '').trim();
+  if (!name) throw new Error('lançamento sem projeto');
+
+  const byId = lookupEntrySheet_(cfg, name);
+  if (byId.state === ENTRY_TAB_RESOLVED) return { sheet: byId.sheet, cfg: cfg };
+  if (byId.state !== ENTRY_TAB_UNSET) throw new Error(ENTRY_TAB_UNAVAILABLE);
+
+  const tabName = entryTabName_(cfg, name);
+  let sheet = ss_().getSheetByName(tabName);
+  if (!sheet) {
+    sheet = ss_().insertSheet(tabName);
+    writeEntryHeader_(sheet, cfg);
+  }
+  persistEntrySheetId_(cfg, name, sheet.getSheetId());
+  invalidateEntryPartitions_();
+  return { sheet: sheet, cfg: cfg };
+}
+
+// Creates any missing tabs for the given projects. Called after a Projetos
+// save so a project added through the app's own Settings screen is
+// immediately auditable, rather than only materialising on its first write.
+function ensureProjectTabs_(projectNames) {
+  ['caixaObra', 'empreiteiro'].forEach(function (key) {
+    if (legacyEntrySheet_(SHEETS[key])) return; // transitional mode — nothing to create yet
+    (projectNames || []).forEach(function (name) {
+      if (!String(name || '').trim()) return;
+      try { resolveOrCreateEntrySheet_(key, name); } catch (e) { /* best-effort; a real write will report it */ }
+    });
+  });
+}
+
+// Read-only audit: every tab whose header row disagrees with its schema.
+// cfg.cols is authoritative and positional, so a column inserted or reordered
+// BY HAND in the spreadsheet would silently make the code read the wrong
+// field (valor as fornecedor) with nothing to reveal it. Run from the Apps
+// Script editor — no trailing underscore, so it appears in the Run dropdown.
+function verifySchemaHeaders() {
+  const report = { checked: 0, mismatched: [] };
+  const check = function (sheet, cfg, label) {
+    if (!sheet) return;
+    report.checked++;
+    const header = sheet.getRange(1, 1, 1, cfg.cols.length).getValues()[0]
+      .map(function (h) { return String(h || '').trim(); });
+    const bad = [];
+    cfg.cols.forEach(function (expected, i) {
+      if (header[i] !== expected) bad.push({ col: i + 1, expected: expected, found: header[i] });
+    });
+    if (bad.length) report.mismatched.push({ tab: label || sheet.getName(), problems: bad });
+  };
+  Object.keys(SHEETS).forEach(function (key) {
+    const cfg = SHEETS[key];
+    if (cfg.partitioned) {
+      entryPartitions_(key).forEach(function (p) { check(p.sheet, p.cfg); });
+    } else {
+      check(ss_().getSheetByName(cfg.name), cfg);
+    }
+  });
+  Logger.log(JSON.stringify(report, null, 2));
+  return report;
+}
+function headerMatchesSchema_(sheet, cfg) {
+  try {
+    const header = sheet.getRange(1, 1, 1, cfg.cols.length).getValues()[0];
+    for (let i = 0; i < cfg.cols.length; i++) {
+      if (String(header[i] || '').trim() !== cfg.cols[i]) return false;
+    }
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 // Reads a sheet fully into an array of objects, using the header row as keys.
 // Any row missing an "id" gets one assigned AND written back to the sheet,
 // so IDs stay stable across every future read — this is what lets you leave
 // the id column blank when filling data in by hand.
 function readSheet_(key) {
   const cfg = SHEETS[key];
-  const sheet = ss_().getSheetByName(cfg.name);
+  if (!cfg) return [];
+  // A partitioned key is the concatenation of its per-project tabs — so every
+  // existing caller ('getAll', deleteProject_, assertBatchAccess_, the Drive
+  // resolvers) keeps seeing one flat array and needs no change at all.
+  if (cfg.partitioned) {
+    let out = [];
+    entryPartitions_(key).forEach(function (p) {
+      out = out.concat(readSheetRows_(p.sheet, p.cfg, key, p.projeto));
+    });
+    return out;
+  }
+  return readSheetRows_(ss_().getSheetByName(cfg.name), cfg, key, null);
+}
+
+// `projeto` is the project the TAB belongs to, or null for a non-partitioned
+// (or transitional shared) sheet. A blank projeto cell on a per-project tab is
+// filled from it: the tab already says which project the row is in, so a row
+// typed in by hand needs no project typed alongside it.
+function readSheetRows_(sheet, cfg, key, projeto) {
   if (!sheet) return [];
   const lastRow = sheet.getLastRow();
   const lastCol = cfg.cols.length;
   if (lastRow < 2) return [];
 
   const range = sheet.getRange(2, 1, lastRow - 1, lastCol);
-  const values = range.getValues();
-  const hasId = cfg.cols[0] === 'id';
+  const hasId = hasIdCol_(cfg);
+
+  // Drop physically-blank rows BEFORE mapping, and judge blankness on the RAW
+  // cells — never on the mapped object, whose coercions make a legitimate
+  // value look empty (Projetos' `ativo` becomes boolean false for an inactive
+  // project, criadoEm defaults to Date.now()). A row where every cell is
+  // empty carries no data in any sheet, so this is unambiguous.
+  //
+  // It only appears when someone clears a row by hand instead of deleting it
+  // — routine now that hand-editing is a supported way to enter data — and
+  // mapping it into an object with a freshly minted id is what promotes it
+  // into a phantom lançamento nobody created. Same lesson as writeSheet_'s
+  // surplus-row deletion, reached from the read side.
+  const values = range.getValues().filter(function (row) {
+    return row.some(function (v) { return v !== '' && v !== null && v !== undefined; });
+  });
 
   const rows = values.map((row) => {
     const obj = {};
@@ -959,7 +1306,7 @@ function readSheet_(key) {
     });
     // A blank id only happens for a row typed directly into the sheet by
     // hand. Give it one for THIS response so the row is usable, but do not
-    // persist it here — backfillMissingIds_ (under the lock, at the top of
+    // persist it here — backfillRowMetadata_ (under the lock, at the top of
     // getAll) is the single place that writes ids back. This used to
     // setValues() the entire range, every column of every row, which is a
     // read-modify-write over data a concurrent batchMulti may have changed
@@ -970,6 +1317,13 @@ function readSheet_(key) {
     // case a hand-typed row carries an ephemeral id for one response and
     // gets its stable one on the next getAll.
     if (hasId && !obj.id) obj.id = uid_(key);
+    // The tab IS the project on a per-project tab, so a blank cell is filled
+    // from it rather than left undefined — which would make the row resolve to
+    // no project and fail closed for a scoped user, and drop out of every
+    // project filter in the app. backfillRowMetadata_ persists this.
+    if (projeto && colOf_(cfg, 'projeto') > 0 && !String(obj.projeto || '').trim()) {
+      obj.projeto = projeto;
+    }
     return obj;
   });
 
@@ -982,20 +1336,70 @@ function readSheet_(key) {
 // the time readSheet_ itself runs (lock-free) there is nothing left for it
 // to write. A blank id is rare (only from a row typed directly into the
 // sheet by hand), so this pays its own small cost only on that rare case.
-function backfillMissingIds_(key) {
+function backfillRowMetadata_(key) {
   const cfg = SHEETS[key];
-  if (cfg.cols[0] !== 'id') return;
-  const sheet = ss_().getSheetByName(cfg.name);
+  if (!cfg) return;
+  if (cfg.partitioned) {
+    entryPartitions_(key).forEach(function (p) {
+      backfillPartitionMetadata_(p.sheet, p.cfg, key, p.projeto);
+    });
+    return;
+  }
+  backfillPartitionMetadata_(ss_().getSheetByName(cfg.name), cfg, key, null);
+}
+
+// Fills the machine fields a row typed in BY HAND always leaves blank:
+// `id` (so it stays stable across reads), `criadoEm`/`lastModified` (only the
+// app ever stamped these, which is why manual rows had none), and `projeto`
+// on a per-project tab (the tab already says which project it is).
+//
+// Only ever fills a BLANK cell. Overwriting a non-blank lastModified would
+// false-conflict every write to that row on the next sync; overwriting
+// criadoEm would rewrite history.
+//
+// Writes each changed column as its own narrow range — never the whole row
+// range, which would be a read-modify-write carrying a stale snapshot of
+// every other column back with it (the readSheet_ lesson).
+function backfillPartitionMetadata_(sheet, cfg, key, projeto) {
   if (!sheet) return;
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return;
-  const idRange = sheet.getRange(2, 1, lastRow - 1, 1);
-  const ids = idRange.getValues();
-  let changed = false;
-  for (let i = 0; i < ids.length; i++) {
-    if (!ids[i][0]) { ids[i][0] = uid_(key); changed = true; }
-  }
-  if (changed) idRange.setValues(ids);
+  const nRows = lastRow - 1;
+
+  const fields = ['id', 'criadoEm', 'lastModified', 'projeto'];
+  const cols = {};
+  fields.forEach(function (f) {
+    const c = colOf_(cfg, f);
+    if (c > 0) cols[f] = c;
+  });
+  if (!Object.keys(cols).length) return;
+
+  // The full width is read only to tell a real row from a physically blank
+  // one — a blank row must NOT be given an id, which is exactly how a cleared
+  // row becomes a permanent phantom record.
+  const width = Math.max(cfg.cols.length, sheet.getLastColumn());
+  const all = sheet.getRange(2, 1, nRows, width).getValues();
+  const isBlank = all.map(function (row) {
+    return !row.some(function (v) { return v !== '' && v !== null && v !== undefined; });
+  });
+
+  const now = Date.now();
+  Object.keys(cols).forEach(function (field) {
+    const col = cols[field];
+    const range = sheet.getRange(2, col, nRows, 1);
+    const vals = range.getValues();
+    let changed = false;
+    for (let i = 0; i < nRows; i++) {
+      if (isBlank[i]) continue;
+      const cur = vals[i][0];
+      if (cur !== '' && cur !== null && cur !== undefined) continue;
+      if (field === 'id') vals[i][0] = uid_(key);
+      else if (field === 'projeto') { if (!projeto) continue; vals[i][0] = projeto; }
+      else vals[i][0] = now; // criadoEm / lastModified
+      changed = true;
+    }
+    if (changed) range.setValues(vals);
+  });
 }
 
 // A cell value starting with =, +, -, or @ is live-formula syntax the moment
@@ -1011,7 +1415,17 @@ function sanitizeCell_(v) {
 // Legacy whole-tab replace — still used for Projetos/Tipos/Unidades, the small
 // reference lists that don't need row-level conflict tracking.
 function writeSheet_(key, rows) {
-  const cfg = SHEETS[key];
+  let cfg = SHEETS[key];
+  if (cfg && cfg.partitioned) {
+    // A partitioned key has no single tab to replace. The one legitimate
+    // caller is deleteProjectRowsBulk_ in the transitional mode, where the
+    // old shared tab still exists — and it must be written in its OWN column
+    // order, not the new one, or every value lands in the wrong column.
+    if (!legacyEntrySheet_(cfg)) {
+      throw new Error('writeSheet_ não pode substituir uma aba particionada: ' + key);
+    }
+    cfg = partitionCfg_(cfg, true);
+  }
   const sheet = ss_().getSheetByName(cfg.name);
   if (!sheet) throw new Error('Aba não encontrada: ' + cfg.name);
 
@@ -1029,14 +1443,19 @@ function writeSheet_(key, rows) {
   // So carry those extra cells along WITH their row, keyed by column A (the
   // id for every id-bearing sheet; the value itself for the single-column
   // reference lists). A row that is genuinely new simply gets blanks.
+  // Keyed on the row's ID column for an id-bearing sheet, and on column 1 for
+  // the single-column reference lists (Tipos/Unidades/Socios), where the value
+  // itself IS the key. Derived from the schema via idCol_ rather than assumed
+  // to be column A — the id is no longer first on the entry sheets.
   const schemaWidth = cfg.cols.length;
+  const keyCol = hasIdCol_(cfg) ? idCol_(cfg) : 1;
   const sheetWidth = Math.max(schemaWidth, sheet.getLastColumn());
   const extraWidth = sheetWidth - schemaWidth;
   const extraByKey = {};
   if (extraWidth > 0 && existingRows > 0) {
     const current = sheet.getRange(2, 1, existingRows, sheetWidth).getValues();
     current.forEach(function (row) {
-      const k = String(row[0]);
+      const k = String(row[keyCol - 1]);
       if (k !== '') extraByKey[k] = row.slice(schemaWidth);
     });
   }
@@ -1053,7 +1472,9 @@ function writeSheet_(key, rows) {
     if (!extraWidth) return base;
     // Keyed on the row's OWN key value, not the sanitized cell — sanitizeCell_
     // can prefix an apostrophe, which would never match what was read back.
-    const key = String(r[cfg.cols[0]] === undefined || r[cfg.cols[0]] === null ? '' : r[cfg.cols[0]]);
+    const keyField = cfg.cols[keyCol - 1];
+    const raw = r[keyField];
+    const key = String(raw === undefined || raw === null ? '' : raw);
     return base.concat(extraByKey[key] || blankExtra);
   });
 
@@ -1062,7 +1483,7 @@ function writeSheet_(key, rows) {
   }
   // Surplus rows must be DELETED, not merely cleared. clearContent() leaves
   // the physical rows behind, and a blank row is not inert here: readSheet_
-  // maps it to an object and mints an id for it, and backfillMissingIds_
+  // maps it to an object and mints an id for it, and backfillRowMetadata_
   // (top of every getAll, under the lock) then writes that generated id
   // back — turning a leftover blank into a PERMANENT phantom record with a
   // real id, which shows up in the app as an empty lançamento/tarefa that
@@ -1074,10 +1495,16 @@ function writeSheet_(key, rows) {
   }
 }
 
-function findRowIndexById_(sheet, id) {
+// `cfg` says which column holds the id. It defaults to the Projetos schema
+// because every caller that omits it is looking up a project by name in the
+// Projetos tab, where the id genuinely is column 1 — stated through the
+// schema rather than as a bare `1`, so it moves if that schema ever does.
+function findRowIndexById_(sheet, id, cfg) {
+  const col = idCol_(cfg || SHEETS.projetos);
+  if (col < 1) return -1;
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return -1;
-  const ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+  const ids = sheet.getRange(2, col, lastRow - 1, 1).getValues();
   for (let i = 0; i < ids.length; i++) {
     if (String(ids[i][0]) === String(id)) return i + 2; // actual sheet row number
   }
@@ -1089,16 +1516,26 @@ function findRowIndexById_(sheet, id) {
 function readIdSet_(key) {
   const cfg = SHEETS[key];
   const out = {};
-  if (!cfg || cfg.cols[0] !== 'id') return out;
-  const sheet = ss_().getSheetByName(cfg.name);
-  if (!sheet) return out;
-  const lastRow = sheet.getLastRow();
-  if (lastRow < 2) return out;
-  const ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
-  for (let i = 0; i < ids.length; i++) {
-    const v = ids[i][0];
-    if (v !== '' && v !== null && v !== undefined) out[String(v)] = true;
-  }
+  if (!cfg || !hasIdCol_(cfg)) return out;
+  // A partitioned key's ids span every one of its tabs — the union is what
+  // "does this id already exist" has to mean, or create-vs-edit resolution
+  // (and therefore the per-action permission check) would answer wrongly for
+  // every project but one.
+  const targets = cfg.partitioned
+    ? entryPartitions_(key).map(function (p) { return { sheet: p.sheet, cfg: p.cfg }; })
+    : [{ sheet: ss_().getSheetByName(cfg.name), cfg: cfg }];
+  targets.forEach(function (t) {
+    if (!t.sheet) return;
+    const col = idCol_(t.cfg);
+    if (col < 1) return;
+    const lastRow = t.sheet.getLastRow();
+    if (lastRow < 2) return;
+    const ids = t.sheet.getRange(2, col, lastRow - 1, 1).getValues();
+    for (let i = 0; i < ids.length; i++) {
+      const v = ids[i][0];
+      if (v !== '' && v !== null && v !== undefined) out[String(v)] = true;
+    }
+  });
   return out;
 }
 
@@ -1109,35 +1546,50 @@ function readIdSet_(key) {
 // conflict check additionally issued one single-cell getValue() per upsert —
 // so a batch of N rows cost roughly 2N column scans plus N cell reads. This
 // makes it two narrow reads per sheet, total, regardless of N.
+// For a PARTITIONED key the index is a UNION across every one of its tabs,
+// and each entry has to remember WHICH tab its row is in — an id alone no
+// longer locates a row. That is the only structural change here; the two
+// narrow reads per tab, and the "one pass shared by the conflict check and
+// the write" property, are unchanged.
 function buildRowIndexes_(ops) {
   const indexes = {};
   ops.forEach(function (op) {
     const cfg = SHEETS[op.sheet];
     if (!cfg || !cfg.rowLevel || indexes[op.sheet]) return;
-    const sheet = ss_().getSheetByName(cfg.name);
-    if (!sheet) return;
-    const lastRow = sheet.getLastRow();
-    const map = {};
-    const lastModifiedByRow = {};
-    if (lastRow >= 2) {
-      const lmCol = cfg.cols.indexOf('lastModified') + 1;
-      const ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
-      const lms = lmCol > 0 ? sheet.getRange(2, lmCol, lastRow - 1, 1).getValues() : null;
+
+    const partitions = cfg.partitioned
+      ? entryPartitions_(op.sheet)
+      : [{ sheet: ss_().getSheetByName(cfg.name), cfg: cfg, projeto: null }];
+
+    const byId = {};
+    partitions.forEach(function (p) {
+      if (!p.sheet) return;
+      const pcfg = p.cfg;
+      const idColumn = idCol_(pcfg);
+      if (idColumn < 1) return;
+      const lastRow = p.sheet.getLastRow();
+      if (lastRow < 2) return;
+      const lmCol = colOf_(pcfg, 'lastModified');
+      const ids = p.sheet.getRange(2, idColumn, lastRow - 1, 1).getValues();
+      const lms = lmCol > 0 ? p.sheet.getRange(2, lmCol, lastRow - 1, 1).getValues() : null;
       for (let i = 0; i < ids.length; i++) {
         const v = ids[i][0];
         if (v === '' || v === null || v === undefined) continue;
-        const rowNum = i + 2;
-        map[String(v)] = rowNum;
-        // This reads lastModified straight off the sheet, bypassing
-        // readSheet_ entirely — coerceTimestamp_ has to be applied here too,
-        // or a Date-typed lastModified cell would flow into findConflicts_'s
-        // String(current) !== String(expected) check as a Date's default
-        // String() (e.g. "Mon Sep 01 2026 ...") and never match the client's
-        // numeric baseline, permanently conflicting every write to that row.
-        if (lms) lastModifiedByRow[rowNum] = coerceTimestamp_(lms[i][0]);
+        byId[String(v)] = {
+          sheet: p.sheet,
+          cfg: pcfg,
+          rowNum: i + 2,
+          // Read straight off the sheet, bypassing readSheet_ — so
+          // coerceTimestamp_ has to be applied here too, or a Date-typed
+          // lastModified cell would reach findConflicts_'s
+          // String(current) !== String(expected) check as a Date's default
+          // String() ("Mon Sep 01 2026 ...") and never match the client's
+          // numeric baseline, permanently conflicting every write to that row.
+          lastModified: lms ? coerceTimestamp_(lms[i][0]) : undefined,
+        };
       }
-    }
-    indexes[op.sheet] = { sheet: sheet, map: map, lastModifiedByRow: lastModifiedByRow };
+    });
+    indexes[op.sheet] = { partitions: partitions, byId: byId, stale: false };
   });
   return indexes;
 }
@@ -1167,8 +1619,8 @@ function findConflicts_(ops, indexes) {
     if (!idx) return;
     (op.upserts || []).forEach(u => {
       if (!u.expectedLastModified) return; // brand-new row, nothing to conflict with
-      const rowIdx = idx.map[String(u.id)];
-      if (!rowIdx) {
+      const found = idx.byId[String(u.id)];
+      if (!found) {
         // The row is GONE. This used to fall through as "treat as new", which
         // silently re-appended it — so a device holding stale state could
         // resurrect a record another device (or deleteProject_) had deleted,
@@ -1186,7 +1638,7 @@ function findConflicts_(ops, indexes) {
         conflicts.push({ sheet: op.sheet, id: u.id, deleted: true });
         return;
       }
-      const current = idx.lastModifiedByRow[rowIdx];
+      const current = found.lastModified;
       if (String(current) !== String(u.expectedLastModified)) {
         conflicts.push({ sheet: op.sheet, id: u.id, currentLastModified: current });
       }
@@ -1195,43 +1647,120 @@ function findConflicts_(ops, indexes) {
   return conflicts;
 }
 
+// Companion to findConflicts_: proves every partitioned upsert can be placed
+// before applyBatch_ writes anything. Deliberately does NOT create the tab —
+// that is applyBatch_'s job; this only asks whether it could, so the whole
+// batch can be refused cleanly rather than half-applied.
+function assertPartitionTargets_(ops) {
+  (ops || []).forEach(function (op) {
+    const cfg = SHEETS[op.sheet];
+    if (!cfg || !cfg.partitioned) return;
+    if (legacyEntrySheet_(cfg)) return; // transitional mode — one shared tab, always placeable
+    (op.upserts || []).forEach(function (u) {
+      const projeto = String((u.row && u.row.projeto) || '').trim();
+      if (!projeto) throw new Error('lançamento sem projeto');
+      const found = lookupEntrySheet_(cfg, projeto);
+      // 'unset' is fine — applyBatch_ will create the tab. Only a stored id
+      // that no longer resolves is fatal, and it must never be name-guessed.
+      if (found.state === ENTRY_TAB_STALE) throw new Error(ENTRY_TAB_UNAVAILABLE);
+    });
+  });
+}
+
 function applyBatch_(ops, indexes) {
   const updated = {};
   ops.forEach(op => {
     const cfg = SHEETS[op.sheet];
     if (!cfg || !cfg.rowLevel) return;
     const idx = indexes && indexes[op.sheet];
-    const sheet = (idx && idx.sheet) || ss_().getSheetByName(cfg.name);
-    if (!sheet) return;
     updated[op.sheet] = [];
 
     (op.upserts || []).forEach(u => {
       const newLastModified = Date.now();
+      // `nota` is preserved when the incoming row does not MENTION it, as
+      // distinct from mentioning it as ''. An older frontend still cached on
+      // someone's phone sends no nota key at all, and writing '' for it would
+      // silently wipe the note — while the current frontend always sends the
+      // key, so a deliberate clear still clears. "The client didn't touch it"
+      // is not "the client's payload is safe to write as-is" (the same rule
+      // preserveProjectFolderIds_ exists for).
       const rowObj = Object.assign({}, u.row, { lastModified: newLastModified });
-      // Safe to trust the prebuilt index here: setValues never shifts rows,
-      // and appendRow only adds past the end — so an index built before this
-      // loop stays valid throughout it, as long as appends are recorded.
-      const usableIdx = idx && !idx.stale ? idx : null;
-      const rowIdx = usableIdx ? usableIdx.map[String(u.id)] : findRowIndexById_(sheet, u.id);
-      const values = rowValuesFromObj_(cfg, rowObj);
-      if (rowIdx && rowIdx > -1) {
-        sheet.getRange(rowIdx, 1, 1, cfg.cols.length).setValues([values]);
+      const found = idx && !idx.stale ? idx.byId[String(u.id)] : null;
+      if (found && colOf_(found.cfg, 'nota') > 0
+          && !Object.prototype.hasOwnProperty.call(u.row || {}, 'nota')) {
+        const keep = found.sheet.getRange(found.rowNum, colOf_(found.cfg, 'nota')).getValue();
+        if (keep !== '' && keep !== null && keep !== undefined) rowObj.nota = keep;
+      }
+
+      // Where does this row belong NOW? For a partitioned sheet that is
+      // decided by the row's own projeto, which may differ from the tab the
+      // row currently sits in (an entry moved between projects). The app does
+      // not offer that today, but the protocol must not corrupt if it ever
+      // does — so it is a move, not a duplicate.
+      let target;
+      try {
+        target = op.sheet && cfg.partitioned
+          ? resolveOrCreateEntrySheet_(op.sheet, u.row && u.row.projeto)
+          : { sheet: ss_().getSheetByName(cfg.name), cfg: cfg };
+      } catch (e) {
+        throw e; // a stale/unavailable tab must surface, never be guessed around
+      }
+      if (!target.sheet) return;
+
+      const values = rowValuesFromObj_(target.cfg, rowObj);
+      const sameTab = found && found.sheet.getName() === target.sheet.getName();
+
+      if (found && sameTab) {
+        // Safe to trust the prebuilt index: setValues never shifts rows, and
+        // appendRow only adds past the end — so an index built before this
+        // loop stays valid throughout it, as long as appends are recorded.
+        found.sheet.getRange(found.rowNum, 1, 1, target.cfg.cols.length).setValues([values]);
       } else {
-        sheet.appendRow(values);
-        if (usableIdx) usableIdx.map[String(u.id)] = sheet.getLastRow(); // keep the index truthful for anything later in this batch
+        if (found && !sameTab) {
+          // Moved projects: remove it from the old tab first, so the id can
+          // never exist in two tabs at once. deleteRow shifts everything
+          // below, so the index for that sheet is no longer trustworthy.
+          const stillThere = findRowIndexById_(found.sheet, u.id, found.cfg);
+          if (stillThere > -1) found.sheet.deleteRow(stillThere);
+          idx.stale = true;
+        }
+        const fresh = idx && idx.stale ? findRowIndexById_(target.sheet, u.id, target.cfg) : -1;
+        if (fresh > -1) {
+          target.sheet.getRange(fresh, 1, 1, target.cfg.cols.length).setValues([values]);
+        } else {
+          target.sheet.appendRow(values);
+          if (idx && !idx.stale) {
+            // Keep the index truthful for anything later in this batch.
+            idx.byId[String(u.id)] = {
+              sheet: target.sheet, cfg: target.cfg,
+              rowNum: target.sheet.getLastRow(), lastModified: newLastModified,
+            };
+          }
+        }
       }
       updated[op.sheet].push({ id: u.id, lastModified: newLastModified });
     });
 
     // Deletes deliberately keep re-scanning: deleteRow SHIFTS every row below
-    // it, so any prebuilt index is stale the moment the first one lands.
-    (op.deletes || []).forEach(id => {
-      const rowIdx = findRowIndexById_(sheet, id);
-      if (rowIdx > -1) sheet.deleteRow(rowIdx);
-    });
-    // Mark (don't null) so a later op on this same sheet falls back to a
-    // fresh scan instead of trusting now-shifted row numbers.
-    if (idx && (op.deletes || []).length) idx.stale = true;
+    // it, so any prebuilt index is stale the moment the first one lands. For a
+    // partitioned sheet every tab is scanned — an id that is in none of them
+    // is the same no-op an absent id has always been.
+    const deletes = op.deletes || [];
+    if (deletes.length) {
+      const partitions = (idx && idx.partitions) || (cfg.partitioned
+        ? entryPartitions_(op.sheet)
+        : [{ sheet: ss_().getSheetByName(cfg.name), cfg: cfg }]);
+      deletes.forEach(id => {
+        partitions.forEach(function (p) {
+          if (!p.sheet) return;
+          const rowIdx = findRowIndexById_(p.sheet, id, p.cfg);
+          if (rowIdx > -1) p.sheet.deleteRow(rowIdx);
+        });
+      });
+      // Mark (don't null) so a later op on this same sheet falls back to a
+      // fresh scan instead of trusting now-shifted row numbers.
+      if (idx) idx.stale = true;
+    }
   });
   return updated;
 }
@@ -1242,17 +1771,27 @@ function applyBatch_(ops, indexes) {
 // even when several ids land in one sheet.
 function deleteRowsByIds_(sheetKey, ids) {
   const cfg = SHEETS[sheetKey];
-  const sheet = ss_().getSheetByName(cfg.name);
-  if (!sheet) return 0;
+  if (!cfg) return 0;
   const wanted = {};
   ids.forEach(function (id) { wanted[String(id)] = true; });
-  const lastRow = sheet.getLastRow();
-  if (lastRow < 2) return 0;
-  const col = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+  // A partitioned key's ids can be in any of its tabs, so every partition is
+  // scanned — an id absent from one is simply not there, which is the same
+  // no-op a missing id has always been.
+  const targets = cfg.partitioned
+    ? entryPartitions_(sheetKey).map(function (p) { return { sheet: p.sheet, cfg: p.cfg }; })
+    : [{ sheet: ss_().getSheetByName(cfg.name), cfg: cfg }];
   let removed = 0;
-  for (let i = col.length - 1; i >= 0; i--) {
-    if (wanted[String(col[i][0])]) { sheet.deleteRow(i + 2); removed++; }
-  }
+  targets.forEach(function (t) {
+    if (!t.sheet) return;
+    const idColumn = idCol_(t.cfg);
+    if (idColumn < 1) return;
+    const lastRow = t.sheet.getLastRow();
+    if (lastRow < 2) return;
+    const col = t.sheet.getRange(2, idColumn, lastRow - 1, 1).getValues();
+    for (let i = col.length - 1; i >= 0; i--) {
+      if (wanted[String(col[i][0])]) { t.sheet.deleteRow(i + 2); removed++; }
+    }
+  });
   return removed;
 }
 
@@ -1326,7 +1865,7 @@ function canonicalSocio_(list, name) {
 // socios assigned" — which is why the backfill can never run twice and
 // silently re-add someone the user deliberately removed.
 function projetosSociosCol_() {
-  return SHEETS.projetos.cols.indexOf('socios') + 1;
+  return colOf_(SHEETS.projetos, 'socios');
 }
 function hasSociosColumn_(projetosSheet) {
   const col = projetosSociosCol_();
@@ -1386,7 +1925,7 @@ function ensureSociosSchema_() {
 
   const lastRow = projetosSheet.getLastRow();
   if (lastRow < 2) return;
-  const ids = projetosSheet.getRange(2, 1, lastRow - 1, 1).getValues();
+  const ids = projetosSheet.getRange(2, idCol_(SHEETS.projetos), lastRow - 1, 1).getValues();
   // Per project, the socios its OWN history actually used — so an existing
   // project keeps offering exactly the people it has always been used with,
   // and nothing about the app's behaviour changes for it on the day this
@@ -1413,6 +1952,44 @@ function ensureSociosSchema_() {
   projetosSheet.getRange(2, col, out.length, 1).setValues(out);
 }
 
+// Adds one schema column to Projetos if the sheet predates it, defensively —
+// generalised from the socios block above, which learned this the hard way:
+// if something already occupies the new column's position (a column a person
+// added by hand to the right of the schema), INSERT rather than write over
+// it, or readSheet_ starts reading that person's notes as the new field the
+// moment the schema grows past it.
+//
+// Guarded by the sheet's own header, so "the column exists" is exactly "this
+// has already run" — nothing to keep in sync (the ensureSociosSchema_ rule).
+function ensureProjetosColumn_(projetosSheet, field) {
+  const col = colOf_(SHEETS.projetos, field);
+  if (col < 1 || !projetosSheet) return false;
+  if (projetosSheet.getMaxColumns() >= col
+      && String(projetosSheet.getRange(1, col).getValue()).trim().toLowerCase() === field.toLowerCase()) {
+    return false; // already there
+  }
+  if (projetosSheet.getMaxColumns() < col) {
+    projetosSheet.insertColumnsAfter(projetosSheet.getMaxColumns(), col - projetosSheet.getMaxColumns());
+  } else if (String(projetosSheet.getRange(1, col).getValue()).trim() !== '') {
+    projetosSheet.insertColumnBefore(col);
+  }
+  projetosSheet.getRange(1, col).setValue(field);
+  return true;
+}
+
+// The two backend-owned tab-id columns. A blank cell afterwards genuinely
+// means "never resolved yet", which is what lets resolveOrCreateEntrySheet_
+// treat it as the legitimate name-search case rather than a stale id.
+function ensureEntryTabSchema_() {
+  const projetosSheet = ss_().getSheetByName(SHEETS.projetos.name);
+  if (!projetosSheet) return;
+  let changed = false;
+  ['caixaSheetId', 'empSheetId'].forEach(function (f) {
+    if (ensureProjetosColumn_(projetosSheet, f)) changed = true;
+  });
+  if (changed) invalidateEntryPartitions_();
+}
+
 // Whole-tab save for Projetos is access-scoped data (unlike Tipos/Unidades,
 // shared reference lists) — a user restricted to specific projects only ever
 // has THOSE rows in memory (getAll already filtered the rest out for them),
@@ -1433,7 +2010,20 @@ function ensureSociosSchema_() {
 function preserveProjectFolderIds_(rows) {
   const existing = readSheet_('projetos');
   const folderById = {};
-  existing.forEach(function (p) { folderById[p.id] = p.driveFolderId || ''; });
+  // caixaSheetId/empSheetId are backend-owned for exactly the same reason and
+  // fall into exactly the same trap: the client's projects array has no
+  // concept of them, so a whole-tab save (which is how ADDING one project
+  // works — it sends the entire array) would blank every other project's tab
+  // ids using nothing but staleness the client cannot see. Losing those means
+  // the next write name-searches, and a hand-renamed tab would then be
+  // orphaned. Re-merged here, keyed by id, before anything is written.
+  const caixaTabById = {};
+  const empTabById = {};
+  existing.forEach(function (p) {
+    folderById[p.id] = p.driveFolderId || '';
+    caixaTabById[p.id] = p.caixaSheetId || '';
+    empTabById[p.id] = p.empSheetId || '';
+  });
   return (rows || []).map(function (r) {
     // socios IS client-owned (unlike driveFolderId, above) — the frontend
     // holds it on every project object and sends the whole array back — but
@@ -1442,6 +2032,8 @@ function preserveProjectFolderIds_(rows) {
     // caller sends one.
     return Object.assign({}, r, {
       driveFolderId: folderById[r.id] || '',
+      caixaSheetId: caixaTabById[r.id] || '',
+      empSheetId: empTabById[r.id] || '',
       socios: normalizeSociosCell_(r.socios),
     });
   });
@@ -1450,11 +2042,18 @@ function saveProjetos_(user, rows) {
   const merged = preserveProjectFolderIds_(rows);
   if (user.projects === '*') {
     writeSheet_('projetos', merged);
-    return;
+  } else {
+    const existing = readSheet_('projetos');
+    const outOfScope = existing.filter(p => !hasProjectAccess_(user, p.id));
+    writeSheet_('projetos', outOfScope.concat(merged));
   }
-  const existing = readSheet_('projetos');
-  const outOfScope = existing.filter(p => !hasProjectAccess_(user, p.id));
-  writeSheet_('projetos', outOfScope.concat(merged));
+  // A project added through the app's own Settings screen must be immediately
+  // auditable in the spreadsheet, not only materialise on its first write —
+  // the same "a new entity created through the app's own UI must be a
+  // COMPLETE operation" rule that made Drive folders resolve by name.
+  // Best-effort: the tabs also self-heal on first write.
+  invalidateEntryPartitions_();
+  try { ensureProjectTabs_((merged || []).map(function (p) { return p.id; })); } catch (e) { /* first write will create it */ }
 }
 
 // Renames a project as ONE atomic, bulk operation — a fixed handful of
@@ -1506,7 +2105,15 @@ function renameProject_(oldName, newName) {
     }
   } catch (e) { /* cosmetic only, see below */ }
 
-  projetosSheet.getRange(rowIdx, 1).setValue(sanitizeCell_(newName));
+  // The entry tabs are renamed BEFORE the row's id changes, for the same
+  // reason the Drive folder is resolved before it: lookupEntrySheet_ finds the
+  // stored sheet id via the Projetos row, and that lookup is keyed on the
+  // row's CURRENT id. The stored id cell itself is untouched by the write
+  // below (only the id column is written), so it survives the rename intact.
+  renameProjectTabs_(oldName, newName);
+
+  projetosSheet.getRange(rowIdx, idCol_(SHEETS.projetos)).setValue(sanitizeCell_(newName));
+  invalidateEntryPartitions_();
 
   ['caixaObra', 'empreiteiro', 'tarefas', 'documentos', 'notas'].forEach(function (key) {
     renameProjectColumnBulk_(key, oldName, newName);
@@ -1541,19 +2148,48 @@ function renameProject_(oldName, newName) {
 // count — the whole point of doing this in bulk instead of per row.
 function renameProjectColumnBulk_(sheetKey, oldName, newName) {
   const cfg = SHEETS[sheetKey];
-  const sheet = ss_().getSheetByName(cfg.name);
-  if (!sheet) return;
-  const col = cfg.cols.indexOf('projeto') + 1;
-  if (col < 1) return;
-  const lastRow = sheet.getLastRow();
-  if (lastRow < 2) return;
-  const range = sheet.getRange(2, col, lastRow - 1, 1);
-  const values = range.getValues();
-  let changed = false;
-  for (let i = 0; i < values.length; i++) {
-    if (values[i][0] === oldName) { values[i][0] = sanitizeCell_(newName); changed = true; }
-  }
-  if (changed) range.setValues(values);
+  // A partitioned sheet has one tab per project, so only that project's own
+  // tab(s) can contain the name — no need to scan a shared sheet at all.
+  const targets = cfg.partitioned
+    ? entryPartitions_(sheetKey).map(function (p) { return { sheet: p.sheet, cfg: p.cfg }; })
+    : [{ sheet: ss_().getSheetByName(cfg.name), cfg: cfg }];
+  targets.forEach(function (t) {
+    if (!t.sheet) return;
+    const col = colOf_(t.cfg, 'projeto');
+    if (col < 1) return;
+    const lastRow = t.sheet.getLastRow();
+    if (lastRow < 2) return;
+    const range = t.sheet.getRange(2, col, lastRow - 1, 1);
+    const values = range.getValues();
+    let changed = false;
+    for (let i = 0; i < values.length; i++) {
+      if (values[i][0] === oldName) { values[i][0] = sanitizeCell_(newName); changed = true; }
+    }
+    if (changed) range.setValues(values);
+  });
+}
+
+// Cosmetic rename of a project's own entry tabs, so the tab strip keeps
+// LOOKING like the project even though nothing depends on the name any more
+// (resolution is by stored sheet id). Best-effort for the same reason the
+// Drive folder rename is: the name is never the source of truth, so a failure
+// here must not fail — or half-undo — the rename itself.
+//
+// A tab a person renamed BY HAND is deliberately left alone: it is still
+// found by its id, so their name sticks. Only a tab still carrying the
+// derived name is renamed, since that is the one nobody has claimed.
+function renameProjectTabs_(oldName, newName) {
+  ['caixaObra', 'empreiteiro'].forEach(function (key) {
+    const cfg = SHEETS[key];
+    if (legacyEntrySheet_(cfg)) return; // transitional mode — one shared tab, nothing to rename
+    try {
+      const found = lookupEntrySheet_(cfg, oldName);
+      if (found.state !== ENTRY_TAB_RESOLVED) return;
+      if (found.sheet.getName() !== entryTabName_(cfg, oldName)) return; // hand-renamed — respect it
+      found.sheet.setName(entryTabName_(cfg, newName));
+    } catch (e) { /* cosmetic only */ }
+  });
+  invalidateEntryPartitions_();
 }
 
 // Same one-read/one-write-per-sheet shape as renameProjectColumnBulk_ above,
@@ -1567,8 +2203,8 @@ function renameProjectFotoRefsBulk_(oldName, newName) {
   if (!sheet) return;
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return;
-  const refTipoCol = cfg.cols.indexOf('refTipo') + 1;
-  const refIdCol = cfg.cols.indexOf('refId') + 1;
+  const refTipoCol = colOf_(cfg, 'refTipo');
+  const refIdCol = colOf_(cfg, 'refId');
   const refTipoValues = sheet.getRange(2, refTipoCol, lastRow - 1, 1).getValues();
   const refIdRange = sheet.getRange(2, refIdCol, lastRow - 1, 1);
   const refIdValues = refIdRange.getValues();
@@ -1647,7 +2283,7 @@ function deleteProject_(name) {
   // along with the folder. Backfilling first makes every id stable and real.
   // Safe here: deleteProject_ already runs inside the write lock.
   ['fotos', 'notas', 'caixaObra', 'empreiteiro', 'tarefas', 'documentos'].forEach(function (k) {
-    backfillMissingIds_(k);
+    backfillRowMetadata_(k);
   });
 
   // --- 1. Resolve what belongs to this project, parents still intact. ---
@@ -1688,7 +2324,23 @@ function deleteProject_(name) {
   const doomedNotaIds = {};
   doomedNotas.forEach(function (n) { doomedNotaIds[String(n.id)] = true; });
   deleteProjectRowsBulk_('notas', function (r) { return doomedNotaIds[String(r.id)]; });
-  ['caixaObra', 'empreiteiro', 'tarefas', 'documentos'].forEach(function (key) {
+  // The entry tabs go as WHOLE TABS — one call each, instead of reading and
+  // rewriting thousands of rows. Same reasoning as trashing the Drive folder
+  // rather than one file per id: the per-project tab IS the unit, so deleting
+  // it is bounded work no matter how much history the project has.
+  //
+  // Still after fotos/notas, because those resolve their project by walking
+  // up to these entries — see the ordering note above. In the transitional
+  // mode (one shared tab) there is no tab to drop, so it falls back to the
+  // row-level bulk delete.
+  ['caixaObra', 'empreiteiro'].forEach(function (key) {
+    if (legacyEntrySheet_(SHEETS[key])) {
+      deleteProjectRowsBulk_(key, function (r) { return r.projeto === name; });
+      return;
+    }
+    deleteProjectTab_(key, name, report);
+  });
+  ['tarefas', 'documentos'].forEach(function (key) {
     deleteProjectRowsBulk_(key, function (r) { return r.projeto === name; });
   });
 
@@ -1725,12 +2377,377 @@ function deleteProject_(name) {
 // match — same bulk discipline as renameProjectColumnBulk_. Deliberately NOT
 // deleteRowsByIds_, which calls deleteRow() once per matching row: fine for a
 // handful of ids, but a project can own thousands of rows.
+// Drops one project's entry tab. Resolved by its stored sheet id, so it can
+// only ever delete the tab this project actually owns — never a same-named
+// tab belonging to something else, which is the property deleteProject_
+// already has for Drive folders. A STALE stored id is reported rather than
+// guessed at by name, for the same reason: guessing here destroys data.
+function deleteProjectTab_(key, name, report) {
+  const cfg = SHEETS[key];
+  try {
+    const found = lookupEntrySheet_(cfg, name);
+    if (found.state === ENTRY_TAB_RESOLVED) {
+      ss_().deleteSheet(found.sheet);
+      invalidateEntryPartitions_();
+      return;
+    }
+    if (found.state === ENTRY_TAB_STALE) {
+      report.tabUnresolved = report.tabUnresolved || [];
+      report.tabUnresolved.push(cfg.tabSuffix);
+      return;
+    }
+    // UNSET: never resolved through the id path. The derived name is the only
+    // handle there is, and it is safe here precisely because it was never
+    // claimed by an id — but only delete it if it really is a tab for THIS
+    // project, i.e. it carries the derived name exactly.
+    const byName = ss_().getSheetByName(entryTabName_(cfg, name));
+    if (byName) {
+      ss_().deleteSheet(byName);
+      invalidateEntryPartitions_();
+    }
+  } catch (e) {
+    report.tabUnresolved = report.tabUnresolved || [];
+    report.tabUnresolved.push(cfg.tabSuffix);
+  }
+}
+
 function deleteProjectRowsBulk_(sheetKey, shouldDelete) {
   const rows = readSheet_(sheetKey);
   const keep = rows.filter(function (r) { return !shouldDelete(r); });
   if (keep.length === rows.length) return 0;
   writeSheet_(sheetKey, keep);
   return rows.length - keep.length;
+}
+
+// ============================================================
+// ONE-SHOT MIGRATION: shared tabs -> per-project tabs
+//
+// Dry run by default. `migrateToPerProjectTabsCommit()` below is the zero-arg
+// wrapper that actually writes, because the Apps Script editor's Run button
+// always calls the selected function with NO arguments — without a wrapper a
+// person using the only UI the editor offers could never reach the
+// committing path (the sweepOrphanFiles lesson).
+//
+// Guarded by the sheet's own shape: once the legacy shared tabs are gone
+// (renamed to '(antigo)' by this function), it is a no-op. Until it runs, the
+// whole backend keeps using those tabs in their old column order, so the app
+// works normally between the deploy and this — see entryPartitions_.
+//
+// Nothing is deleted: the legacy tabs are renamed and kept, and ids are
+// preserved throughout so no photo, note or document reference breaks.
+// ============================================================
+const MIGRATION_UNMATCHED_PROJECT = 'Sem projeto';
+
+function migrateToPerProjectTabs(commit) {
+  const ss = ss_();
+  const report = {
+    commit: !!commit, alreadyDone: false,
+    legacyCounts: {}, written: {}, notasFolded: 0, notasRowsRemoved: 0,
+    fotosReparented: 0, unmatchedProjects: [], tabsCreated: [],
+  };
+
+  const legacy = {
+    caixaObra: ss.getSheetByName(SHEETS.caixaObra.legacyName),
+    empreiteiro: ss.getSheetByName(SHEETS.empreiteiro.legacyName),
+  };
+  if (!legacy.caixaObra && !legacy.empreiteiro) {
+    report.alreadyDone = true;
+    Logger.log('migrateToPerProjectTabs: already migrated (no legacy tabs).');
+    return report;
+  }
+
+  if (commit) {
+    ensureEntryTabSchema_();
+    // Stabilise ids FIRST. readSheet_ mints a fresh random id for a blank-id
+    // row on every call, so without this the ids resolved here would not match
+    // the ids a later read invents — the exact defect deleteProject_ hit, and
+    // it would silently strand a hand-typed row's photos.
+    ['caixaObra', 'empreiteiro', 'notas', 'fotos'].forEach(function (k) { backfillRowMetadata_(k); });
+  }
+
+  const caixa = readSheet_('caixaObra');
+  const emp = readSheet_('empreiteiro');
+  const notas = readSheet_('notas');
+  const fotos = readSheet_('fotos');
+  report.legacyCounts = { caixaObra: caixa.length, empreiteiro: emp.length, notas: notas.length, fotos: fotos.length };
+
+  // --- Fold entry-attached notes into the entry's own `nota` cell ----------
+  // Oldest first, blank line between, so a thread reads top-to-bottom in one
+  // cell. noteTs-style normalization is needed because a criadoEm read from a
+  // cell someone formatted as a date comes back as a Date, and subtracting
+  // two of those against a plain number yields NaN — a NaN comparator does
+  // not throw, it silently leaves the array in sheet order.
+  const ts_ = function (v) {
+    if (v instanceof Date) return v.getTime();
+    const n = Number(v);
+    if (!isNaN(n) && v !== '' && v !== null) return n;
+    const p = Date.parse(String(v || ''));
+    return isNaN(p) ? 0 : p;
+  };
+  const notasByEntry = { caixa: {}, emp: {} };
+  const foldedNotaOwner = {};   // notaId -> {refTipo, refId}, for photo re-parenting
+  const foldedNotaIds = {};
+  notas.forEach(function (n) {
+    if (n.refTipo !== 'caixa' && n.refTipo !== 'emp') return;
+    const bucket = notasByEntry[n.refTipo];
+    (bucket[n.refId] = bucket[n.refId] || []).push(n);
+    foldedNotaOwner[String(n.id)] = { refTipo: n.refTipo, refId: n.refId };
+    foldedNotaIds[String(n.id)] = true;
+    report.notasFolded++;
+  });
+  const notaTextFor_ = function (kind, entryId) {
+    const list = notasByEntry[kind][entryId];
+    if (!list || !list.length) return '';
+    return list.slice().sort(function (a, b) { return ts_(a.criadoEm) - ts_(b.criadoEm); })
+      .map(function (n) { return String(n.texto || '').trim(); })
+      .filter(function (t) { return t !== ''; })
+      .join('\n\n');
+  };
+
+  // --- Re-parent photos that hung off a folded note -----------------------
+  // Those notes stop being records, so a photo pointing at one would resolve
+  // to no parent and fail closed forever. It becomes a photo of the ENTRY.
+  // Nothing moves in Drive: every reference in the app is by driveFileId.
+  const fotoUpdates = [];
+  fotos.forEach(function (f) {
+    if (f.refTipo !== 'notes') return;
+    const owner = foldedNotaOwner[String(f.refId)];
+    if (!owner) return;
+    fotoUpdates.push({ id: f.id, refTipo: owner.refTipo, refId: owner.refId });
+    report.fotosReparented++;
+  });
+
+  // --- Split rows by project ---------------------------------------------
+  const knownProjects = {};
+  readSheet_('projetos').forEach(function (p) { knownProjects[String(p.id)] = true; });
+
+  const plan = {};   // key -> {projeto -> [rowObj]}
+  const split_ = function (key, rows, kind) {
+    plan[key] = {};
+    rows.forEach(function (r) {
+      let proj = String(r.projeto || '').trim();
+      if (!proj || !knownProjects[proj]) {
+        // Never dropped — parked in its own tab and reported, so a typo'd or
+        // retired project name is something a person can see and fix.
+        if (proj && report.unmatchedProjects.indexOf(proj) === -1) report.unmatchedProjects.push(proj);
+        proj = MIGRATION_UNMATCHED_PROJECT;
+      }
+      const out = Object.assign({}, r, { projeto: r.projeto || proj, nota: notaTextFor_(kind, r.id) });
+      (plan[key][proj] = plan[key][proj] || []).push(out);
+    });
+  };
+  split_('caixaObra', caixa, 'caixa');
+  split_('empreiteiro', emp, 'emp');
+
+  Object.keys(plan).forEach(function (key) {
+    report.written[key] = {};
+    Object.keys(plan[key]).forEach(function (proj) { report.written[key][proj] = plan[key][proj].length; });
+  });
+
+  if (!commit) {
+    Logger.log('migrateToPerProjectTabs DRY RUN — nothing written:\n' + JSON.stringify(report, null, 2));
+    Logger.log('Run migrateToPerProjectTabsCommit() to apply.');
+    return report;
+  }
+
+  // --- Write the new tabs -------------------------------------------------
+  // Created while the legacy tabs still exist, so entryPartitions_ keeps
+  // returning the legacy pseudo-partition and the app sees no change until
+  // the rename at the very end. That rename IS the switch.
+  Object.keys(plan).forEach(function (key) {
+    const cfg = SHEETS[key];
+    Object.keys(plan[key]).forEach(function (proj) {
+      const tabName = entryTabName_(cfg, proj);
+      let sheet = ss.getSheetByName(tabName);
+      if (!sheet) {
+        sheet = ss.insertSheet(tabName);
+        report.tabsCreated.push(tabName);
+      }
+      writeEntryHeader_(sheet, cfg);
+      const rows = plan[key][proj];
+      if (rows.length) {
+        const values = rows.map(function (r) { return rowValuesFromObj_(cfg, r); });
+        sheet.getRange(2, 1, values.length, cfg.cols.length).setValues(values);
+      }
+      if (knownProjects[proj]) persistEntrySheetId_(cfg, proj, sheet.getSheetId());
+    });
+  });
+
+  // Empty projects still get their tabs, so every project is auditable the
+  // same way from day one rather than only once it has its first lançamento.
+  Object.keys(knownProjects).forEach(function (proj) {
+    ['caixaObra', 'empreiteiro'].forEach(function (key) {
+      const cfg = SHEETS[key];
+      if (plan[key] && plan[key][proj]) return;
+      const tabName = entryTabName_(cfg, proj);
+      let sheet = ss.getSheetByName(tabName);
+      if (!sheet) {
+        sheet = ss.insertSheet(tabName);
+        writeEntryHeader_(sheet, cfg);
+        report.tabsCreated.push(tabName);
+      }
+      persistEntrySheetId_(cfg, proj, sheet.getSheetId());
+    });
+  });
+
+  // --- Apply the photo re-parenting --------------------------------------
+  if (fotoUpdates.length) {
+    const fotosCfg = SHEETS.fotos;
+    const fsheet = ss.getSheetByName(fotosCfg.name);
+    if (fsheet) {
+      const lastRow = fsheet.getLastRow();
+      const idC = idCol_(fotosCfg);
+      const tC = colOf_(fotosCfg, 'refTipo');
+      const iC = colOf_(fotosCfg, 'refId');
+      if (lastRow >= 2) {
+        const ids = fsheet.getRange(2, idC, lastRow - 1, 1).getValues();
+        const rowById = {};
+        ids.forEach(function (r, i) { rowById[String(r[0])] = i + 2; });
+        fotoUpdates.forEach(function (u) {
+          const rowIdx = rowById[String(u.id)];
+          if (!rowIdx) return;
+          fsheet.getRange(rowIdx, tC).setValue(u.refTipo);
+          fsheet.getRange(rowIdx, iC).setValue(u.refId);
+        });
+      }
+    }
+  }
+
+  // --- Drop the folded Notas rows ----------------------------------------
+  // They are now the entries' own `nota` cells; leaving them would show every
+  // note twice — once on its entry and once as a separate record.
+  const remainingNotas = notas.filter(function (n) { return !foldedNotaIds[String(n.id)]; });
+  if (remainingNotas.length !== notas.length) {
+    writeSheet_('notas', remainingNotas);
+    report.notasRowsRemoved = notas.length - remainingNotas.length;
+  }
+
+  // --- The switch: retire the legacy tabs --------------------------------
+  // Renamed, never deleted, so there is an in-file copy to eyeball. Delete
+  // them by hand once you are satisfied.
+  Object.keys(legacy).forEach(function (key) {
+    if (!legacy[key]) return;
+    try { legacy[key].setName(SHEETS[key].legacyName + ' (antigo)'); }
+    catch (e) { report.legacyRenameFailed = (report.legacyRenameFailed || []).concat([SHEETS[key].legacyName]); }
+  });
+  invalidateEntryPartitions_();
+
+  // Now that the partitioned path is live, stamp metadata on the new tabs.
+  ['caixaObra', 'empreiteiro'].forEach(function (k) { backfillRowMetadata_(k); });
+
+  // Verification the caller can actually read: totals must match exactly.
+  report.newCounts = { caixaObra: readSheet_('caixaObra').length, empreiteiro: readSheet_('empreiteiro').length };
+  report.rowCountsMatch = report.newCounts.caixaObra === report.legacyCounts.caixaObra
+    && report.newCounts.empreiteiro === report.legacyCounts.empreiteiro;
+
+  Logger.log('migrateToPerProjectTabs COMMITTED:\n' + JSON.stringify(report, null, 2));
+  return report;
+}
+
+// Zero-arg wrapper — the only way to reach the committing path from the Apps
+// Script editor's Run dropdown. No trailing underscore, or the editor hides it.
+function migrateToPerProjectTabsCommit() {
+  return migrateToPerProjectTabs(true);
+}
+
+// ============================================================
+// onEdit — machine fields for rows typed in BY HAND
+//
+// Entering data straight into the spreadsheet is a supported way to work
+// here, and it always left `criadoEm`/`lastModified` blank because only the
+// app ever stamped them. This closes that gap at the moment of the edit.
+//
+// A SIMPLE trigger: it needs no installation (a container-bound script runs
+// `onEdit` automatically), and — critically — it is NOT fired by a script's
+// own setValues(), so it can never fight or double-stamp the app's writes.
+// It only ever sees a human editing in the UI.
+//
+// It is deliberately not the guarantee, only the nice path. A simple trigger
+// fails silently, and a bulk import done by script never fires one at all —
+// backfillRowMetadata_ at the top of every getAll is the actual promise that
+// these fields end up filled.
+// ============================================================
+function onEdit(e) {
+  try {
+    if (!e || !e.range) return;
+    const sheet = e.range.getSheet();
+    const match = schemaForSheet_(sheet);
+    if (!match) return;
+    const cfg = match.cfg;
+
+    // A hand-inserted or reordered column would make every position mean the
+    // wrong field, so refuse to stamp rather than write into the wrong cell.
+    // verifySchemaHeaders() is how a person finds out why.
+    if (!headerMatchesSchema_(sheet, cfg)) return;
+
+    const startRow = Math.max(2, e.range.getRow());           // never the header
+    const endRow = e.range.getRow() + e.range.getNumRows() - 1; // a multi-row paste is one event
+    if (endRow < startRow) return;
+
+    stampRowMetadata_(sheet, cfg, match.key, match.projeto, startRow, endRow);
+  } catch (err) {
+    // A simple trigger has nowhere to report to, and throwing here would put
+    // a scary dialog in front of someone doing ordinary data entry.
+    // backfillRowMetadata_ picks up whatever this missed.
+    Logger.log('onEdit: ' + err);
+  }
+}
+
+// Which schema, if any, governs this physical tab — including per-project
+// entry tabs, whose project comes from the partition (so a hand-typed row
+// needs no project typed alongside it).
+function schemaForSheet_(sheet) {
+  const name = sheet.getName();
+  const keys = Object.keys(SHEETS);
+  for (let i = 0; i < keys.length; i++) {
+    const cfg = SHEETS[keys[i]];
+    if (cfg.partitioned) {
+      const parts = entryPartitions_(keys[i]);
+      for (let j = 0; j < parts.length; j++) {
+        if (parts[j].sheet.getName() === name) {
+          return { key: keys[i], cfg: parts[j].cfg, projeto: parts[j].projeto };
+        }
+      }
+    } else if (cfg.name === name) {
+      return { key: keys[i], cfg: cfg, projeto: null };
+    }
+  }
+  return null;
+}
+
+// Fills blank id/criadoEm/projeto and ALWAYS refreshes lastModified, for the
+// given row span. lastModified is the one field a hand edit must always bump:
+// that is what tells the app "this row changed elsewhere", so its existing
+// conflict path reports it instead of silently overwriting the edit.
+function stampRowMetadata_(sheet, cfg, key, projeto, startRow, endRow) {
+  const nRows = endRow - startRow + 1;
+  const width = Math.max(cfg.cols.length, sheet.getLastColumn());
+  const block = sheet.getRange(startRow, 1, nRows, width).getValues();
+  const now = Date.now();
+
+  const fields = {
+    id: colOf_(cfg, 'id'),
+    criadoEm: colOf_(cfg, 'criadoEm'),
+    lastModified: colOf_(cfg, 'lastModified'),
+    projeto: colOf_(cfg, 'projeto'),
+  };
+
+  for (let i = 0; i < nRows; i++) {
+    const row = block[i];
+    // A row cleared rather than deleted is not a record — giving it an id is
+    // exactly how it becomes a phantom lançamento nobody created.
+    const blank = !row.some(function (v) { return v !== '' && v !== null && v !== undefined; });
+    if (blank) continue;
+    const sheetRow = startRow + i;
+    const isEmpty = function (col) {
+      const v = row[col - 1];
+      return v === '' || v === null || v === undefined;
+    };
+    if (fields.id > 0 && isEmpty(fields.id)) sheet.getRange(sheetRow, fields.id).setValue(uid_(key));
+    if (fields.criadoEm > 0 && isEmpty(fields.criadoEm)) sheet.getRange(sheetRow, fields.criadoEm).setValue(now);
+    if (fields.projeto > 0 && projeto && isEmpty(fields.projeto)) sheet.getRange(sheetRow, fields.projeto).setValue(projeto);
+    if (fields.lastModified > 0) sheet.getRange(sheetRow, fields.lastModified).setValue(now);
+  }
 }
 
 function doPost(e) {
@@ -1779,7 +2796,8 @@ function doPost(e) {
         // on every request after the first one following this feature's
         // deploy (see there).
         ensureSociosSchema_();
-        Object.keys(SHEETS).forEach(function (key) { backfillMissingIds_(key); });
+        ensureEntryTabSchema_();
+        Object.keys(SHEETS).forEach(function (key) { backfillRowMetadata_(key); });
       } finally {
         idLock.releaseLock();
       }
@@ -1849,6 +2867,14 @@ function doPost(e) {
         if (conflicts.length > 0) {
           return jsonOut_({ conflict: true, conflicts: conflicts });
         }
+        // Every partitioned upsert must be routable BEFORE anything is
+        // written. applyBatch_ resolves each row's tab from its own `projeto`
+        // and throws on a row it cannot place (no project, or a stale stored
+        // tab id) — and a throw part-way through its loop would leave the
+        // earlier upserts applied, breaking the all-or-nothing guarantee this
+        // batch is documented to have and that findConflicts_ exists to
+        // preserve. Checked up front for the same reason conflicts are.
+        assertPartitionTargets_(ops);
         const updated = applyBatch_(ops, rowIndexes);
         return jsonOut_({ ok: true, updated: updated });
       }
@@ -1865,6 +2891,10 @@ function doPost(e) {
         // column into whatever position happens to be free. Idempotent and
         // cheap once the schema is in place; see ensureSociosSchema_.
         if (body.sheet === 'projetos' || body.sheet === 'socios') ensureSociosSchema_();
+        // Same reasoning: a write must never be the thing that discovers the
+        // tab-id columns don't exist yet, or saveProjetos_ would write them
+        // into whatever position happens to be free.
+        if (body.sheet === 'projetos') ensureEntryTabSchema_();
         if (body.sheet === 'projetos') {
           saveProjetos_(user, body.rows);
         } else if (body.sheet === 'socios') {

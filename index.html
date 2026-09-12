@@ -1400,12 +1400,12 @@
           <label>Pago por sócio</label>
           <div class="toggle-group" id="socioToggle"></div>
         </div>
-        <div class="field" id="existingNotesField" style="display:none;">
-          <label>Notas já registradas</label>
-          <div class="notes-thread" id="editNotesList"></div>
-        </div>
+        <!-- ONE note per lançamento, stored on the entry's own row (column G
+             in the spreadsheet, right beside the data it describes) so it can
+             be read and edited there. Pre-filled when editing: this is the
+             note, not an addition to a thread. -->
         <div class="field">
-          <label id="notaFieldLabel">Nota (opcional)</label>
+          <label>Nota (opcional)</label>
           <textarea id="f_nota" placeholder="Alguma observação sobre esse lançamento?"></textarea>
         </div>
         <div class="field">
@@ -1602,15 +1602,11 @@
       <h2>Detalhes</h2>
       <button class="modal-close" data-close="detailModal"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
     </div>
+    <!-- The entry's Nota is one of the detail rows in #modalBody now (it is a
+         field of the lançamento, like Fornecedor), edited through Editar. It
+         is deliberately NOT editable here too: one field with one write path,
+         rather than a second one to keep permission checks right in. -->
     <div id="modalBody"></div>
-    <div style="margin-top:14px;">
-      <label class="modal-sublabel">Notas</label>
-      <div class="notes-thread" id="modalNotes"></div>
-      <div class="add-note-row">
-        <input type="text" id="modalNoteInput" placeholder="Adicionar nota...">
-        <button class="btn btn-primary btn-sm" id="modalAddNoteBtn">Add</button>
-      </div>
-    </div>
     <div style="margin-top:16px;">
       <label class="modal-sublabel">Fotos do recibo</label>
       <div class="photo-select-wrap" id="modalPhotoSelectWrap"></div>
@@ -2378,8 +2374,13 @@
     // lançamentos: those rows are history and no assignment change rewrites
     // them.
     if(key === 'projects') return value.map(p => ({id: p.name, ativo: true, socios: resolvedProjectSocios_(p).join(', ')}));
-    if(key === 'caixaObra') return value.map(e => ({id:e.id, projeto:e.projectId, data:e.data, nome:e.nome, tipo:e.tipo||'', qtd:e.qtd||'', unidade:e.unidade||'', valor:e.valor||0, fornecedor:e.fornecedor||'', socio:e.socio||'', criadoEm:e.criadoEm, lastModified:e.lastModified}));
-    if(key === 'empreiteiro') return value.map(e => ({id:e.id, projeto:e.projectId, data:e.data, nome:e.nome, qtd:e.qtd||'', unidade:e.unidade||'', valor:e.valor||0, fornecedor:e.fornecedor||'', socio:e.socio||'', criadoEm:e.criadoEm, lastModified:e.lastModified}));
+    // `nota` is ONE authoritative note per lançamento, living on the entry's
+    // own row (column G in the spreadsheet, beside the data it belongs to) —
+    // never a separate Notas record. The key is ALWAYS sent, '' included, so
+    // the backend can tell a deliberate clear from an old client that has no
+    // concept of the column and would otherwise wipe it (see applyBatch_).
+    if(key === 'caixaObra') return value.map(e => ({id:e.id, projeto:e.projectId, data:e.data, nome:e.nome, tipo:e.tipo||'', qtd:e.qtd||'', unidade:e.unidade||'', valor:e.valor||0, fornecedor:e.fornecedor||'', socio:e.socio||'', nota:e.nota||'', criadoEm:e.criadoEm, lastModified:e.lastModified}));
+    if(key === 'empreiteiro') return value.map(e => ({id:e.id, projeto:e.projectId, data:e.data, nome:e.nome, qtd:e.qtd||'', unidade:e.unidade||'', valor:e.valor||0, fornecedor:e.fornecedor||'', socio:e.socio||'', nota:e.nota||'', criadoEm:e.criadoEm, lastModified:e.lastModified}));
     if(key === 'tasks') return value.map(t => ({id:t.id, projeto:t.projectId||'', texto:t.texto, prazo:t.prazo||'', prioridade:t.prioridade||'media', feito: !!t.feito, criadoEm:t.criadoEm, lastModified:t.lastModified}));
     if(key === 'documentos') return value.filter(d => !NO_DRIVE_FILE_YET.has((pendingUploads.get(d.id)||{}).status)).map(d => ({id:d.id, projeto:d.projectId||'', nome:d.nome, mimeType:d.mimeType||'', driveFileId:d.driveFileId||'', driveUrl:d.driveUrl||'', criadoEm:d.criadoEm, lastModified:d.lastModified}));
     if(key === 'tipos') return value.map(t => ({tipo: t}));
@@ -2417,16 +2418,18 @@
     persistableFotos_(projectFotos).forEach(f => rows.push({id:f.id, refTipo:'projeto', refId:f.projectId, driveFileId:f.driveFileId||'', driveUrl:f.driveUrl||'', criadoEm:f.criadoEm, lastModified:f.lastModified}));
     return rows;
   }
-  // The "Notas" tab is likewise a union: standalone notes (refTipo/refId blank,
-  // "projeto" filled in) PLUS every small note attached to an individual
-  // lançamento (refTipo='caixa'/'emp', refId=the entry's id, "projeto" blank —
-  // it's implied by the parent entry).
+  // The "Notas" tab holds STANDALONE project notes only. An entry's note is a
+  // column on the entry's own row now (see toSheetRows), which is what lets it
+  // be read and edited in the spreadsheet right next to the lançamento it
+  // describes. There is exactly one copy of any note, and this is the sheet
+  // for the ones that belong to a project rather than to a lançamento.
+  //
+  // The Notas PAGE still shows both — it derives the entry notes at render
+  // time from the entries themselves (see renderNotesFeed). A derived item is
+  // a view, never a record: nothing here emits a row for it, which is the
+  // assertion that stops a second stored copy creeping back in.
   function computeNotasRows(){
-    const rows = [];
-    notes.forEach(n => rows.push({id:n.id, projeto:n.projectId||'', texto:n.texto, criadoEm:n.criadoEm, refTipo:'', refId:'', lastModified:n.lastModified}));
-    caixaObra.forEach(e => (e.notas||[]).forEach(n => rows.push({id:n.id, projeto:'', texto:n.texto, criadoEm:n.criadoEm, refTipo:'caixa', refId:e.id, lastModified:n.lastModified})));
-    empreiteiro.forEach(e => (e.notas||[]).forEach(n => rows.push({id:n.id, projeto:'', texto:n.texto, criadoEm:n.criadoEm, refTipo:'emp', refId:e.id, lastModified:n.lastModified})));
-    return rows;
+    return notes.map(n => ({id:n.id, projeto:n.projectId||'', texto:n.texto, criadoEm:n.criadoEm, refTipo:'', refId:'', lastModified:n.lastModified}));
   }
 
   // Tracks what we last successfully synced per tab, so every save can be
@@ -2702,16 +2705,17 @@
   // payload about to be retried, or the next diff just recreates it.
   //
   // Ids are unique across every sheet (prefix_timestamp_random), so one flat
-  // set and one pass over every array — including the nested .notas[]/.fotos[]
-  // the Notas/Fotos rows actually live in — reaches wherever the record sits,
-  // exactly like applyServerLastModified_.
+  // set and one pass over every array — including the nested .fotos[] the
+  // Fotos rows actually live in — reaches wherever the record sits, exactly
+  // like applyServerLastModified_.
   function dropDeletedRows_(conflicts){
     const gone = new Set();
     (conflicts||[]).forEach(c=>{ if(c.deleted) gone.add(String(c.id)); });
     if(!gone.size) return gone;
     const keep = (list)=> list.filter(r => !gone.has(String(r.id)));
+    // Only .fotos is nested now — an entry's note is a plain `nota` string on
+    // the entry itself, so there is no note record under a lançamento to keep.
     const keepNested = (rec)=>{
-      if(rec.notas) rec.notas = keep(rec.notas);
       if(rec.fotos) rec.fotos = keep(rec.fotos);
       return rec;
     };
@@ -2750,9 +2754,9 @@
   // ids are generated as prefix_timestamp_random (uid()/uid_()) and are
   // effectively unique across every sheet, not just within one — so a single
   // flat id->lastModified map and one pass over every state array (including
-  // the nested .notas[]/.fotos[] that Notas/Fotos rows actually live in,
-  // per the cross-cutting-sheets model) is enough; no need to know which
-  // sheet/parent an id belongs to ahead of time.
+  // the nested .fotos[] that Fotos rows actually live in, per the
+  // cross-cutting-sheets model) is enough; no need to know which sheet/parent
+  // an id belongs to ahead of time.
   function applyServerLastModified_(updatedBySheet){
     const lmById = new Map();
     Object.keys(updatedBySheet||{}).forEach(sheetName=>{
@@ -2760,8 +2764,8 @@
     });
     if(!lmById.size) return;
     const patch = (obj)=>{ if(obj && lmById.has(String(obj.id))) obj.lastModified = lmById.get(String(obj.id)); };
-    caixaObra.forEach(e=>{ patch(e); (e.notas||[]).forEach(patch); (e.fotos||[]).forEach(patch); });
-    empreiteiro.forEach(e=>{ patch(e); (e.notas||[]).forEach(patch); (e.fotos||[]).forEach(patch); });
+    caixaObra.forEach(e=>{ patch(e); (e.fotos||[]).forEach(patch); });
+    empreiteiro.forEach(e=>{ patch(e); (e.fotos||[]).forEach(patch); });
     tasks.forEach(t=>{ patch(t); (t.fotos||[]).forEach(patch); });
     notes.forEach(n=>{ patch(n); (n.fotos||[]).forEach(patch); });
     documentos.forEach(patch);
@@ -3716,12 +3720,12 @@
   // for a task's `feito` flag; an entry edit, a note, a new lançamento or a
   // deletion had no equivalent protection at all.
   function entryFromRow_(row, existing){
-    const base = existing || {notas: [], fotos: []};
+    const base = existing || {fotos: []};
     return Object.assign({}, base, {
       id: row.id, projectId: row.projeto, nome: row.nome, tipo: row.tipo, qtd: row.qtd,
       unidade: row.unidade, data: row.data, valor: row.valor, fornecedor: row.fornecedor,
-      socio: row.socio, criadoEm: row.criadoEm, lastModified: row.lastModified,
-      notas: base.notas || [], fotos: base.fotos || [],
+      socio: row.socio, nota: row.nota || '', criadoEm: row.criadoEm, lastModified: row.lastModified,
+      fotos: base.fotos || [],
     });
   }
   function findParentFor_(refTipo, refId){
@@ -3756,15 +3760,14 @@
       return;
     }
     if(sheet === 'notas'){
+      // Standalone only. An entry-attached note is no longer a Notas row —
+      // it is the `nota` field of the entry, carried by entryFromRow_ above.
+      // A legacy refTipo:'caixa'/'emp' row (possible only before the backend
+      // migration) has nowhere to live here and is dropped rather than
+      // duplicated onto its entry.
+      if(row.refTipo === 'caixa' || row.refTipo === 'emp') return;
       const nota = {id, texto: row.texto, criadoEm: row.criadoEm, lastModified: row.lastModified};
-      if(row.refTipo === 'caixa' || row.refTipo === 'emp'){
-        const parent = findParentFor_(row.refTipo, row.refId);
-        if(!parent) return;                     // parent gone — the row has nowhere to live
-        parent.notas = parent.notas || [];
-        upsertInto_(parent.notas, id, ()=> nota);
-      } else {
-        upsertInto_(notes, id, (ex)=> Object.assign({fotos: (ex && ex.fotos) || []}, nota, {projectId: row.projeto || null}));
-      }
+      upsertInto_(notes, id, (ex)=> Object.assign({fotos: (ex && ex.fotos) || []}, nota, {projectId: row.projeto || null}));
       return;
     }
     if(sheet === 'fotos'){
@@ -3785,8 +3788,9 @@
   // sheet or parent a given id belongs to.
   function removeIdFromState_(id){
     const keep = (list)=> list.filter(r => String(r.id) !== String(id));
+    // Only .fotos is nested now — an entry's note is a plain `nota` string on
+    // the entry itself, so there is no note record under a lançamento to keep.
     const keepNested = (rec)=>{
-      if(rec.notas) rec.notas = keep(rec.notas);
       if(rec.fotos) rec.fotos = keep(rec.fotos);
       return rec;
     };
@@ -4230,26 +4234,22 @@
         const key = f.refTipo + '|' + f.refId;
         (fotosByRef[key] = fotosByRef[key] || []).push({id:f.id, criadoEm:f.criadoEm, driveFileId:f.driveFileId, driveUrl:f.driveUrl, lastModified:f.lastModified});
       });
-      const notasByRef = {};
-      const standaloneNotasRows = [];
-      (data.notas||[]).forEach(n=>{
-        if(n.refTipo === 'caixa' || n.refTipo === 'emp'){
-          const key = n.refTipo + '|' + n.refId;
-          (notasByRef[key] = notasByRef[key] || []).push({id:n.id, texto:n.texto, criadoEm:n.criadoEm, lastModified:n.lastModified});
-        } else {
-          standaloneNotasRows.push(n);
-        }
-      });
+      // Every Notas row is standalone now — an entry's note arrives as the
+      // `nota` field of the entry itself. A legacy refTipo:'caixa'/'emp' row
+      // can only exist before the backend migration has run; it is skipped
+      // rather than shown, because after the migration the same text lives on
+      // the entry and showing both would read as a duplicate.
+      const standaloneNotasRows = (data.notas||[]).filter(n => n.refTipo !== 'caixa' && n.refTipo !== 'emp');
 
       caixaObra = (data.caixaObra||[]).map(r => ({
         id:r.id, projectId:r.projeto, nome:r.nome, tipo:r.tipo, qtd:r.qtd, unidade:r.unidade,
-        data:r.data, valor:r.valor, fornecedor:r.fornecedor, socio:r.socio,
-        notas: notasByRef['caixa|'+r.id] || [], fotos: fotosByRef['caixa|'+r.id] || [], criadoEm:r.criadoEm, lastModified:r.lastModified,
+        data:r.data, valor:r.valor, fornecedor:r.fornecedor, socio:r.socio, nota:r.nota||'',
+        fotos: fotosByRef['caixa|'+r.id] || [], criadoEm:r.criadoEm, lastModified:r.lastModified,
       }));
       empreiteiro = (data.empreiteiro||[]).map(r => ({
         id:r.id, projectId:r.projeto, nome:r.nome, qtd:r.qtd, unidade:r.unidade,
-        data:r.data, valor:r.valor, fornecedor:r.fornecedor, socio:r.socio,
-        notas: notasByRef['emp|'+r.id] || [], fotos: fotosByRef['emp|'+r.id] || [], criadoEm:r.criadoEm, lastModified:r.lastModified,
+        data:r.data, valor:r.valor, fornecedor:r.fornecedor, socio:r.socio, nota:r.nota||'',
+        fotos: fotosByRef['emp|'+r.id] || [], criadoEm:r.criadoEm, lastModified:r.lastModified,
       }));
       tasks = (data.tarefas||[]).map(r => ({
         id:r.id, projectId:r.projeto||null, texto:r.texto, prazo:r.prazo, prioridade:r.prioridade||'media',
@@ -4389,11 +4389,10 @@
     // they're only ever triggered by clicking their <label>, never shown
     // directly — so only the label (the actual visible button) is toggled.
     setHidden(document.querySelector('label[for="modalPhotoInput"]'), !canSection('lancamentos','upload'));
-    // A note added here is attached to this Lançamento, so it's gated by
-    // 'lancamentos' (not 'notas', which governs standalone notes only).
-    const modalNoteInput = $('#modalNoteInput');
-    setHidden(modalNoteInput, !canSection('lancamentos','create'));
-    setHidden('#modalAddNoteBtn', !canSection('lancamentos','create'));
+    // The detail modal's note composer is gone: an entry's nota is a field of
+    // the lançamento, edited through the Editar form, so it inherits
+    // #editEntryBtn's 'lancamentos'.edit gate above and needs no gate of its
+    // own. One fewer write-affordance to keep in step with the backend.
     setHidden(document.querySelector('label[for="docFileInput"]'), !canSection('docs','upload'));
     setHidden(document.querySelector('label[for="projectPhotoInput"]'), !canSection('docs','upload'));
     setHidden('#pdfViewDeleteBtn', !canSection('docs','delete'));
@@ -4461,10 +4460,11 @@
     }
     if(!canView('tarefas')){ tasks = []; }
     else if(allowedProjects !== '*'){ tasks = tasks.filter(t => projOk(t.projectId)); }
-    // Standalone notes only — notes attached to a lançamento live nested
-    // inside caixaObra/empreiteiro entries above and are already covered by
-    // that filtering (wiping/filtering the parent entry takes its nested
-    // .notas/.fotos with it).
+    // The Notas sheet is standalone notes only. A lançamento's note is the
+    // `nota` column of the entry's own row, so it is already covered by the
+    // entry filtering above — dropping an entry takes its note with it, and a
+    // role denied 'lancamentos' never receives the entry (and therefore never
+    // receives the note) at all.
     if(!canView('notas')){ notes = []; }
     else if(allowedProjects !== '*'){ notes = notes.filter(n => projOk(n.projectId)); }
     if(!canView('docs')){ documentos = []; projectFotos = []; }
@@ -4503,7 +4503,6 @@
     const add = (o)=>{ if(o && o.id !== undefined) ids.add(String(o.id)); };
     const walk = (list)=> list.forEach(rec=>{
       add(rec);
-      (rec.notas || []).forEach(add);
       (rec.fotos || []).forEach(add);
     });
     walk(caixaObra); walk(empreiteiro); walk(tasks); walk(notes);
@@ -5182,13 +5181,15 @@
     const metaParts = [];
     if(e.fornecedor) metaParts.push(toDisplayCase(e.fornecedor));
     if(e.qtd) metaParts.push(e.qtd + (e.unidade ? ' ' + e.unidade : ''));
-    const noteCount = (e.notas||[]).length;
+    // One note per lançamento now, so this is a HAS-a-note marker rather than
+    // a count. The dot still renders; it just carries no number.
+    const hasNote = !!String(e.nota || '').trim();
     const photoCount = (e.fotos||[]).length;
     return `<div class="entry-card" data-id="${e.id}" data-kind="${e.kind}">
       <div class="datechip"><div class="d">${d.getDate()}</div><div class="m">${MONTHS[d.getMonth()]}/${String(d.getFullYear()).slice(-2)}</div></div>
       <div class="info">
         <div class="nome"><span class="nome-txt">${escapeHTML(toDisplayCase(e.nome))}</span></div>
-        <div class="meta"><span class="meta-txt">${escapeHTML(metaParts.join(' · ') || '—')}</span>${noteCount ? `<span class="notedot"><svg viewBox="0 0 24 24"><path d="M4 4h16v13H8l-4 4V4z"/></svg>${noteCount}</span>` : ''}${photoCount ? `<span class="notedot"><svg viewBox="0 0 24 24"><path d="M4 8a2 2 0 012-2h1.2a1 1 0 00.9-.55L8.7 4.1A1 1 0 019.6 3.5h4.8a1 1 0 01.9.6l.6 1.35a1 1 0 00.9.55H18a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V8z"/><circle cx="12" cy="13" r="3.3"/></svg>${photoCount}</span>` : ''}</div>
+        <div class="meta"><span class="meta-txt">${escapeHTML(metaParts.join(' · ') || '—')}</span>${hasNote ? `<span class="notedot"><svg viewBox="0 0 24 24"><path d="M4 4h16v13H8l-4 4V4z"/></svg></span>` : ''}${photoCount ? `<span class="notedot"><svg viewBox="0 0 24 24"><path d="M4 8a2 2 0 012-2h1.2a1 1 0 00.9-.55L8.7 4.1A1 1 0 019.6 3.5h4.8a1 1 0 01.9.6l.6 1.35a1 1 0 00.9.55H18a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V8z"/><circle cx="12" cy="13" r="3.3"/></svg>${photoCount}</span>` : ''}</div>
       </div>
       <div class="valor">${fmtBRLFull(e.valor)}<span class="who">${escapeHTML(toDisplayCase(e.socio))||''}</span></div>
     </div>`;
@@ -5771,8 +5772,6 @@
     $('#addTitle').textContent = 'Adicionar';
     $('#saveEntryBtn').textContent = 'Salvar lançamento';
     $('#cancelEditBtn').style.display = 'none';
-    $('#existingNotesField').style.display = 'none';
-    $('#notaFieldLabel').textContent = 'Nota (opcional)';
     renderFormPhotoThumbs();
   }
 
@@ -5809,6 +5808,9 @@
       valor,
       fornecedor: normStore($('#f_fornecedor').value),
       socio: selectedSocio,
+      // ALWAYS part of the payload, '' included — the field IS the note, so an
+      // emptied textarea is a deliberate clear, not an absence.
+      nota: notaTxt,
     };
     if(addKind === 'caixa') payload.tipo = $('#f_tipo').value === '__novo__' ? '' : $('#f_tipo').value;
 
@@ -5829,10 +5831,9 @@
         return;
       }
       list[idx] = {...list[idx], ...payload};
-      if(notaTxt) list[idx].notas = [...(list[idx].notas||[]), {id: uid('n'), texto: notaTxt, criadoEm: Date.now()}];
     } else {
       const adopted = draftFotos.slice();
-      const newEntry = {id: uid('e'), projectId: activeProjectId, criadoEm: Date.now(), notas: notaTxt ? [{id: uid('n'), texto: notaTxt, criadoEm: Date.now()}] : [], fotos: adopted, ...payload};
+      const newEntry = {id: uid('e'), projectId: activeProjectId, criadoEm: Date.now(), fotos: adopted, ...payload};
       list.push(newEntry);
       adoptDraftUploads_(adopted, addKind === 'caixa' ? 'caixa' : 'emp', newEntry.id);
       draftFotos = [];   // now owned by the saved entry — cleared without touching their blobs or in-flight uploads
@@ -5884,64 +5885,30 @@
     rows.push(['Fornecedor', toDisplayCase(e.fornecedor) || '—']);
     rows.push(['Pago por sócio', toDisplayCase(e.socio) || '—']);
 
+    const notaTxt = String(e.nota || '').trim();
     $('#modalBody').innerHTML = `<h3 style="margin:0 0 14px; font-size:var(--fs-heading); line-height:1.3; text-transform:none; font-family:'Inter',sans-serif; font-weight:700; letter-spacing:-0.01em;">${escapeHTML(toDisplayCase(e.nome))}</h3>` +
-      rows.map(r => `<div class="detail-row"><span class="k">${r[0]}</span><span class="v">${escapeHTML(r[1])}</span></div>`).join('');
+      rows.map(r => `<div class="detail-row"><span class="k">${r[0]}</span><span class="v">${escapeHTML(r[1])}</span></div>`).join('') +
+      // Its own block rather than a detail-row: a note is prose that can run
+      // to several lines and keeps the line breaks the writer typed, which a
+      // two-column key/value row cannot show. overflow-wrap for the same
+      // reason note cards need it — pre-wrap only breaks at whitespace, so a
+      // pasted link would otherwise spill straight out of the modal.
+      (notaTxt ? `<div class="detail-row" style="display:block;">
+        <span class="k" style="display:block; margin-bottom:4px;">Nota</span>
+        <span class="v" style="display:block; text-align:left; white-space:pre-wrap; min-width:0; overflow-wrap:anywhere; word-break:break-word; line-height:1.5;">${escapeHTML(notaTxt)}</span>
+      </div>` : '');
 
-    renderModalNotes(e.notas || []);
     renderModalPhotoThumbs(e.fotos || []);
     $('#detailModal').classList.add('open');
   }
 
-  // These notes are always attached to a Lançamento (this thread only ever
-  // renders inside the entry add/edit form or the entry detail modal), so
-  // their edit/delete rights come from the 'lancamentos' section — not
-  // 'notas', which governs standalone notes only. perms defaults to fully
-  // open for any caller that doesn't pass one (there are none left, but this
-  // keeps the helper safe to reuse).
-  function notesThreadHTML(notasList, perms){
-    perms = perms || {edit:true, delete:true};
-    if(!notasList || notasList.length === 0){
-      return '<div style="font-size:var(--fs-body); color:var(--ink-soft); padding:4px 0 8px;">Nenhuma nota ainda.</div>';
-    }
-    // Same normalization the Notas feed uses, for the same reason: subtracting
-    // two date-shaped STRINGS yields NaN, and a NaN comparator silently leaves
-    // the thread in array order instead of time order. This thread stays
-    // newest-first (unlike the Notas page, which is a bottom-anchored
-    // timeline) — only the comparison is being made trustworthy here.
-    const sorted = [...notasList].sort((a,b)=> noteTs_(b.criadoEm) - noteTs_(a.criadoEm));
-    return sorted.map(n => {
-      const dt = new Date(noteTs_(n.criadoEm));
-      const actions = [
-        perms.edit ? `<button class="n-edit" data-note-edit="${n.id}">Editar</button>` : '',
-        perms.delete ? `<button class="n-del" data-note-del="${n.id}">Excluir</button>` : '',
-      ].join('');
-      return `<div class="n-item">
-        <div>${escapeHTML(n.texto)}</div>
-        <div class="n-item-actions">
-          <span class="n-ts">${dt.toLocaleDateString('pt-BR')} às ${dt.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</span>
-          ${actions ? `<span class="n-actions">${actions}</span>` : ''}
-        </div>
-      </div>`;
-    }).join('');
-  }
-  function attachNotesThreadHandlers(box, refBuilder){
-    box.querySelectorAll('[data-note-edit]').forEach(b=>{
-      b.addEventListener('click', ()=> editNoteRef(refBuilder(b.dataset.noteEdit)));
-    });
-    box.querySelectorAll('[data-note-del]').forEach(b=>{
-      b.addEventListener('click', ()=> deleteNoteRef(refBuilder(b.dataset.noteDel)));
-    });
-  }
-  function renderModalNotes(notasList){
-    const box = $('#modalNotes');
-    box.innerHTML = notesThreadHTML(notasList, {edit: canSection('lancamentos','edit'), delete: canSection('lancamentos','delete')});
-    attachNotesThreadHandlers(box, (noteId)=>({origin: activeModal.kind, entryId: activeModal.id, noteId}));
-  }
-  function renderEditNotes(notasList){
-    const box = $('#editNotesList');
-    box.innerHTML = notesThreadHTML(notasList, {edit: canSection('lancamentos','edit'), delete: canSection('lancamentos','delete')});
-    attachNotesThreadHandlers(box, (noteId)=>({origin: addKind, entryId: editingId, noteId}));
-  }
+  // notesThreadHTML / attachNotesThreadHandlers / renderModalNotes /
+  // renderEditNotes are GONE, along with the per-entry note thread they drew.
+  // A lançamento has exactly one note now, stored as the `nota` column on its
+  // own row: read as a block in the detail modal (openDetail above), written
+  // through the Editar form's pre-filled textarea. One field, one write path.
+  // The Notas PAGE still shows entry notes — derived from the entries at
+  // render time, never stored twice (see renderNotesFeed).
 
   // ---------- Photo thumbnails (shared renderer for form + detail modal) ----------
   // A photo still uploading draws from its local object URL, so the thumbnail
@@ -7095,91 +7062,42 @@
     });
   });
 
-  // ---------- Note edit/delete (works for standalone notes and notes attached to entries) ----------
-  function refreshNoteViewsFor(origin, entryId){
-    if(activeModal && activeModal.kind === origin && activeModal.id === entryId){
-      const list = getList(origin);
-      const entry = list.find(x=>x.id===entryId);
-      if(entry) renderModalNotes(entry.notas || []);
-    }
-    if(editingId === entryId && addKind === origin){
-      const list = getList(origin);
-      const entry = list.find(x=>x.id===entryId);
-      if(entry) renderEditNotes(entry.notas || []);
-    }
-  }
+  // ---------- Note edit/delete (standalone notes only) ----------
+  // An entry's note is a FIELD of the lançamento, not a record, so it has no
+  // edit/delete of its own: it is changed through the Editar form like nome or
+  // fornecedor, and cleared by emptying that textarea. refreshNoteViewsFor and
+  // the modal's "add note" composer are gone with the thread they served.
+  //
+  // The Notas feed still shows entry notes (derived — see renderNotesFeed);
+  // "Editar" on one of those cards opens the lançamento's Editar form rather
+  // than coming through here.
   async function editNoteRef(ref){
-    let current, applyEdit;
-    if(ref.origin === 'standalone'){
-      const n = notes.find(x=>x.id===ref.id);
-      if(!n) return;
-      current = n.texto;
-      applyEdit = async (txt)=>{
-        n.texto = txt;
-        return await saveKey('notes', notes);
-      };
-    } else {
-      const list = ref.origin === 'caixa' ? caixaObra : empreiteiro;
-      const entry = list.find(x=>x.id===ref.entryId);
-      if(!entry) return;
-      const n = (entry.notas||[]).find(x=>x.id===ref.noteId);
-      if(!n) return;
-      current = n.texto;
-      applyEdit = async (txt)=>{
-        n.texto = txt;
-        refreshNoteViewsFor(ref.origin, ref.entryId);
-        return await saveKey(ref.origin === 'caixa' ? 'caixaObra' : 'empreiteiro', list);
-      };
-    }
-    const nt = await showPrompt(current, {title:'Editar nota'});
+    if(ref.origin !== 'standalone') return;
+    const n = notes.find(x=>x.id===ref.id);
+    if(!n) return;
+    const nt = await showPrompt(n.texto, {title:'Editar nota'});
     if(nt === null) return;
-    const saveOk = await applyEdit(nt);
+    n.texto = nt;
+    const saveOk = await saveKey('notes', notes);
     renderAll();
     if(saveOk) showToast('Nota atualizada.');
     else showToast('Não consegui salvar a nota. Tente novamente.', false, 4500);
   }
 
   async function deleteNoteRef(ref){
+    if(ref.origin !== 'standalone') return;
     const ok = await showConfirm('Excluir esta nota?', {title:'Excluir nota', okLabel:'Excluir'});
     if(!ok) return;
-    let saveOk;
-    if(ref.origin === 'standalone'){
-      const target = notes.find(x=>x.id===ref.id);
-      // Photos FIRST, while the note still exists: the server resolves each
-      // photo's authorization through its parent, so once the note row is gone
-      // the photos can no longer be authorized and their Drive files leak.
-      if(target) await deletePhotoBlobs(target.fotos);
-      notes = notes.filter(x=>x.id!==ref.id);
-      renderAll();
-      showToast('Nota excluída.');
-      saveOk = await saveKey('notes', notes);
-    } else {
-      const list = ref.origin === 'caixa' ? caixaObra : empreiteiro;
-      const entry = list.find(x=>x.id===ref.entryId);
-      if(!entry) return;
-      entry.notas = (entry.notas||[]).filter(x=>x.id!==ref.noteId);
-      refreshNoteViewsFor(ref.origin, ref.entryId);
-      renderAll();
-      showToast('Nota excluída.');
-      saveOk = await saveKey(ref.origin === 'caixa' ? 'caixaObra' : 'empreiteiro', list);
-    }
-  }
-
-  $('#modalAddNoteBtn').addEventListener('click', withGuard(async ()=>{
-    if(!activeModal) return;
-    const input = $('#modalNoteInput');
-    const txt = input.value.trim();
-    if(!txt) return;
-    const list = getList(activeModal.kind);
-    const e = list.find(x=>x.id === activeModal.id);
-    if(!e) return;
-    e.notas = [...(e.notas||[]), {id: uid('n'), texto: txt, criadoEm: Date.now()}];
-    input.value = '';
-    renderModalNotes(e.notas);
+    const target = notes.find(x=>x.id===ref.id);
+    // Photos FIRST, while the note still exists: the server resolves each
+    // photo's authorization through its parent, so once the note row is gone
+    // the photos can no longer be authorized and their Drive files leak.
+    if(target) await deletePhotoBlobs(target.fotos);
+    notes = notes.filter(x=>x.id!==ref.id);
     renderAll();
-    showToast('Nota adicionada.');
-    await saveKey(activeModal.kind === 'caixa' ? 'caixaObra' : 'empreiteiro', list);
-  }));
+    showToast('Nota excluída.');
+    await saveKey('notes', notes);
+  }
 
   $all('[data-close]').forEach(btn=>{
     btn.addEventListener('click', ()=>{
@@ -7199,13 +7117,18 @@
     });
   });
 
-  $('#editEntryBtn').addEventListener('click', ()=>{
-    if(!activeModal) return;
-    const list = getList(activeModal.kind);
-    const e = list.find(x=>x.id === activeModal.id);
+  // Extracted from the #editEntryBtn handler so it has ONE caller-independent
+  // entry point: the detail modal's Editar button, and the Notas feed's action
+  // menu on a derived entry note (whose text lives in this very form's nota
+  // field). Takes an explicit kind/id rather than reading activeModal, since
+  // the feed opens it with no modal in play.
+  function startEditEntry(kind, id){
+    const list = getList(kind);
+    const e = list.find(x=>x.id === id);
     if(!e) return;
+    if(!canSection('lancamentos','edit')) return; // courtesy layer; the backend checks independently
     editingId = e.id;
-    addKind = activeModal.kind;
+    addKind = kind;
     $all('.segmented button[data-addkind]').forEach(b=>b.classList.toggle('active', b.dataset.addkind===addKind));
     syncEntryFormCardKind_();
     $('#tipoField').style.display = addKind === 'caixa' ? 'block' : 'none';
@@ -7219,7 +7142,9 @@
     refreshFData();
     $('#f_valor').value = e.valor || '';
     $('#f_fornecedor').value = toDisplayCase(e.fornecedor) || '';
-    $('#f_nota').value = '';
+    // Pre-filled, because this IS the entry's note rather than an addition to
+    // a thread — editing it in place is the same gesture as editing its nome.
+    $('#f_nota').value = e.nota || '';
     // Preserve the entry's OWN socio, even if that person is no longer
     // assigned to this project — see syncSocioField.
     editingSocio = e.socio || '';
@@ -7227,12 +7152,14 @@
     $('#addTitle').textContent = 'Editar lançamento';
     $('#saveEntryBtn').textContent = 'Salvar alterações';
     $('#cancelEditBtn').style.display = 'inline-flex';
-    $('#existingNotesField').style.display = 'block';
-    $('#notaFieldLabel').textContent = 'Adicionar nova nota (opcional)';
-    renderEditNotes(e.notas || []);
     renderFormPhotoThumbs();
     $('#detailModal').classList.remove('open');
     switchView('add');
+  }
+
+  $('#editEntryBtn').addEventListener('click', ()=>{
+    if(!activeModal) return;
+    startEditEntry(activeModal.kind, activeModal.id);
   });
 
   $('#deleteEntryBtn').addEventListener('click', withGuard(async ()=>{
@@ -7808,8 +7735,30 @@
     const items = [];
     const push_ = (o)=>{ o.ts = noteTs_(o.criadoEm); o.seq = items.length; items.push(o); };
     projEntries(notes).forEach(n => push_({texto:n.texto, criadoEm:n.criadoEm, origin:'Nota Global do Projeto', entryRef:null, ref:{origin:'standalone', id:n.id}, noteObj:n}));
-    projEntries(caixaObra).forEach(e => (e.notas||[]).forEach(n => push_({texto:n.texto, criadoEm:n.criadoEm, origin:'Caixa da obra: ' + e.nome, entryRef:{kind:'caixa', id:e.id}, ref:{origin:'caixa', entryId:e.id, noteId:n.id}})));
-    projEntries(empreiteiro).forEach(e => (e.notas||[]).forEach(n => push_({texto:n.texto, criadoEm:n.criadoEm, origin:'Empreiteiro: ' + e.nome, entryRef:{kind:'emp', id:e.id}, ref:{origin:'emp', entryId:e.id, noteId:n.id}})));
+    // Entry notes are DERIVED here, never stored twice. The one authoritative
+    // copy is the `nota` column on the lançamento's own row; this builds a
+    // view of it so the feed keeps looking exactly as it always has, origin
+    // chip and all — tapping that chip still opens the lançamento, because
+    // entryRef is unchanged.
+    //
+    // The timestamp is BORROWED from the entry: a cell carries none of its
+    // own. That means an entry note sits in the feed where its lançamento was
+    // created, and editing the note no longer moves it to the bottom.
+    // e.lastModified was the alternative and is worse — it would jump the note
+    // down the feed every time an unrelated field (valor, fornecedor) changed.
+    //
+    // ref.origin === 'entry' is what tells the card's action menu to route
+    // Editar into the lançamento's own form, and to offer neither Foto (photos
+    // belong to the entry's own grid) nor Excluir (on a card that IS a
+    // lançamento, "Excluir" reads as deleting the lançamento).
+    const pushEntryNote_ = (e, kind, label)=>{
+      const txt = String(e.nota || '').trim();
+      if(!txt) return;   // a blank cell is not a note — no empty cards
+      push_({texto:txt, criadoEm:e.criadoEm, origin:label + ': ' + e.nome,
+        entryRef:{kind, id:e.id}, ref:{origin:'entry', kind, entryId:e.id}});
+    };
+    projEntries(caixaObra).forEach(e => pushEntryNote_(e, 'caixa', 'Caixa da obra'));
+    projEntries(empreiteiro).forEach(e => pushEntryNote_(e, 'emp', 'Empreiteiro'));
     // ONE ordering rule for this whole feed: ascending by normalized timestamp,
     // so the array order IS the render order, top to bottom, oldest to newest.
     // Nothing downstream reverses it. The `seq` tiebreak is what stops two
@@ -7856,7 +7805,14 @@
       // own notes thread, just per-item here since this feed mixes both.
       const itemSection = isStandalone ? 'notas' : 'lancamentos';
       const canEditNote = canSection(itemSection, 'edit');
-      const canDeleteNote = canSection(itemSection, 'delete');
+      // A DERIVED entry note is a view of the lançamento's own `nota` cell,
+      // not a record — so the card offers Editar (which opens the
+      // lançamento's Editar form) but not Excluir: on a card that IS a
+      // lançamento, "Excluir" invites the reading that it deletes the
+      // lançamento. Clearing the textarea in Editar is the unambiguous way.
+      // Foto is likewise absent — photos belong to the entry's own grid, and
+      // no per-card file input is minted for a derived item.
+      const canDeleteNote = isStandalone && canSection(itemSection, 'delete');
       const canAddPhoto = isStandalone && canSection('notas', 'upload');
       // Editar/Foto/Excluir no longer render inline (see .note-action-menu) —
       // they're reached by a press-and-hold or right-click on the card, which
@@ -8019,6 +7975,14 @@
     const ctx = noteActionMenuCtx_;
     closeNoteActionMenu_();
     if(!ctx) return;
+    // A DERIVED entry note has no record to edit in place — its text is a
+    // field of the lançamento — so Editar opens that lançamento's own Editar
+    // form, with the nota textarea pre-filled. Exactly the flow the origin
+    // chip already offers for viewing, one step further.
+    if(btn.dataset.nam === 'edit' && ctx.ref && ctx.ref.origin === 'entry'){
+      startEditEntry(ctx.ref.kind, ctx.ref.entryId);
+      return;
+    }
     if(btn.dataset.nam === 'edit') editNoteRef(ctx.ref);
     else if(btn.dataset.nam === 'del') deleteNoteRef(ctx.ref);
     else if(btn.dataset.nam === 'photo'){
