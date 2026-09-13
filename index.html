@@ -2265,10 +2265,18 @@
   // index.html. This is an APP update (new code) — unrelated to the
   // "Sincronizar agora" gear icon, which only re-fetches business data
   // without touching what code is running.
+  // location.replace, NOT an assignment to location.href: assigning PUSHES a
+  // history entry, so every "Atualizar" left the pre-update page sitting in the
+  // back stack. In a standalone PWA iOS then offers its edge swipe-back gesture
+  // — drag from the left edge and the OLD BUILD slides back in, at a URL with
+  // no cache-buster, which is precisely the "an online user sees stale code"
+  // outcome the whole update path exists to prevent. replace() swaps the
+  // current entry instead, so there is nothing behind the app to swipe to.
+  // (This is the only top-level navigation in the app — nothing else pushes.)
   function forceAppReload(){
     const url = new URL(window.location.href);
     url.searchParams.set('_r', Date.now());
-    window.location.href = url.toString();
+    window.location.replace(url.toString());
   }
 
   const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxoQYyrIMNNIKfO3wkAfj6f5HFAPCBfhw07cSsuRsAy4HWDODSjHBtGuTw2TgmfHRvZ_Q/exec';

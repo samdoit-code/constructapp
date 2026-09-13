@@ -12,7 +12,7 @@
 'use strict';
 
 const { test, equal, ok, notOk, deepEqual } = require('./helpers/harness');
-const { buildContext } = require('./helpers/app-source');
+const { buildContext, appSourceText } = require('./helpers/app-source');
 
 // A real-shaped (unsigned) Google credential. emailFromCredential_ never
 // verifies it — the backend does that independently on every request — it only
@@ -139,4 +139,33 @@ test('F2: provisional boot without an expected email is refused outright', async
   const { ctx, events } = buildBoot({ storedEmail: 'a@example.com' });
   notOk(await ctx.bootFromLocalSession_(true));
   deepEqual(events, []);
+});
+
+// ---------------------------------------------------------------------------
+// The update path must not leave an older build reachable.
+// ---------------------------------------------------------------------------
+test('forceAppReload replaces the history entry instead of pushing one', () => {
+  // Assigning to location.href pushes, so every "Atualizar" left the
+  // pre-update page in the back stack — and in a standalone PWA iOS's edge
+  // swipe-back then slides that OLD BUILD back in, at a URL with no
+  // cache-buster. Reported on device as "I drag from the left edge and
+  // uncover another app behind it". One word apart from the buggy version,
+  // with identical apparent behaviour, so nothing but this assertion would
+  // catch it being changed back.
+  const src = appSourceText();
+  const fn = src.slice(src.indexOf('function forceAppReload'));
+  const body = fn.slice(0, fn.indexOf('\n  }'));
+  ok(/location\.replace\(/.test(body), 'the reload must use location.replace');
+  notOk(/location\.href\s*=/.test(body), 'assigning to location.href pushes a history entry');
+  ok(/_r/.test(body), 'and it still has to bust the cache');
+});
+
+// Nothing else in the app may push a history entry either — with no pushState
+// and no <a href>, location.replace leaves the back stack genuinely empty, so
+// iOS offers no swipe-back gesture at all. That is what makes the fix above
+// complete rather than a mitigation.
+test('the app creates no other history entries', () => {
+  const src = appSourceText();
+  notOk(/history\.(pushState|replaceState)/.test(src), 'no history manipulation');
+  notOk(/<a\s+href=/.test(src), 'no same-tab link navigation');
 });
