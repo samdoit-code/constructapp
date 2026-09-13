@@ -4235,20 +4235,50 @@
         (fotosByRef[key] = fotosByRef[key] || []).push({id:f.id, criadoEm:f.criadoEm, driveFileId:f.driveFileId, driveUrl:f.driveUrl, lastModified:f.lastModified});
       });
       // Every Notas row is standalone now — an entry's note arrives as the
-      // `nota` field of the entry itself. A legacy refTipo:'caixa'/'emp' row
-      // can only exist before the backend migration has run; it is skipped
-      // rather than shown, because after the migration the same text lives on
-      // the entry and showing both would read as a duplicate.
+      // `nota` field of the entry itself.
       const standaloneNotasRows = (data.notas||[]).filter(n => n.refTipo !== 'caixa' && n.refTipo !== 'emp');
+
+      // ...EXCEPT before the backend migration has run. In that window the
+      // server is still serving the old shared tabs, which have no `nota`
+      // column at all, while every entry note is still a refTipo:'caixa'/'emp'
+      // Notas row. Filtering those out and reading a column that does not
+      // exist yet made every existing entry note INVISIBLE — gone from the
+      // Detalhes modal and from the Notas feed at the same time. Nothing was
+      // lost (the rows are untouched on the server), but the app said
+      // otherwise, which is the one thing it must never do.
+      //
+      // So they are folded into the entry's nota for DISPLAY, in exactly the
+      // shape the migration will later write: oldest first, blank line
+      // between. Read-only and self-cancelling — these rows never enter
+      // computeNotasRows() or sheetSnapshot, so nothing here can rewrite or
+      // delete them, and once the migration folds them for real they stop
+      // existing and this map is empty forever after.
+      const legacyEntryNotas = {};
+      (data.notas||[]).forEach(n=>{
+        if(n.refTipo !== 'caixa' && n.refTipo !== 'emp') return;
+        const key = n.refTipo + '|' + n.refId;
+        (legacyEntryNotas[key] = legacyEntryNotas[key] || []).push(n);
+      });
+      const legacyNotaFor_ = (kind, id)=>{
+        const list = legacyEntryNotas[kind + '|' + id];
+        if(!list || !list.length) return '';
+        // noteTs_ for the same reason the feed uses it: a criadoEm read from a
+        // cell someone formatted as a date is a string, and subtracting two of
+        // those is NaN — a comparator that silently returns insertion order.
+        return list.slice().sort((a,b)=> noteTs_(a.criadoEm) - noteTs_(b.criadoEm))
+          .map(n=>String(n.texto||'').trim()).filter(Boolean).join('\n\n');
+      };
 
       caixaObra = (data.caixaObra||[]).map(r => ({
         id:r.id, projectId:r.projeto, nome:r.nome, tipo:r.tipo, qtd:r.qtd, unidade:r.unidade,
-        data:r.data, valor:r.valor, fornecedor:r.fornecedor, socio:r.socio, nota:r.nota||'',
+        data:r.data, valor:r.valor, fornecedor:r.fornecedor, socio:r.socio,
+        nota: r.nota || legacyNotaFor_('caixa', r.id),
         fotos: fotosByRef['caixa|'+r.id] || [], criadoEm:r.criadoEm, lastModified:r.lastModified,
       }));
       empreiteiro = (data.empreiteiro||[]).map(r => ({
         id:r.id, projectId:r.projeto, nome:r.nome, qtd:r.qtd, unidade:r.unidade,
-        data:r.data, valor:r.valor, fornecedor:r.fornecedor, socio:r.socio, nota:r.nota||'',
+        data:r.data, valor:r.valor, fornecedor:r.fornecedor, socio:r.socio,
+        nota: r.nota || legacyNotaFor_('emp', r.id),
         fotos: fotosByRef['emp|'+r.id] || [], criadoEm:r.criadoEm, lastModified:r.lastModified,
       }));
       tasks = (data.tarefas||[]).map(r => ({

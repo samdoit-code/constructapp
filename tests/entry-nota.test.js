@@ -140,6 +140,106 @@ test('a missing nota on a server row reads as empty, never undefined', () => {
 });
 
 // ---------------------------------------------------------------------------
+// The pre-migration window. Between the backend deploy and the moment the
+// migration is run, the server still serves the OLD shared tabs — which have
+// no `nota` column — while every entry note is still a refTipo:'caixa'/'emp'
+// Notas row. Reading a column that does not exist yet AND filtering those rows
+// out made every existing entry note invisible in both the Detalhes modal and
+// the Notas feed at once. Nothing was lost on the server, but the app said
+// otherwise, which is the failure mode it must never have.
+// ---------------------------------------------------------------------------
+function hydrate(data) {
+  const ctx = buildContext({
+    functions: ['applyServerData_', 'noteTs_'],
+    vars: {
+      caixaObra: [], empreiteiro: [], tasks: [], notes: [], documentos: [],
+      projectFotos: [], projects: [], tipos: [], unidades: [], socios: [],
+      sheetSnapshot: {}, lastSyncTime: 0, currentUser: null,
+    },
+    stubs: {
+      capturePendingRows_: () => [],
+      applyPendingRows_: () => {},
+      reapplyPendingUploads_: () => {},
+      rebuildSheetSnapshot_: () => {},
+      schedulePersistHydration_: () => {},
+      parseSociosCell_: () => [],
+      DEFAULT_TIPOS: [], DEFAULT_UNIDADES: [],
+    },
+  });
+  ctx.applyServerData_(data);
+  return ctx;
+}
+
+// A pre-migration payload: legacy tabs carry no `nota`, entry notes are rows.
+const PRE_MIGRATION = {
+  caixaObra: [{ id: 'e1', projeto: 'Obra A', nome: 'cimento', valor: 10, data: '2026-01-01', criadoEm: 1, lastModified: 1 }],
+  empreiteiro: [{ id: 'm1', projeto: 'Obra A', nome: 'medicao', valor: 90, data: '2026-01-02', criadoEm: 1, lastModified: 1 }],
+  notas: [
+    { id: 'n1', projeto: '', texto: 'primeira', criadoEm: 1000, refTipo: 'caixa', refId: 'e1', lastModified: 1 },
+    { id: 'n2', projeto: '', texto: 'segunda', criadoEm: 2000, refTipo: 'caixa', refId: 'e1', lastModified: 1 },
+    { id: 'n3', projeto: '', texto: 'da medicao', criadoEm: 3000, refTipo: 'emp', refId: 'm1', lastModified: 1 },
+    { id: 'n4', projeto: 'Obra A', texto: 'nota geral', criadoEm: 4000, refTipo: '', refId: '', lastModified: 1 },
+  ],
+  fotos: [], tarefas: [], documentos: [], projetos: [], tipos: [], unidades: [], socios: [],
+};
+
+test('BEFORE the migration, an existing entry note is still visible', () => {
+  const ctx = hydrate(JSON.parse(JSON.stringify(PRE_MIGRATION)));
+  equal(ctx.caixaObra[0].nota, 'primeira\n\nsegunda',
+    'a note that exists on the server must never be invisible in the app');
+  equal(ctx.empreiteiro[0].nota, 'da medicao');
+});
+
+test('the pre-migration fold matches what the migration will write', () => {
+  // Oldest first, blank line between — the same shape, so nothing appears to
+  // change when the migration finally runs for real.
+  const ctx = hydrate(JSON.parse(JSON.stringify(PRE_MIGRATION)));
+  equal(ctx.caixaObra[0].nota, 'primeira\n\nsegunda');
+});
+
+test('the standalone note is unaffected and still a real record', () => {
+  const ctx = hydrate(JSON.parse(JSON.stringify(PRE_MIGRATION)));
+  deepEqual(ctx.notes.map((n) => n.id), ['n4']);
+});
+
+test('legacy rows never become a second stored copy', () => {
+  // The fold is DISPLAY only. If these ever reached computeNotasRows they
+  // would be written back as rows the migration has already folded — the same
+  // text twice. sheetSnapshot never sees them, so nothing can delete them
+  // either; they stay untouched on the server until the migration folds them.
+  const ctx = hydrate(JSON.parse(JSON.stringify(PRE_MIGRATION)));
+  const rows = buildContext({
+    functions: ['computeNotasRows'],
+    vars: { notes: ctx.notes, caixaObra: ctx.caixaObra, empreiteiro: ctx.empreiteiro },
+    stubs: {},
+  }).computeNotasRows();
+  deepEqual(rows.map((r) => r.id), ['n4'],
+    'only the standalone note may be emitted as a Notas row');
+});
+
+test('AFTER the migration the fold is inert — the column wins', () => {
+  // No legacy rows exist any more, and an entry carries its own nota.
+  const ctx = hydrate({
+    caixaObra: [{ id: 'e1', projeto: 'Obra A', nome: 'cimento', nota: 'do servidor', valor: 10, criadoEm: 1, lastModified: 1 }],
+    empreiteiro: [], notas: [], fotos: [], tarefas: [], documentos: [],
+    projetos: [], tipos: [], unidades: [], socios: [],
+  });
+  equal(ctx.caixaObra[0].nota, 'do servidor');
+});
+
+test('a stale legacy row can never override a real nota column', () => {
+  // Belt and braces: if the migration somehow left a folded row behind, the
+  // entry's own column still wins, so the text cannot be shown twice.
+  const ctx = hydrate({
+    caixaObra: [{ id: 'e1', projeto: 'Obra A', nome: 'cimento', nota: 'coluna', valor: 10, criadoEm: 1, lastModified: 1 }],
+    empreiteiro: [],
+    notas: [{ id: 'n1', projeto: '', texto: 'linha antiga', criadoEm: 1, refTipo: 'caixa', refId: 'e1', lastModified: 1 }],
+    fotos: [], tarefas: [], documentos: [], projetos: [], tipos: [], unidades: [], socios: [],
+  });
+  equal(ctx.caixaObra[0].nota, 'coluna');
+});
+
+// ---------------------------------------------------------------------------
 // Source-level invariants. These are about the shape of the code rather than
 // one function's behaviour — cheaper and more durable than reconstructing the
 // whole Notas page in a vm, and they catch exactly the regressions that
