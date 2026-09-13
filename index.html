@@ -481,6 +481,59 @@
   .view-toggle button.active svg{stroke:var(--orange-dark);}
 
   .entry-table-wrap{background:var(--card); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); overflow:hidden;}
+
+  /* ---------- Spreadsheet view ----------
+     Deliberately spreadsheet-looking rather than app-looking: the whole point
+     is that it is recognisable to someone used to reading the Google Sheet.
+     Hence visible gridlines on every cell, a grey header band, column letters,
+     row numbers, and cells that look like cells until you focus one. */
+  .sheet-caption{font-family:'Oswald',sans-serif; font-size:var(--fs-meta); letter-spacing:.04em; text-transform:uppercase; color:var(--ink-soft); margin:0 0 6px 2px;}
+  .sheet-wrap{background:#fff; border:1px solid var(--line); border-radius:6px; box-shadow:var(--shadow); overflow:auto; max-height:70vh;}
+  .sheet-grid{border-collapse:separate; border-spacing:0; font-family:var(--num-font); font-size:var(--fs-meta); width:max-content; min-width:100%;}
+  .sheet-grid th, .sheet-grid td{border-right:1px solid #d9d9d9; border-bottom:1px solid #d9d9d9; padding:0; background:#fff;}
+  /* Both header rows stick, stacked, so the column names stay readable while
+     scrolling a long tab — exactly what a frozen header row does in Sheets. */
+  .sheet-grid thead th{position:sticky; background:#f1f1f0; font-weight:600; color:#444; text-align:center; padding:3px 6px; z-index:2;}
+  .sheet-grid tr.sh-letters th{top:0; font-size:var(--fs-eyebrow); color:#777; font-weight:500;}
+  .sheet-grid tr.sh-head th{top:22px; font-size:var(--fs-caption); letter-spacing:.01em;}
+  /* The row-number gutter is sticky horizontally too, so it stays put while
+     scrolling sideways through the columns. */
+  .sheet-grid .sh-rownum{position:sticky; left:0; z-index:3; background:#f1f1f0; color:#777; font-weight:500;
+    font-size:var(--fs-eyebrow); text-align:center; min-width:34px; padding:0 5px; border-right:1px solid #c4c4c4;}
+  .sheet-grid thead .sh-rownum{z-index:4;}
+  .sheet-grid tbody tr:hover td{background:#f8faff;}
+  /* A cell reads as a cell, not a form field: no border, no radius, inherits
+     the grid's own background — until it takes focus, when it gets the blue
+     ring a spreadsheet gives the active cell. */
+  .sheet-grid .sh-cell{border:0; outline:0; background:transparent; width:100%; min-width:0;
+    font:inherit; color:var(--ink); padding:4px 6px; border-radius:0; -webkit-appearance:none; appearance:none;}
+  .sheet-grid .sh-cell:focus{box-shadow:inset 0 0 0 2px var(--orange); background:#fff; position:relative; z-index:1;}
+  .sheet-grid .sh-cell:disabled{color:var(--ink-soft); -webkit-text-fill-color:var(--ink-soft); opacity:1;}
+  .sheet-grid select.sh-cell{padding-right:2px;}
+  /* Numbers right-aligned, text left — the alignment a spreadsheet applies by
+     type, and a strong part of why a grid reads as one at a glance. */
+  .sheet-grid .sh-valor, .sheet-grid .sh-qtd{text-align:right; font-variant-numeric:tabular-nums;}
+  .sheet-grid .sh-data{text-align:center;}
+  .sheet-grid .sh-nome{min-width:180px;}
+  .sheet-grid .sh-nota{min-width:160px;}
+  .sheet-grid .sh-fornecedor{min-width:130px;}
+  .sheet-grid .sh-valor{min-width:96px;}
+  .sheet-grid .sh-projeto, .sheet-grid .sh-socio, .sheet-grid .sh-tipo{min-width:110px;}
+  .sheet-grid .sh-qtd, .sheet-grid .sh-unidade{min-width:66px;}
+  .sheet-grid tr.sh-new td{background:#fcfcfa;}
+  .sheet-grid tr.sh-new .sh-rownum{color:#bbb;}
+  .sheet-grid .sh-del{text-align:center; background:#fafafa; border-right:0;}
+  .sheet-grid .sh-del button{border:0; background:transparent; color:var(--ink-soft); font-size:16px; line-height:1;
+    padding:3px 8px; cursor:pointer; border-radius:4px; touch-action:manipulation;}
+  .sheet-grid .sh-del button:hover{background:var(--danger-soft,#fde8e4); color:var(--danger,#c0392b);}
+  /* iOS zooms the page when a focused field is under 16px — so on touch the
+     cells go up to the no-zoom size even though it costs horizontal room.
+     A grid you have to pinch back out of after every cell is worse than a
+     wider one you scroll. */
+  @media (pointer:coarse){
+    .sheet-grid{font-size:var(--fs-title);}
+    .sheet-grid .sh-cell{padding:7px 8px;}
+  }
   /* Table view is the deliberately dense counterpart to the card view, so it
      gets a smaller step of the same ladder — never below the eyebrow floor. */
   .etr-header{display:flex; align-items:center; gap:7px; padding:9px 12px; background:var(--paper-2); font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-soft); border-bottom:1px solid var(--line);}
@@ -1279,6 +1332,12 @@
           </button>
           <button type="button" data-mode="table" title="Visualização em tabela" aria-label="Visualização em tabela">
             <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+          </button>
+          <!-- The spreadsheet view: the project's own tab, in the tab's own
+               column order, editable in place. Grid icon rather than rows, so
+               it reads as "the planilha" next to the two list views. -->
+          <button type="button" data-mode="sheet" title="Visualização em planilha" aria-label="Visualização em planilha">
+            <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M3 9h18M3 14.5h18M9 4v16M15 4v16"/></svg>
           </button>
         </div>
       </div>
@@ -2359,6 +2418,33 @@
   // Small reference lists — rarely edited concurrently, kept on the simple
   // whole-tab save rather than row-level tracking.
   const LEGACY_WHOLE_TAB_KEYS = new Set(['projects', 'tipos', 'unidades', 'socios']);
+
+  // The entry tabs' column order, as the BACKEND reports it (getAll's
+  // `schema`). The frontend deliberately hardcodes no column order anywhere —
+  // SHEETS[key].cols in Code.js is the single source of truth, and this view
+  // follows it. Persisted with the other reference lists so the spreadsheet
+  // view works offline; it can never be missing when there are entries to
+  // show, since both arrive in the same getAll.
+  let entrySchema = {caixaObra: [], empreiteiro: []};
+  // Machine fields. Never rendered and never editable: they are the app's
+  // bookkeeping, the user asked for them hidden, and `id` in particular is the
+  // handle every photo, and the sync engine's whole diff, depends on.
+  const SHEET_HIDDEN_COLS = new Set(['id', 'criadoEm', 'lastModified']);
+  function sheetColumns_(kind){
+    const cols = entrySchema[kind === 'caixa' ? 'caixaObra' : 'empreiteiro'] || [];
+    return cols.filter(c => !SHEET_HIDDEN_COLS.has(c));
+  }
+  // The spreadsheet column letter a field actually occupies — counted over the
+  // FULL schema, not the visible subset, so the letters match what the person
+  // sees in Google Sheets even though three columns are hidden here.
+  function sheetColLetter_(kind, field){
+    const cols = entrySchema[kind === 'caixa' ? 'caixaObra' : 'empreiteiro'] || [];
+    const i = cols.indexOf(field);
+    if(i < 0) return '';
+    let n = i + 1, out = '';
+    while(n > 0){ const r = (n - 1) % 26; out = String.fromCharCode(65 + r) + out; n = Math.floor((n - 1) / 26); }
+    return out;
+  }
 
   // Converts the app's in-memory shape into flat rows matching each tab's columns.
   // Nested photo arrays (.fotos on entries/tasks/notes) are NOT included here —
@@ -3907,7 +3993,7 @@
     if(!localDb) return;
     try{
       await idbTx_(['config'], 'readwrite', (s)=>{
-        s.config.put({projects, tipos, unidades, socios}, 'lists');
+        s.config.put({projects, tipos, unidades, socios, entrySchema}, 'lists');
         s.config.put(dirtyConfig, 'dirty');
       });
     }catch(e){ console.error('persist config failed', e); }
@@ -4000,6 +4086,7 @@
     tipos = (lists.tipos && lists.tipos.length) ? lists.tipos : DEFAULT_TIPOS.slice();
     unidades = (lists.unidades && lists.unidades.length) ? lists.unidades : DEFAULT_UNIDADES.slice();
     socios = lists.socios || [];
+    if(lists.entrySchema && lists.entrySchema.caixaObra) entrySchema = lists.entrySchema;
     dirtyConfig = dirty || {};
 
     caixaObra = []; empreiteiro = []; tasks = []; notes = []; documentos = []; projectFotos = [];
@@ -4304,6 +4391,9 @@
       // (see ensureSociosSchema_), so an empty list here means there genuinely
       // are no socios — a state the whole UI renders (no selector, no chips).
       socios = (data.socios||[]).map(s=>s.socio).filter(Boolean);
+      // Absent only when talking to a backend that predates the spreadsheet
+      // view; keep whatever we already had rather than blanking the view.
+      if(data.schema && data.schema.caixaObra) entrySchema = data.schema;
 
       // Seed the diff snapshot from what we just loaded, so the very next save
       // only sends whatever actually changes from here — and so conflict checks
@@ -5247,7 +5337,14 @@
   // ---------- Lançamentos ----------
   const ENTRIES_PAGE_SIZE = 60;
   let entriesPage = 1;
-  let entriesViewMode = 'card';
+  // Persisted like the sort mode, and for the same reason: which view someone
+  // reads their lançamentos in is a standing preference, not a per-visit
+  // choice. Someone who works in the spreadsheet view should not have to
+  // re-pick it on every launch. localStorage (not the account database)
+  // because it is a personal display setting, read at render time.
+  const ENTRY_VIEW_MODES = new Set(['card', 'table', 'sheet']);
+  let entriesViewMode = ENTRY_VIEW_MODES.has(localStorage.getItem('cmoreira_entriesView'))
+    ? localStorage.getItem('cmoreira_entriesView') : 'card';
   let entrySortMode = localStorage.getItem('cmoreira_sortMode') || 'recent';
   function applyEntrySort(list){
     // __sheetIdx (ascending) is the tiebreaker throughout — it reflects the
@@ -5288,10 +5385,15 @@
   $('#entriesViewToggle').querySelectorAll('button[data-mode]').forEach(btn=>{
     btn.addEventListener('click', ()=>{
       entriesViewMode = btn.dataset.mode;
+      try{ localStorage.setItem('cmoreira_entriesView', entriesViewMode); }catch(e){}
       $('#entriesViewToggle').querySelectorAll('button[data-mode]').forEach(b=>b.classList.toggle('active', b===btn));
+      entriesPage = 1;   // the grid's row numbers must start from the top of a fresh page
       renderEntries();
     });
   });
+
+  $('#entriesViewToggle').querySelectorAll('button[data-mode]')
+    .forEach(b=>b.classList.toggle('active', b.dataset.mode === entriesViewMode));
 
   $('#sortSelect').value = entrySortMode;
   $('#sortSelect').addEventListener('change', (e)=>{
@@ -5438,6 +5540,12 @@
   function renderEntries(){
     const view = document.getElementById('view-entries');
     if(!view || !view.classList.contains('active')) return; // switchView() re-renders fresh on entry, so this is safe to skip otherwise
+    // Never rebuild the spreadsheet grid out from under someone typing in it.
+    // A re-render replaces the focused <input>, so the caret vanishes mid-word
+    // and the rest of the keystrokes land nowhere — the same class of bug as
+    // renderAll() re-bucketing a task row under a finger. Deferred instead;
+    // scheduleSheetSettle_ re-runs it once focus has genuinely left.
+    if(entriesViewMode === 'sheet' && sheetHasFocus_()){ scheduleSheetSettle_(); return; }
     populateEntryFilters();
     const src = entriesKind === 'caixa' ? caixaObra : empreiteiro;
     const idxById = new Map(src.map((e,i)=>[e.id, i]));
@@ -5464,6 +5572,10 @@
     const box = $('#entriesList');
     if(list.length === 0){
       const hasFilters = searchTerm || filters.fornecedor || filters.tipo || filters.socio || filters.de || filters.ate;
+      // An empty tab is still a tab: the spreadsheet view renders its header
+      // and its blank first row, so a brand-new project can be typed into
+      // straight away rather than showing a dead end.
+      if(entriesViewMode === 'sheet' && !hasFilters){ renderEntrySheet_(box, [], entriesKind, ''); return; }
       box.innerHTML = emptyStateHTML(hasFilters ? 'Nenhum resultado encontrado.' : 'Nenhum lançamento ainda.', hasFilters ? 'Tente ajustar a busca ou os filtros.' : 'Toque em "Adicionar" para começar.');
       return;
     }
@@ -5476,6 +5588,12 @@
       ? `<button class="btn btn-ghost btn-block" id="loadMoreEntriesBtn" style="margin-top:10px;">Carregar mais (${list.length - visibleCount} restantes)</button>`
       : '';
 
+    if(entriesViewMode === 'sheet'){
+      renderEntrySheet_(box, visible, entriesKind, loadMoreHTML);
+      const lm = $('#loadMoreEntriesBtn');
+      if(lm) lm.addEventListener('click', ()=>{ entriesPage += 1; renderEntries(); });
+      return;   // the grid wires its own handlers; card handlers would double-bind
+    }
     if(entriesViewMode === 'table'){
       const header = `<div class="etr-header"><span class="etr-date">Data</span><span class="etr-name">Nome</span><span class="etr-und">Qtd/Und</span><span class="etr-forn">Fornecedor</span><span class="etr-valor">Valor</span></div>`;
       box.innerHTML = `<div class="entry-table-wrap">${header}${visible.map(entryTableRowHTML).join('')}</div>${loadMoreHTML}`;
@@ -5490,6 +5608,298 @@
         renderEntries();
       });
     }
+  }
+
+  // ---------- Spreadsheet view (editable) ----------
+  // Renders ONE project tab exactly as the spreadsheet lays it out — the tab's
+  // own column order, its column letters, its header names — and lets a cell
+  // be typed into directly.
+  //
+  // Three things make this cheap and safe rather than a second write path:
+  //  1. The column order comes from the BACKEND (entrySchema). Nothing here
+  //     knows or asserts where a column sits, so the view follows a schema
+  //     change for free and there is still one source of truth.
+  //  2. Every cell is a NATIVE <input>/<select>. Tab order, focus rings and
+  //     keyboard selection then come from the browser rather than from a
+  //     hand-rolled grid — which is most of what makes a grid feel like Excel.
+  //  3. A commit is the ordinary optimistic write every other surface uses:
+  //     mutate the record, call saveKey. Conflict detection, offline
+  //     durability and retry are inherited, not rebuilt.
+  //
+  // The machine columns (id/criadoEm/lastModified) are never rendered — see
+  // SHEET_HIDDEN_COLS. `id` especially: it is the handle every photo and the
+  // entire diff engine depend on, and nothing should be able to type over it.
+  const SHEET_NUMERIC_COLS = new Set(['valor', 'qtd']);
+
+  // Which sócios this row may name. Same rule as syncSocioField: the project's
+  // current assignment PLUS whatever this entry already says, so correcting a
+  // typo on an old lançamento can never silently re-credit the payment to
+  // someone else just because the original payer was unassigned since.
+  function sheetSocioOptions_(entry){
+    const proj = projects.find(p => p.id === entry.projectId);
+    const list = proj ? resolvedProjectSocios_(proj).slice() : [];
+    const own = String(entry.socio || '').trim();
+    if(own && !list.some(s => normSearch(s) === normSearch(own))) list.unshift(own);
+    return list;
+  }
+
+  function sheetCellHTML_(entry, col, kind, canEdit){
+    const val = entry[col] === undefined || entry[col] === null ? '' : entry[col];
+    const ro = canEdit ? '' : ' disabled';
+    const common = `data-id="${escapeHTML(entry.id)}" data-col="${col}" class="sh-cell sh-${col}"`;
+    if(col === 'data'){
+      return `<td><input type="date" ${common} value="${escapeHTML(String(val))}"${ro}></td>`;
+    }
+    if(col === 'projeto'){
+      // A select, never free text: a typed project name that matches nothing
+      // would strand the row in the "Sem projeto" tab. Changing it genuinely
+      // MOVES the row to another project's tab (applyBatch_ handles that as a
+      // move, not a copy), which is why it is a deliberate pick from a list.
+      const opts = projects.map(p =>
+        `<option value="${escapeHTML(p.id)}"${p.id === entry.projectId ? ' selected' : ''}>${escapeHTML(p.name)}</option>`).join('');
+      return `<td><select ${common}${ro}>${opts}</select></td>`;
+    }
+    if(col === 'socio'){
+      const opts = ['<option value="">—</option>'].concat(sheetSocioOptions_(entry).map(sName =>
+        `<option value="${escapeHTML(sName)}"${normSearch(sName) === normSearch(val) ? ' selected' : ''}>${escapeHTML(toDisplayCase(sName))}</option>`)).join('');
+      return `<td><select ${common}${ro}>${opts}</select></td>`;
+    }
+    if(col === 'tipo' || col === 'unidade'){
+      // Free text with suggestions, matching the Adicionar form — a new tipo
+      // is a legitimate thing to type, and the reference list is a shortcut
+      // rather than a constraint.
+      return `<td><input type="text" ${common} list="shlist-${col}" value="${escapeHTML(String(val))}"${ro}></td>`;
+    }
+    if(SHEET_NUMERIC_COLS.has(col)){
+      // Deliberately type="text", not type="number": the value has to go
+      // through parseDecimalBR on commit (a pt-BR "1.500" is one thousand five
+      // hundred, and reading it as 1.5 writes a thousandth of the real amount
+      // into the books — the one defect in this app that could silently
+      // corrupt a financial record). inputmode gets the numeric keypad on iOS
+      // without handing parsing to the browser's own locale rules.
+      const shown = col === 'valor' && val !== '' ? fmtNumBR_(val) : String(val);
+      return `<td><input type="text" inputmode="decimal" ${common} value="${escapeHTML(shown)}"${ro}></td>`;
+    }
+    return `<td><input type="text" ${common} value="${escapeHTML(String(val))}"${ro}></td>`;
+  }
+
+  // Plain pt-BR number for display in a cell — no currency symbol, because the
+  // spreadsheet's own valor column has none either.
+  function fmtNumBR_(n){
+    const num = Number(n);
+    if(isNaN(num)) return String(n);
+    return num.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  }
+
+  function renderEntrySheet_(box, visible, kind, loadMoreHTML){
+    const cols = sheetColumns_(kind);
+    if(!cols.length){
+      box.innerHTML = emptyStateHTML('Planilha indisponível.', 'Sincronize uma vez para carregar o formato da planilha.');
+      return;
+    }
+    const canEdit = canSection('lancamentos', 'edit');
+    const canDelete = canSection('lancamentos', 'delete');
+    const canCreate = canSection('lancamentos', 'create');
+    const tabName = projName(activeProjectId) + (kind === 'caixa' ? ' - CaixaObra' : ' - Empreiteiro');
+
+    // Column letters over the FULL schema, so they match the real spreadsheet
+    // even though three columns are hidden here.
+    const letterRow = `<tr class="sh-letters"><th class="sh-rownum"></th>${
+      cols.map(c => `<th>${sheetColLetter_(kind, c)}</th>`).join('')}${canDelete ? '<th></th>' : ''}</tr>`;
+    // The header names exactly as the sheet's own header row reads them.
+    const headRow = `<tr class="sh-head"><th class="sh-rownum">1</th>${
+      cols.map(c => `<th>${escapeHTML(c)}</th>`).join('')}${canDelete ? '<th></th>' : ''}</tr>`;
+
+    const body = visible.map((e, i) => `<tr data-row-id="${escapeHTML(e.id)}">
+      <th class="sh-rownum">${i + 2}</th>
+      ${cols.map(c => sheetCellHTML_(e, c, kind, canEdit)).join('')}
+      ${canDelete ? `<td class="sh-del"><button type="button" data-sh-del="${escapeHTML(e.id)}" title="Excluir linha" aria-label="Excluir linha">×</button></td>` : ''}
+    </tr>`).join('');
+
+    // The blank row at the bottom, exactly like a spreadsheet: type in it and
+    // it becomes a real lançamento. It is not a record until something is
+    // typed, so nothing is minted just by looking at the page.
+    const newRow = canCreate ? `<tr class="sh-new" data-row-id="">
+      <th class="sh-rownum">${visible.length + 2}</th>
+      ${cols.map(c => `<td><input type="text" class="sh-cell sh-new-cell" data-col="${c}" ${c === 'data' ? 'placeholder="aaaa-mm-dd"' : ''}></td>`).join('')}
+      ${canDelete ? '<td class="sh-del"></td>' : ''}
+    </tr>` : '';
+
+    const datalists = `<datalist id="shlist-tipo">${tipos.map(t=>`<option value="${escapeHTML(t)}"></option>`).join('')}</datalist>
+      <datalist id="shlist-unidade">${unidades.map(u=>`<option value="${escapeHTML(u)}"></option>`).join('')}</datalist>`;
+
+    box.innerHTML = `${datalists}
+      <div class="sheet-caption">${escapeHTML(tabName)}</div>
+      <div class="sheet-wrap"><table class="sheet-grid">
+        <thead>${letterRow}${headRow}</thead>
+        <tbody>${body}${newRow}</tbody>
+      </table></div>${loadMoreHTML}`;
+
+    attachSheetHandlers_(box, kind, cols);
+  }
+
+  // A re-render while someone is typing would destroy the focused input and
+  // drop the cursor — the same hazard renderAll() has on a checkbox burst, and
+  // the reason the notes composer defers its own reflow. renderEntries() bails
+  // when focus is inside the grid; this flag is what it checks.
+  function sheetHasFocus_(){
+    const el = document.activeElement;
+    return !!(el && el.closest && el.closest('.sheet-grid'));
+  }
+
+  function attachSheetHandlers_(box, kind, cols){
+    const listKey = kind === 'caixa' ? 'caixaObra' : 'empreiteiro';
+
+    // Commit on `change` (fires on blur or Enter) rather than on every
+    // keystroke — one sync per finished edit, not one per character.
+    box.querySelectorAll('.sh-cell:not(.sh-new-cell)').forEach(inp=>{
+      inp.addEventListener('change', ()=> commitSheetCell_(inp, kind, listKey));
+    });
+
+    // Enter moves DOWN the column, as a spreadsheet does; Tab already moves
+    // across for free because these are real inputs in document order.
+    box.querySelectorAll('.sh-cell').forEach(inp=>{
+      inp.addEventListener('keydown', (ev)=>{
+        if(ev.key !== 'Enter') return;
+        ev.preventDefault();
+        inp.blur();  // commit first
+        const col = inp.dataset.col;
+        const row = inp.closest('tr');
+        const next = row && row.nextElementSibling;
+        const target = next && next.querySelector(`[data-col="${col}"]`);
+        if(target) target.focus();
+      });
+    });
+
+    box.querySelectorAll('.sh-new-cell').forEach(inp=>{
+      inp.addEventListener('change', ()=> commitSheetNewRow_(box, kind, listKey, cols));
+    });
+
+    box.querySelectorAll('[data-sh-del]').forEach(btn=>{
+      btn.addEventListener('click', withGuard(async ()=>{
+        const id = btn.dataset.shDel;
+        const list = listKey === 'caixaObra' ? caixaObra : empreiteiro;
+        const target = list.find(x=>x.id === id);
+        if(!target) return;
+        const ok = await showConfirm('Excluir esta linha? Essa ação não pode ser desfeita.', {title:'Excluir lançamento', okLabel:'Excluir'});
+        if(!ok) return;
+        // Photos FIRST, while the row still exists — the server authorizes a
+        // photo through its parent, so deleting the parent first strands the
+        // Drive file. Same ordering the detail modal's delete follows.
+        await deletePhotoBlobs(target.fotos);
+        if(listKey === 'caixaObra') caixaObra = caixaObra.filter(x=>x.id !== id);
+        else empreiteiro = empreiteiro.filter(x=>x.id !== id);
+        renderAll();
+        showToast('Lançamento excluído.');
+        await saveKey(listKey, listKey === 'caixaObra' ? caixaObra : empreiteiro);
+      }));
+    });
+  }
+
+  // Reads one cell back into its record. Returns false (and restores the
+  // displayed value) when the typed text is not a usable value, so a slip
+  // never writes a wrong number silently.
+  function commitSheetCell_(inp, kind, listKey){
+    const id = inp.dataset.id;
+    const col = inp.dataset.col;
+    const list = listKey === 'caixaObra' ? caixaObra : empreiteiro;
+    const entry = list.find(x=>x.id === id);
+    if(!entry) return;
+
+    const raw = String(inp.value);
+    let next;
+    if(SHEET_NUMERIC_COLS.has(col)){
+      if(raw.trim() === ''){
+        // valor is the one field an entry cannot be without; qtd legitimately can.
+        if(col === 'valor'){ inp.value = fmtNumBR_(entry.valor); showToast('O valor não pode ficar vazio.'); return; }
+        next = '';
+      } else {
+        const n = parseDecimalBR(raw);
+        if(isNaN(n)){
+          inp.value = col === 'valor' ? fmtNumBR_(entry.valor) : String(entry.qtd || '');
+          showToast('Número inválido. Use 1.500,00 ou 1500,00.', false, 4000);
+          return;
+        }
+        next = n;
+      }
+    } else if(col === 'projeto'){
+      next = raw;                       // a select — always a real project id
+    } else if(col === 'nome' || col === 'fornecedor'){
+      next = normStore(raw);            // same normalization the Adicionar form applies
+    } else {
+      next = raw.trim();
+    }
+
+    const field = col === 'projeto' ? 'projectId' : col;
+    if(String(entry[field] === undefined ? '' : entry[field]) === String(next)) return; // nothing actually changed
+    entry[field] = next;
+
+    // Re-display the stored value so the cell shows what was actually saved
+    // (a typed "1500" becomes "1.500,00"), which is also the confirmation that
+    // the number was read the way the user meant it.
+    if(col === 'valor') inp.value = fmtNumBR_(next);
+
+    // Paint before persisting, like every other write path. renderAll() is
+    // deliberately NOT called here: it would rebuild the grid and throw away
+    // the focus the user is still moving through. The totals strip is the one
+    // thing that must follow a valor edit, so it is patched directly.
+    if(col === 'valor' || col === 'projeto') scheduleSheetSettle_();
+    saveKey(listKey, list);
+  }
+
+  // A full re-render is deferred until the user has actually stopped editing —
+  // the same trailing-settle discipline the task checkbox uses, for the same
+  // reason: anything that rebuilds the list mid-burst moves the target out
+  // from under the next keystroke.
+  let sheetSettleTimer_ = null;
+  function scheduleSheetSettle_(){
+    if(sheetSettleTimer_) clearTimeout(sheetSettleTimer_);
+    sheetSettleTimer_ = setTimeout(()=>{
+      sheetSettleTimer_ = null;
+      if(sheetHasFocus_()) { scheduleSheetSettle_(); return; } // still typing — wait
+      renderAll();
+    }, 900);
+  }
+
+  // The blank bottom row becomes a real lançamento on the first committed
+  // cell. Requires the two fields an entry cannot exist without; until both
+  // are present the typing is held in the row itself and nothing is minted.
+  function commitSheetNewRow_(box, kind, listKey, cols){
+    const row = box.querySelector('tr.sh-new');
+    if(!row) return;
+    const get = (c)=>{
+      const el = row.querySelector(`[data-col="${c}"]`);
+      return el ? String(el.value).trim() : '';
+    };
+    const nome = get('nome');
+    const valorRaw = get('valor');
+    if(!nome || !valorRaw) return;            // not enough to be a record yet
+    const valor = parseDecimalBR(valorRaw);
+    if(isNaN(valor)){ showToast('Número inválido. Use 1.500,00 ou 1500,00.', false, 4000); return; }
+    const qtdRaw = get('qtd');
+    const qtd = qtdRaw ? parseDecimalBR(qtdRaw) : '';
+
+    const entry = {
+      id: uid('e'),
+      projectId: get('projeto') || activeProjectId,
+      criadoEm: Date.now(),
+      nome: normStore(nome),
+      qtd: (qtd === '' || isNaN(qtd)) ? '' : qtd,
+      unidade: get('unidade'),
+      data: get('data') || todayStr(),
+      valor,
+      fornecedor: normStore(get('fornecedor')),
+      nota: get('nota'),
+      socio: get('socio'),
+      fotos: [],
+    };
+    if(kind === 'caixa') entry.tipo = get('tipo');
+
+    if(listKey === 'caixaObra') caixaObra.push(entry);
+    else empreiteiro.push(entry);
+    renderAll();
+    showToast('Lançamento salvo.');
+    saveKey(listKey, listKey === 'caixaObra' ? caixaObra : empreiteiro);
   }
 
   // ---------- Autocomplete ----------

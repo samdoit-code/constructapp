@@ -2804,6 +2804,17 @@ function doPost(e) {
 
       const out = { currentUser: user };
       Object.keys(SHEETS).forEach(key => { out[key] = readSheet_(key); });
+      // The entry tabs' column ORDER, sent so the frontend's spreadsheet view
+      // can render the tab exactly as the spreadsheet lays it out WITHOUT
+      // hardcoding that order a second time. SHEETS[key].cols stays the single
+      // source of truth (see the column-order rule in CLAUDE.md §3): reorder a
+      // column here and the view follows it with no frontend change at all.
+      // Not a sheet key, so filterAllByAccess_ leaves it alone — and it
+      // carries no data, only field names the client already receives.
+      out.schema = {
+        caixaObra: SHEETS.caixaObra.cols.slice(),
+        empreiteiro: SHEETS.empreiteiro.cols.slice(),
+      };
       return jsonOut_(filterAllByAccess_(user, out));
     }
 
