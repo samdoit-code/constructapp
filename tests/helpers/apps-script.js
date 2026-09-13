@@ -54,6 +54,7 @@ function makeSheet(name, header, rows, sheetId) {
     insertColumnBefore: (c) => { data.forEach((row) => row.splice(c - 1, 0, '')); },
     insertColumnsAfter: (afterCol, n) => { data.forEach((row) => { for (let i = 0; i < n; i++) row.splice(afterCol + i, 0, ''); }); },
     getRange(r, c, nr, nc) {
+      self._rangeCalls = (self._rangeCalls || 0) + 1;
       const rowCount = nr == null ? 1 : nr;
       const colCount = nc == null ? 1 : nc;
       const cell = (i, j) => {

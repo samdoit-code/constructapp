@@ -1374,9 +1374,60 @@ function backfillPartitionMetadata_(sheet, cfg, key, projeto) {
   });
   if (!Object.keys(cols).length) return;
 
-  // The full width is read only to tell a real row from a physically blank
-  // one — a blank row must NOT be given an id, which is exactly how a cleared
-  // row becomes a permanent phantom record.
+  // CHEAP GATE, and the reason this function is affordable at all on a
+  // thousand-row tab. This used to read the FULL WIDTH of the tab plus one
+  // full column PER FIELD, unconditionally, on every single getAll — five
+  // range reads (and up to four writes) per tab, times every entry tab in
+  // the spreadsheet, inside the write lock, on every boot/background sync/
+  // foreground refresh. On a ~1,400-row project tab that is slow enough to
+  // make a sync feel hung and to blow past LockService's 15s wait for
+  // whoever else is trying to write at the same time — a real production
+  // regression, not a theoretical one.
+  //
+  // `id` and `lastModified` are the two fields that are NEVER blank on a row
+  // this app (or onEdit) has ever touched: id/criadoEm are stamped together
+  // at creation, and onEdit unconditionally refreshes lastModified on every
+  // edit regardless of what changed. So reading just those two columns is
+  // enough to tell "nothing to do here" from "this row needs a closer look" —
+  // and the common case, every tab on every load once its rows have been
+  // touched once, costs exactly two narrow reads and zero writes.
+  if (cols.id && cols.lastModified) {
+    const idVals = sheet.getRange(2, cols.id, nRows, 1).getValues();
+    const lmVals = sheet.getRange(2, cols.lastModified, nRows, 1).getValues();
+    const blank = function (v) { return v === '' || v === null || v === undefined; };
+    const candidates = [];
+    for (let i = 0; i < nRows; i++) {
+      if (blank(idVals[i][0]) || blank(lmVals[i][0])) candidates.push(i);
+    }
+    if (!candidates.length) return; // the overwhelmingly common case
+
+    // Only the rows actually missing something get the expensive full-width
+    // check (to tell a real hand-typed row from a physically blank one) and
+    // a targeted per-row write — never the whole tab.
+    const now = Date.now();
+    const width = Math.max(cfg.cols.length, sheet.getLastColumn());
+    candidates.forEach(function (i) {
+      const rowNum = 2 + i;
+      const rowVals = sheet.getRange(rowNum, 1, 1, width).getValues()[0];
+      const isRowBlank = !rowVals.some(function (v) { return v !== '' && v !== null && v !== undefined; });
+      if (isRowBlank) return; // a cleared row, not a record — never mint an id for it
+      Object.keys(cols).forEach(function (field) {
+        const col = cols[field];
+        const cur = rowVals[col - 1];
+        if (cur !== '' && cur !== null && cur !== undefined) return; // only fill blanks
+        let val;
+        if (field === 'id') val = uid_(key);
+        else if (field === 'projeto') { if (!projeto) return; val = projeto; }
+        else val = now; // criadoEm / lastModified
+        sheet.getRange(rowNum, col).setValue(val);
+      });
+    });
+    return;
+  }
+
+  // Fallback for a schema shape with no id or no lastModified column at all
+  // (none of today's sheets — every one has both). Same full-scan behaviour
+  // the gate above exists to avoid in the common case.
   const width = Math.max(cfg.cols.length, sheet.getLastColumn());
   const all = sheet.getRange(2, 1, nRows, width).getValues();
   const isBlank = all.map(function (row) {

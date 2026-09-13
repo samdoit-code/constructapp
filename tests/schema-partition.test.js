@@ -277,6 +277,78 @@ test('an unplaceable row refuses the WHOLE batch, leaving nothing half-applied',
 });
 
 // ---------------------------------------------------------------------------
+// Performance: backfillRowMetadata_ must be cheap on a large, already-clean
+// tab. This is a real production regression, not a hypothetical one — the
+// original version read the FULL WIDTH of every entry tab plus one full
+// column PER FIELD, unconditionally, on every single getAll (five range
+// reads per tab, inside the write lock), which on a ~1,400-row project made
+// sync feel hung and pushed other requests into "Servidor ocupado" retries.
+// ---------------------------------------------------------------------------
+test('getAll on already-backfilled tabs costs a small, bounded number of range calls', () => {
+  // The mock counts ROUND TRIPS, not bytes — it cannot show the difference a
+  // full-width read of a 1,400-row tab makes on the real Sheets API. What it
+  // CAN show, and what actually distinguishes the fixed code from the
+  // regression, is call COUNT: the original backfill made 5 range calls per
+  // tab (a full-width scan plus one read per field) regardless of whether
+  // anything needed backfilling; the fast gate makes 2. Two already-clean
+  // tabs make the gap wide enough to tell apart reliably (new: 3+3=6 total
+  // including the data read each tab still needs; old: 6+6=12).
+  const caixa = [];
+  const emp = [];
+  for (let i = 0; i < 1400; i++) {
+    caixa.push(caixaRow({
+      id: 'r' + i, projeto: 'Obra A', nome: 'item ' + i, valor: 10, data: '2026-01-01',
+      criadoEm: 1700000000000 + i, lastModified: 1700000000000 + i,
+    }));
+  }
+  for (let i = 0; i < 500; i++) {
+    emp.push(empRow({
+      id: 'm' + i, projeto: 'Obra A', nome: 'medicao ' + i, valor: 5, data: '2026-01-01',
+      criadoEm: 1700000000000 + i, lastModified: 1700000000000 + i,
+    }));
+  }
+  const sb = createSandbox({
+    tokens: TOKENS, usuarios: USUARIOS, papeis: PAPEIS(),
+    sheets: partitionedSheets({ entries: { 'Obra A': { caixa, emp } } }),
+  });
+  const caixaSheet = sb.sheet('Obra A - CaixaObra');
+  const empSheet = sb.sheet('Obra A - Empreiteiro');
+  caixaSheet._rangeCalls = 0;
+  empSheet._rangeCalls = 0;
+
+  sb.post({ idToken: 'tok-admin', action: 'getAll' });
+
+  const total = caixaSheet._rangeCalls + empSheet._rangeCalls;
+  ok(total < 10,
+    `backfillRowMetadata_ + readSheet_ made ${total} range calls across two already-clean tabs ` +
+    '(caixa=' + caixaSheet._rangeCalls + ', emp=' + empSheet._rangeCalls + ') — ' +
+    'the original full-tab scan made 12 here and made sync feel hung at real-world row counts');
+});
+
+test('a hand-typed row is still found and stamped even on a large tab', () => {
+  // The fast gate must not trade away correctness for speed: a real blank-id
+  // row still gets backfilled, however large the rest of the tab is.
+  const rows = [];
+  for (let i = 0; i < 500; i++) {
+    rows.push(caixaRow({
+      id: 'r' + i, projeto: 'Obra A', nome: 'item ' + i, valor: 10, data: '2026-01-01',
+      criadoEm: 1, lastModified: 1,
+    }));
+  }
+  rows.push(caixaRow({ nome: 'tijolo', valor: 500, data: '2026-06-01' })); // hand-typed, all machine fields blank
+  const sb = createSandbox({
+    tokens: TOKENS, usuarios: USUARIOS, papeis: PAPEIS(),
+    sheets: partitionedSheets({ entries: { 'Obra A': { caixa: rows, emp: [] } } }),
+  });
+
+  const res = sb.post({ idToken: 'tok-admin', action: 'getAll' });
+  const found = res.caixaObra.find((r) => r.nome === 'tijolo');
+  ok(found, 'the hand-typed row is still visible');
+  ok(found.id && found.criadoEm && found.lastModified && found.projeto === 'Obra A',
+    JSON.stringify(found));
+});
+
+// ---------------------------------------------------------------------------
 // The nota column
 // ---------------------------------------------------------------------------
 test('nota round-trips on the entry row, and is cleared by an explicit empty', () => {
