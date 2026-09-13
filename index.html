@@ -63,7 +63,14 @@
   *{box-sizing:border-box; -webkit-tap-highlight-color: transparent;}
   html,body{margin:0;padding:0; height:100%; overflow:hidden; overscroll-behavior:none; background:var(--ink);}
   #appScroll{
-    position:fixed; inset:0; overflow-y:auto; -webkit-overflow-scrolling:touch; overscroll-behavior-y:none;
+    /* overflow-x:hidden is load-bearing for the spreadsheet view: the grid's
+       table is width:max-content and wider than the viewport, and without an
+       explicit x-axis rule here the PAGE itself becomes horizontally
+       draggable (overflow-y:auto alone leaves overflow-x at its default,
+       visible) — dragging it reveals blank canvas to the left of x:0. The
+       grid's own .sheet-wrap still scrolls sideways on its own, which is the
+       only horizontal drag that should exist. */
+    position:fixed; inset:0; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:touch; overscroll-behavior-y:none;
     background:
       linear-gradient(var(--paper), var(--paper)),
       repeating-linear-gradient(0deg, rgba(44,92,115,0.035) 0px, rgba(44,92,115,0.035) 1px, transparent 1px, transparent 40px),
@@ -488,7 +495,7 @@
      Hence visible gridlines on every cell, a grey header band, column letters,
      row numbers, and cells that look like cells until you focus one. */
   .sheet-caption{font-family:'Oswald',sans-serif; font-size:var(--fs-meta); letter-spacing:.04em; text-transform:uppercase; color:var(--ink-soft); margin:0 0 6px 2px;}
-  .sheet-wrap{background:#fff; border:1px solid var(--line); border-radius:6px; box-shadow:var(--shadow); overflow:auto; max-height:70vh;}
+  .sheet-wrap{background:#fff; border:1px solid var(--line); border-radius:6px; box-shadow:var(--shadow); overflow:auto; max-height:70vh; overscroll-behavior-x:contain;}
   .sheet-grid{border-collapse:separate; border-spacing:0; font-family:var(--num-font); font-size:var(--fs-meta); width:max-content; min-width:100%;}
   .sheet-grid th, .sheet-grid td{border-right:1px solid #d9d9d9; border-bottom:1px solid #d9d9d9; padding:0; background:#fff;}
   /* Both header rows stick, stacked, so the column names stay readable while
@@ -514,12 +521,10 @@
      type, and a strong part of why a grid reads as one at a glance. */
   .sheet-grid .sh-valor, .sheet-grid .sh-qtd{text-align:right; font-variant-numeric:tabular-nums;}
   .sheet-grid .sh-data{text-align:center;}
-  .sheet-grid .sh-nome{min-width:180px;}
-  .sheet-grid .sh-nota{min-width:160px;}
-  .sheet-grid .sh-fornecedor{min-width:130px;}
-  .sheet-grid .sh-valor{min-width:96px;}
-  .sheet-grid .sh-projeto, .sheet-grid .sh-socio, .sheet-grid .sh-tipo{min-width:110px;}
-  .sheet-grid .sh-qtd, .sheet-grid .sh-unidade{min-width:66px;}
+  /* Column widths are no longer fixed per field here — a <colgroup> sized to
+     what's actually in the tab (see sheetColWidthCh_) replaces the old flat
+     min-widths, which forced every "unidade"/"qtd" column to the same width
+     as "nome" regardless of what either actually held. */
   .sheet-grid tr.sh-new td{background:#fcfcfa;}
   .sheet-grid tr.sh-new .sh-rownum{color:#bbb;}
   .sheet-grid .sh-del{text-align:center; background:#fafafa; border-right:0;}
@@ -5554,7 +5559,13 @@
     // than criadoEm — which isn't meaningful for rows typed directly into the
     // sheet, since those all get stamped with roughly the same read-time value.
     let list = projEntries(src).map(e=>({...e, kind: entriesKind, __sheetIdx: idxById.get(e.id)}));
-    applyEntrySort(list);
+    // The spreadsheet view must always read in the sheet's OWN row order,
+    // regardless of the general Lançamentos sort preference — sorting it any
+    // other way would make the row numbers and the blank bottom row lie about
+    // what the actual tab looks like.
+    if(entriesViewMode === 'sheet') list.sort((a,b)=> a.__sheetIdx - b.__sheetIdx);
+    else applyEntrySort(list);
+    const hasFilters = !!(searchTerm || filters.fornecedor || filters.tipo || filters.socio || filters.de || filters.ate);
     if(searchTerm){
       list = list.filter(e =>
         normSearch(e.nome).includes(searchTerm) ||
@@ -5571,11 +5582,10 @@
     $('#filteredTotal').textContent = fmtBRLFull(totalOf(list));
     const box = $('#entriesList');
     if(list.length === 0){
-      const hasFilters = searchTerm || filters.fornecedor || filters.tipo || filters.socio || filters.de || filters.ate;
       // An empty tab is still a tab: the spreadsheet view renders its header
       // and its blank first row, so a brand-new project can be typed into
       // straight away rather than showing a dead end.
-      if(entriesViewMode === 'sheet' && !hasFilters){ renderEntrySheet_(box, [], entriesKind, ''); return; }
+      if(entriesViewMode === 'sheet' && !hasFilters){ renderEntrySheet_(box, [], entriesKind, '', true); return; }
       box.innerHTML = emptyStateHTML(hasFilters ? 'Nenhum resultado encontrado.' : 'Nenhum lançamento ainda.', hasFilters ? 'Tente ajustar a busca ou os filtros.' : 'Toque em "Adicionar" para começar.');
       return;
     }
@@ -5584,14 +5594,23 @@
     // even with thousands of lançamentos — the rest load on demand.
     const visibleCount = Math.min(entriesPage * ENTRIES_PAGE_SIZE, list.length);
     const visible = list.slice(0, visibleCount);
-    const loadMoreHTML = visibleCount < list.length
-      ? `<button class="btn btn-ghost btn-block" id="loadMoreEntriesBtn" style="margin-top:10px;">Carregar mais (${list.length - visibleCount} restantes)</button>`
+    const remaining = list.length - visibleCount;
+    const loadMoreHTML = remaining > 0
+      ? `<div class="entries-loadmore-row">
+          <button class="btn btn-ghost btn-block" id="loadMoreEntriesBtn" style="margin-top:10px;">Carregar mais (${remaining} restantes)</button>
+          <button class="btn btn-ghost btn-block" id="loadAllEntriesBtn" style="margin-top:6px;">Carregar tudo (${list.length})</button>
+        </div>`
       : '';
 
     if(entriesViewMode === 'sheet'){
-      renderEntrySheet_(box, visible, entriesKind, loadMoreHTML);
+      // The blank "type here to add a row" line only belongs at the true end
+      // of the tab — with filters applied, or with more pages still to load,
+      // "the last row on screen" is not "the last row of the sheet".
+      renderEntrySheet_(box, visible, entriesKind, loadMoreHTML, remaining === 0 && !hasFilters);
       const lm = $('#loadMoreEntriesBtn');
       if(lm) lm.addEventListener('click', ()=>{ entriesPage += 1; renderEntries(); });
+      const la = $('#loadAllEntriesBtn');
+      if(la) la.addEventListener('click', ()=>{ entriesPage = Infinity; renderEntries(); });
       return;   // the grid wires its own handlers; card handlers would double-bind
     }
     if(entriesViewMode === 'table'){
@@ -5605,6 +5624,13 @@
     if(loadMoreBtn){
       loadMoreBtn.addEventListener('click', ()=>{
         entriesPage += 1;
+        renderEntries();
+      });
+    }
+    const loadAllBtn = $('#loadAllEntriesBtn');
+    if(loadAllBtn){
+      loadAllBtn.addEventListener('click', ()=>{
+        entriesPage = Infinity;
         renderEntries();
       });
     }
@@ -5691,7 +5717,32 @@
     return num.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2});
   }
 
-  function renderEntrySheet_(box, visible, kind, loadMoreHTML){
+  // Per-column width, in ch units, sized to what's actually in this tab —
+  // never a fixed guess. A column like "unidade" or "qtd" almost never needs
+  // more than a handful of characters, while "nome"/"fornecedor" routinely
+  // run long; a single fixed min-width for every column either starves the
+  // long ones or wastes the same room on every short one. Clamped per column
+  // so one outlier value can't blow a column out to the width of the screen.
+  const SHEET_COL_CH_BOUNDS = {
+    nome:{min:12,max:38}, nota:{min:10,max:34}, fornecedor:{min:10,max:28},
+    valor:{min:9,max:16}, qtd:{min:5,max:10}, unidade:{min:6,max:12},
+    data:{min:11,max:11}, projeto:{min:9,max:22}, socio:{min:7,max:16}, tipo:{min:7,max:16}
+  };
+  function sheetColWidthCh_(col, visible){
+    const bounds = SHEET_COL_CH_BOUNDS[col] || {min:7, max:24};
+    let maxLen = col.length;
+    visible.forEach(e=>{
+      let v = e[col];
+      if(col === 'valor') v = (v === '' || v == null) ? '' : fmtNumBR_(v);
+      else if(col === 'projeto') v = projName(e.projectId);
+      else if(col === 'socio' && v) v = toDisplayCase(v);
+      const len = String(v == null ? '' : v).length;
+      if(len > maxLen) maxLen = len;
+    });
+    return Math.max(bounds.min, Math.min(bounds.max, maxLen + 2));
+  }
+
+  function renderEntrySheet_(box, visible, kind, loadMoreHTML, allLoaded){
     const cols = sheetColumns_(kind);
     if(!cols.length){
       box.innerHTML = emptyStateHTML('Planilha indisponível.', 'Sincronize uma vez para carregar o formato da planilha.');
@@ -5709,6 +5760,12 @@
     // The header names exactly as the sheet's own header row reads them.
     const headRow = `<tr class="sh-head"><th class="sh-rownum">1</th>${
       cols.map(c => `<th>${escapeHTML(c)}</th>`).join('')}${canDelete ? '<th></th>' : ''}</tr>`;
+    // Column widths are hinted once via <colgroup>, sized off the rows
+    // actually on screen — deliberately not the CSS class, which forced the
+    // same fixed width on every column regardless of what it holds.
+    const colgroup = `<colgroup><col style="width:34px">${
+      cols.map(c => `<col style="width:${sheetColWidthCh_(c, visible)}ch">`).join('')
+    }${canDelete ? '<col style="width:32px">' : ''}</colgroup>`;
 
     const body = visible.map((e, i) => `<tr data-row-id="${escapeHTML(e.id)}">
       <th class="sh-rownum">${i + 2}</th>
@@ -5717,9 +5774,13 @@
     </tr>`).join('');
 
     // The blank row at the bottom, exactly like a spreadsheet: type in it and
-    // it becomes a real lançamento. It is not a record until something is
-    // typed, so nothing is minted just by looking at the page.
-    const newRow = canCreate ? `<tr class="sh-new" data-row-id="">
+    // it becomes a real lançamento. It only belongs at the TRUE end of the
+    // tab — with more pages still to load, or a filter narrowing what's on
+    // screen, "the last row shown" is not "the last row of the sheet", and
+    // showing a blank row there would misplace where a new entry actually
+    // lands. It is not a record until something is typed, so nothing is
+    // minted just by looking at the page.
+    const newRow = (canCreate && allLoaded) ? `<tr class="sh-new" data-row-id="">
       <th class="sh-rownum">${visible.length + 2}</th>
       ${cols.map(c => `<td><input type="text" class="sh-cell sh-new-cell" data-col="${c}" ${c === 'data' ? 'placeholder="aaaa-mm-dd"' : ''}></td>`).join('')}
       ${canDelete ? '<td class="sh-del"></td>' : ''}
@@ -5731,6 +5792,7 @@
     box.innerHTML = `${datalists}
       <div class="sheet-caption">${escapeHTML(tabName)}</div>
       <div class="sheet-wrap"><table class="sheet-grid">
+        ${colgroup}
         <thead>${letterRow}${headRow}</thead>
         <tbody>${body}${newRow}</tbody>
       </table></div>${loadMoreHTML}`;
@@ -5894,6 +5956,14 @@
       fotos: [],
     };
     if(kind === 'caixa') entry.tipo = get('tipo');
+
+    // Keep the sheet view showing "all loaded" after this push, whatever page
+    // size boundary the count happens to land on — otherwise a row landing
+    // exactly on a page's edge would make the just-added row the new last
+    // one shown, but push the blank row past it onto an unloaded "next page"
+    // that doesn't visually exist yet, hiding the very thing being asked for
+    // (a fresh blank row to add the next entry).
+    entriesPage += 1;
 
     if(listKey === 'caixaObra') caixaObra.push(entry);
     else empreiteiro.push(entry);
