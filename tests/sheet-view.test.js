@@ -33,7 +33,9 @@ test('the machine columns are never visible', () => {
   const ctx = ctxWith();
   ['caixa', 'emp'].forEach((kind) => {
     const cols = ctx.sheetColumns_(kind);
-    ['id', 'criadoEm', 'lastModified'].forEach((hidden) => {
+    // projeto joins the three machine fields: this view shows one project's
+    // tab, so the column restates the tab's own name on every row.
+    ['id', 'criadoEm', 'lastModified', 'projeto'].forEach((hidden) => {
       notOk(cols.indexOf(hidden) > -1, `${hidden} must never be rendered (${kind})`);
     });
   });
@@ -42,9 +44,9 @@ test('the machine columns are never visible', () => {
 test('every other column IS visible, in the spreadsheet\'s own order', () => {
   const ctx = ctxWith();
   deepEqual(ctx.sheetColumns_('caixa'),
-    ['nome', 'qtd', 'unidade', 'data', 'valor', 'fornecedor', 'nota', 'socio', 'tipo', 'projeto']);
+    ['nome', 'qtd', 'unidade', 'data', 'valor', 'fornecedor', 'nota', 'socio', 'tipo']);
   deepEqual(ctx.sheetColumns_('emp'),
-    ['nome', 'qtd', 'unidade', 'data', 'valor', 'fornecedor', 'nota', 'socio', 'projeto']);
+    ['nome', 'qtd', 'unidade', 'data', 'valor', 'fornecedor', 'nota', 'socio']);
 });
 
 test('column letters are counted over the FULL schema, not the visible subset', () => {

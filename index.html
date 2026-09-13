@@ -495,14 +495,32 @@
      Hence visible gridlines on every cell, a grey header band, column letters,
      row numbers, and cells that look like cells until you focus one. */
   .sheet-caption{font-family:'Oswald',sans-serif; font-size:var(--fs-meta); letter-spacing:.04em; text-transform:uppercase; color:var(--ink-soft); margin:0 0 6px 2px;}
-  .sheet-wrap{background:#fff; border:1px solid var(--line); border-radius:6px; box-shadow:var(--shadow); overflow:auto; max-height:70vh; overscroll-behavior-x:contain;}
+  /* overscroll-behavior:none, NOT the weaker `contain`. `contain` only stops
+     the scroll CHAINING to the page; the grid itself still rubber-bands on
+     iOS, and dragging it sideways past column A pulls the whole table — the
+     sticky row-number gutter with it — away from the left edge, leaving a
+     band of white inside the card. `none` additionally suppresses that local
+     bounce, which is what actually pins the gutter to the left edge. */
+  .sheet-wrap{background:#fff; border:1px solid var(--line); border-radius:6px; box-shadow:var(--shadow); overflow:auto; max-height:70vh; overscroll-behavior:none;}
   .sheet-grid{border-collapse:separate; border-spacing:0; font-family:var(--num-font); font-size:var(--fs-meta); width:max-content; min-width:100%;}
-  .sheet-grid th, .sheet-grid td{border-right:1px solid #d9d9d9; border-bottom:1px solid #d9d9d9; padding:0; background:#fff;}
+  /* A spreadsheet cell is ONE line, always — it clips, it never wraps. A
+     native input[type=date] is the case that forced this: iOS renders its
+     value through a shadow tree that happily wraps ("Mar 12," / "2024") the
+     moment the column is a few pixels tight, turning one row into two and
+     breaking the alignment down the whole grid. */
+  .sheet-grid th, .sheet-grid td{border-right:1px solid #d9d9d9; border-bottom:1px solid #d9d9d9; padding:0; background:#fff;
+    white-space:nowrap; overflow:hidden;}
   /* Both header rows stick, stacked, so the column names stay readable while
-     scrolling a long tab — exactly what a frozen header row does in Sheets. */
+     scrolling a long tab — exactly what a frozen header row does in Sheets.
+     The second row's offset is MEASURED (--sh-letters-h, set after render),
+     never the hardcoded guess it used to be: the letters row's real height
+     changes with the font size, and a guess that is a couple of pixels off
+     makes the two rows overlap or gap and the header appear to drift as the
+     grid scrolls under it. Same "measure it, don't guess it" rule the notes
+     composer's offsets already follow. */
   .sheet-grid thead th{position:sticky; background:#f1f1f0; font-weight:600; color:#444; text-align:center; padding:3px 6px; z-index:2;}
   .sheet-grid tr.sh-letters th{top:0; font-size:var(--fs-eyebrow); color:#777; font-weight:500;}
-  .sheet-grid tr.sh-head th{top:22px; font-size:var(--fs-caption); letter-spacing:.01em;}
+  .sheet-grid tr.sh-head th{top:var(--sh-letters-h, 22px); font-size:var(--fs-caption); letter-spacing:.01em;}
   /* The row-number gutter is sticky horizontally too, so it stays put while
      scrolling sideways through the columns. */
   .sheet-grid .sh-rownum{position:sticky; left:0; z-index:3; background:#f1f1f0; color:#777; font-weight:500;
@@ -513,7 +531,8 @@
      the grid's own background — until it takes focus, when it gets the blue
      ring a spreadsheet gives the active cell. */
   .sheet-grid .sh-cell{border:0; outline:0; background:transparent; width:100%; min-width:0;
-    font:inherit; color:var(--ink); padding:4px 6px; border-radius:0; -webkit-appearance:none; appearance:none;}
+    font:inherit; color:var(--ink); padding:4px 6px; border-radius:0; -webkit-appearance:none; appearance:none;
+    white-space:nowrap; text-overflow:ellipsis;}
   .sheet-grid .sh-cell:focus{box-shadow:inset 0 0 0 2px var(--orange); background:#fff; position:relative; z-index:1;}
   .sheet-grid .sh-cell:disabled{color:var(--ink-soft); -webkit-text-fill-color:var(--ink-soft); opacity:1;}
   .sheet-grid select.sh-cell{padding-right:2px;}
@@ -2434,7 +2453,14 @@
   // Machine fields. Never rendered and never editable: they are the app's
   // bookkeeping, the user asked for them hidden, and `id` in particular is the
   // handle every photo, and the sync engine's whole diff, depends on.
-  const SHEET_HIDDEN_COLS = new Set(['id', 'criadoEm', 'lastModified']);
+  // `projeto` is hidden for a different reason: this view shows ONE project's
+  // tab, so the column reads the same on every row and only restates the tab's
+  // own name — configuration the backend maintains, not something worth a
+  // column of screen width here. A new row typed into the grid takes the
+  // active project (commitSheetNewRow_), which is the only value it could
+  // sensibly have. Moving a lançamento between projects stays in the Editar
+  // form; the column is still WRITTEN to the sheet exactly as before.
+  const SHEET_HIDDEN_COLS = new Set(['id', 'criadoEm', 'lastModified', 'projeto']);
   function sheetColumns_(kind){
     const cols = entrySchema[kind === 'caixa' ? 'caixaObra' : 'empreiteiro'] || [];
     return cols.filter(c => !SHEET_HIDDEN_COLS.has(c));
@@ -5723,10 +5749,16 @@
   // run long; a single fixed min-width for every column either starves the
   // long ones or wastes the same room on every short one. Clamped per column
   // so one outlier value can't blow a column out to the width of the screen.
+  // `data` is the one column whose width CANNOT be derived from its content:
+  // it renders as a native input[type=date], and the platform — not the
+  // stored "2024-03-12" — decides what text appears in it (iOS shows
+  // "Mar 12, 2024", desktop "dd/mm/aaaa" plus a picker glyph). So it gets a
+  // fixed, generous allowance rather than a measured one; too tight and iOS
+  // wraps the value onto a second line inside the cell.
   const SHEET_COL_CH_BOUNDS = {
     nome:{min:12,max:38}, nota:{min:10,max:34}, fornecedor:{min:10,max:28},
     valor:{min:9,max:16}, qtd:{min:5,max:10}, unidade:{min:6,max:12},
-    data:{min:11,max:11}, projeto:{min:9,max:22}, socio:{min:7,max:16}, tipo:{min:7,max:16}
+    data:{min:16,max:16}, socio:{min:7,max:16}, tipo:{min:7,max:16}
   };
   function sheetColWidthCh_(col, visible){
     const bounds = SHEET_COL_CH_BOUNDS[col] || {min:7, max:24};
@@ -5734,7 +5766,6 @@
     visible.forEach(e=>{
       let v = e[col];
       if(col === 'valor') v = (v === '' || v == null) ? '' : fmtNumBR_(v);
-      else if(col === 'projeto') v = projName(e.projectId);
       else if(col === 'socio' && v) v = toDisplayCase(v);
       const len = String(v == null ? '' : v).length;
       if(len > maxLen) maxLen = len;
@@ -5796,6 +5827,15 @@
         <thead>${letterRow}${headRow}</thead>
         <tbody>${body}${newRow}</tbody>
       </table></div>${loadMoreHTML}`;
+
+    // The stacked header's second row sticks at whatever the first row is
+    // actually tall, measured from the DOM that was just written. Hardcoding
+    // it (it was 22px) meant the two rows overlapped or gapped by a pixel or
+    // two at the touch font size, which reads as the header drifting while
+    // the grid scrolls under it.
+    const wrap = box.querySelector('.sheet-wrap');
+    const lettersRow = wrap && wrap.querySelector('tr.sh-letters');
+    if(wrap && lettersRow) wrap.style.setProperty('--sh-letters-h', lettersRow.offsetHeight + 'px');
 
     attachSheetHandlers_(box, kind, cols);
   }
