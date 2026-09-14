@@ -129,3 +129,110 @@ test('numeric cells are type=text so the browser cannot pre-parse them', () => {
   const body = cellFn.slice(0, cellFn.indexOf('\n  }')).replace(/\/\/[^\n]*/g, '');
   notOk(/type="number"/.test(body), 'never type=number on a money cell');
 });
+
+// ---------------------------------------------------------------------------
+// Windowed rendering. Every cell in this grid is a live native form control,
+// so the mounted row count is a count of controls the browser has to lay out
+// and keep in memory — not a list length. Loading a whole tab at once mounted
+// tens of thousands of them, which froze the app and then had iOS blank out
+// tiles and evict the webview ("blank spots, have to close and reopen").
+//
+// The windowing itself is DOM- and scroll-bound and is verified in a real
+// browser (see tests/README.md). What is pinned HERE is the arithmetic that
+// would lie silently if it broke: the row numbers, which must name the row's
+// true position in the tab and not its position in the mounted slice, and the
+// spacer heights, which are the only thing making the scrollbar describe the
+// whole tab rather than the window.
+
+function windowCtx(rows, rowH) {
+  // A tbody stub that just records what was written to it. paintSheetWindow_
+  // measures a real row only when rowH is still unknown, so seeding rowH
+  // keeps this on the pure path.
+  const tbody = { innerHTML: '', querySelector: () => null };
+  const ctx = buildContext({
+    functions: ['paintSheetWindow_', 'sheetCellHTML_', 'sheetSocioOptions_'],
+    declarations: ['SHEET_NUMERIC_COLS'],
+    // sheetWin_ goes through `vars`, not `declarations`: a `let` extracted
+    // into the vm is a lexical binding the test cannot reach or assign.
+    vars: {
+      sheetWin_: {
+        tbody, rows, cols: ['nome'], kind: 'caixa',
+        canEdit: true, canDelete: false, socioBase: [],
+        span: 2, newRowHTML: '', rowH, start: 0, end: 0,
+      },
+    },
+    stubs: {
+      escapeHTML: (s) => String(s),
+      toDisplayCase: (s) => String(s),
+      normSearch: (s) => String(s || '').toLowerCase().trim(),
+      fmtNumBR_: (n) => String(n),
+      projects: [],
+      resolvedProjectSocios_: () => [],
+    },
+  });
+  ctx.__tbody = tbody;
+  return ctx;
+}
+
+const RID = (n) => Array.from({ length: n }, (_, i) => ({ id: 'e' + i, nome: 'linha ' + i }));
+
+test('row numbers name the row\'s place in the TAB, not in the mounted window', () => {
+  const ctx = windowCtx(RID(1000), 30);
+  ctx.paintSheetWindow_(600, 620);
+  const html = ctx.__tbody.innerHTML;
+  // Row 1 is the header, so the first data row is 2 — a row at index 600 is
+  // therefore 602. Getting this wrong makes every number on screen a lie
+  // about which line of the real spreadsheet you are editing.
+  ok(html.indexOf('<th class="sh-rownum">602</th>') > -1, 'first mounted row numbered 602');
+  ok(html.indexOf('<th class="sh-rownum">621</th>') > -1, 'last mounted row numbered 621');
+  notOk(/sh-rownum">2</.test(html), 'the window must not restart numbering at 2');
+});
+
+test('the spacers account for every unmounted row, above and below', () => {
+  const rowH = 30;
+  const ctx = windowCtx(RID(1000), rowH);
+  ctx.paintSheetWindow_(600, 620);
+  const heights = (ctx.__tbody.innerHTML.match(/class="sh-spacer" style="height:(\d+)px"/g) || [])
+    .map((m) => Number(m.match(/(\d+)px/)[1]));
+  deepEqual(heights, [600 * rowH, 380 * rowH],
+    'scroll range must describe the whole tab, not just the mounted rows');
+});
+
+test('no spacer is emitted when the window covers the whole tab', () => {
+  const ctx = windowCtx(RID(12), 30);
+  ctx.paintSheetWindow_(0, 12);
+  notOk(/sh-spacer/.test(ctx.__tbody.innerHTML),
+    'a zero-height spacer row would still draw a grid line');
+});
+
+test('the mounted slice is bounded, however long the tab is', () => {
+  // The whole point: what gets written is a function of the window, never of
+  // the row count. A regression here is invisible until someone with a real
+  // project taps "Carregar tudo".
+  const short = windowCtx(RID(50), 30);
+  short.paintSheetWindow_(0, 50);
+  const long = windowCtx(RID(20000), 30);
+  long.paintSheetWindow_(0, 50);
+  const count = (h) => (h.match(/data-row-id=/g) || []).length;
+  equal(count(long.__tbody.innerHTML), count(short.__tbody.innerHTML),
+    'a 20,000-row tab must mount exactly as many rows as a 50-row one');
+});
+
+test('cells are wired by delegation, not one listener per cell', () => {
+  // Attaching change+keydown to each cell cost tens of thousands of listeners
+  // on a full tab, re-paid on every render and on every window slide.
+  const src = appSourceText();
+  const fn = src.slice(src.indexOf('function attachSheetHandlers_'));
+  const body = fn.slice(0, fn.indexOf('\n  }\n'));
+  notOk(/querySelectorAll\('\.sh-cell/.test(body), 'no per-cell listener loop');
+  ok(/box\.addEventListener\('change'/.test(body), 'one delegated change listener');
+  ok(/box\.addEventListener\('keydown'/.test(body), 'one delegated keydown listener');
+});
+
+test('a window update never unmounts the cell being typed in', () => {
+  const src = appSourceText();
+  const fn = src.slice(src.indexOf('function updateSheetWindow_'));
+  const body = fn.slice(0, fn.indexOf('\n  }\n'));
+  ok(/sheetHasFocus_\(\)/.test(body),
+    'repainting under a focused cell drops the caret mid-word');
+});

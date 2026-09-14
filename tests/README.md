@@ -174,6 +174,18 @@ Worth knowing, so nothing here is mistaken for more coverage than it is:
   end-to-end pass (real `index.html` in Chromium against the real
   `backend/Code.js`) is still the right tool before shipping anything that
   touches the schema or the sync engine.
+- **The spreadsheet view's windowing, specifically.** `sheet-view.test.js`
+  pins the arithmetic that would lie silently if it broke (row numbers,
+  spacer heights, the mounted slice being bounded) — but *which* rows the
+  window should hold is derived from a real on-screen rect and a real scroll
+  position, and there is neither here. The cost it exists to prevent is a
+  layout cost the `vm` cannot show at all: measured in Chromium, a 1,400-row
+  tab went from 2,421 ms and 14,009 live form controls to 155 ms and 509, and
+  a 5,000-row tab from 11,433 ms and 50,009 controls to 149 ms and 509. Any
+  change to the window (overscan, row-height measurement, the focus guard)
+  needs a real browser again; asserting on mounted-control count is the
+  dimension that moves with the real one, the same way range-call count
+  stands in for latency on the backend.
 
 ## Adding a test
 

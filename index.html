@@ -544,6 +544,11 @@
      what's actually in the tab (see sheetColWidthCh_) replaces the old flat
      min-widths, which forced every "unidade"/"qtd" column to the same width
      as "nome" regardless of what either actually held. */
+  /* The two spacer rows that stand in for the unmounted rows above and below
+     the window (see mountSheetWindow_). They carry only height — no borders,
+     no padding — so the grid's ruled lines stay exactly where the real rows
+     draw them and a spacer never reads as a blank cell. */
+  .sheet-grid tr.sh-spacer td{border:0; padding:0; background:#fff;}
   .sheet-grid tr.sh-new td{background:#fcfcfa;}
   .sheet-grid tr.sh-new .sh-rownum{color:#bbb;}
   .sheet-grid .sh-del{text-align:center; background:#fafafa; border-right:0;}
@@ -5695,15 +5700,22 @@
   // current assignment PLUS whatever this entry already says, so correcting a
   // typo on an old lançamento can never silently re-credit the payment to
   // someone else just because the original payer was unassigned since.
-  function sheetSocioOptions_(entry){
-    const proj = projects.find(p => p.id === entry.projectId);
-    const list = proj ? resolvedProjectSocios_(proj).slice() : [];
+  // `base` is the project's assignment, resolved ONCE per render and passed
+  // down — every row in this tab belongs to the same project, so re-deriving
+  // it per row was pure repeated work on a tab with thousands of rows.
+  function sheetSocioOptions_(entry, base){
+    let list;
+    if(base) list = base.slice();
+    else {
+      const proj = projects.find(p => p.id === entry.projectId);
+      list = proj ? resolvedProjectSocios_(proj).slice() : [];
+    }
     const own = String(entry.socio || '').trim();
     if(own && !list.some(s => normSearch(s) === normSearch(own))) list.unshift(own);
     return list;
   }
 
-  function sheetCellHTML_(entry, col, kind, canEdit){
+  function sheetCellHTML_(entry, col, kind, canEdit, socioBase){
     const val = entry[col] === undefined || entry[col] === null ? '' : entry[col];
     const ro = canEdit ? '' : ' disabled';
     const common = `data-id="${escapeHTML(entry.id)}" data-col="${col}" class="sh-cell sh-${col}"`;
@@ -5720,7 +5732,7 @@
       return `<td><select ${common}${ro}>${opts}</select></td>`;
     }
     if(col === 'socio'){
-      const opts = ['<option value="">—</option>'].concat(sheetSocioOptions_(entry).map(sName =>
+      const opts = ['<option value="">—</option>'].concat(sheetSocioOptions_(entry, socioBase).map(sName =>
         `<option value="${escapeHTML(sName)}"${normSearch(sName) === normSearch(val) ? ' selected' : ''}>${escapeHTML(toDisplayCase(sName))}</option>`)).join('');
       return `<td><select ${common}${ro}>${opts}</select></td>`;
     }
@@ -5768,10 +5780,16 @@
     valor:{min:9,max:16}, qtd:{min:5,max:10}, unidade:{min:6,max:12},
     data:{min:16,max:16}, socio:{min:7,max:16}, tipo:{min:7,max:16}
   };
+  // Sized from a SAMPLE of the rows, not all of them: with the whole tab
+  // loaded this ran toLocaleString over thousands of values on every render
+  // for a number that is clamped to a narrow range anyway. The sample is
+  // already far larger than the single page this used to see before the tab
+  // could be loaded in full.
+  const SHEET_WIDTH_SAMPLE = 200;
   function sheetColWidthCh_(col, visible){
     const bounds = SHEET_COL_CH_BOUNDS[col] || {min:7, max:24};
     let maxLen = col.length;
-    visible.forEach(e=>{
+    (visible.length > SHEET_WIDTH_SAMPLE ? visible.slice(0, SHEET_WIDTH_SAMPLE) : visible).forEach(e=>{
       let v = e[col];
       if(col === 'valor') v = (v === '' || v == null) ? '' : fmtNumBR_(v);
       else if(col === 'socio' && v) v = toDisplayCase(v);
@@ -5806,12 +5824,6 @@
       cols.map(c => `<col style="width:${sheetColWidthCh_(c, visible)}ch">`).join('')
     }${canDelete ? '<col style="width:32px">' : ''}</colgroup>`;
 
-    const body = visible.map((e, i) => `<tr data-row-id="${escapeHTML(e.id)}">
-      <th class="sh-rownum">${i + 2}</th>
-      ${cols.map(c => sheetCellHTML_(e, c, kind, canEdit)).join('')}
-      ${canDelete ? `<td class="sh-del"><button type="button" data-sh-del="${escapeHTML(e.id)}" title="Excluir linha" aria-label="Excluir linha">×</button></td>` : ''}
-    </tr>`).join('');
-
     // The blank row at the bottom, exactly like a spreadsheet: type in it and
     // it becomes a real lançamento. It only belongs at the TRUE end of the
     // tab — with more pages still to load, or a filter narrowing what's on
@@ -5833,8 +5845,34 @@
       <div class="sheet-wrap"><table class="sheet-grid">
         ${colgroup}
         <thead>${letterRow}${headRow}</thead>
-        <tbody>${body}${newRow}</tbody>
+        <tbody></tbody>
       </table></div>${loadMoreHTML}`;
+
+    // Only the rows near the viewport are ever mounted. Every cell in this
+    // grid is a live native <input>/<select>, so the row count is not a list
+    // length — it is a count of form controls the browser has to lay out,
+    // keep interactive and keep in memory. With the whole tab loaded
+    // ("Carregar tudo" on a project with a few thousand lançamentos) that ran
+    // to tens of thousands of controls in a single innerHTML, which froze the
+    // app on the write and then left iOS to blank out tiles of an enormous
+    // scroller before evicting the webview entirely — the "blank spots, have
+    // to close and reopen" report. Windowing makes the mounted DOM a constant
+    // regardless of how long the tab is.
+    sheetWin_ = {
+      tbody: box.querySelector('tbody'),
+      rows: visible,
+      cols, kind, canEdit, canDelete,
+      socioBase: (function(){
+        const proj = projects.find(p => p.id === activeProjectId);
+        return proj ? resolvedProjectSocios_(proj) : [];
+      })(),
+      span: cols.length + 1 + (canDelete ? 1 : 0),
+      newRowHTML: newRow,
+      rowH: 0, start: 0, end: 0,
+    };
+    paintSheetWindow_(0, Math.min(visible.length, SHEET_WINDOW_ROWS));
+    bindSheetScroll_();
+    updateSheetWindow_();
 
     // The stacked header's second row sticks at whatever the first row is
     // actually tall, measured from the DOM that was just written. Hardcoding
@@ -5846,6 +5884,91 @@
     if(wrap && lettersRow) wrap.style.setProperty('--sh-letters-h', lettersRow.offsetHeight + 'px');
 
     attachSheetHandlers_(box, kind, cols);
+  }
+
+  // ---------- Windowed rendering for the grid ----------
+  // SHEET_WINDOW_ROWS is what gets mounted when nothing better is known yet
+  // (the very first paint, before a real row has been measured); after that
+  // the window is sized from the viewport. SHEET_OVERSCAN is how far beyond
+  // the viewport rows are kept mounted — enough that ordinary scrolling and
+  // Enter-moves-down never reach an unmounted row.
+  const SHEET_WINDOW_ROWS = 60;
+  const SHEET_OVERSCAN = 20;
+  let sheetWin_ = null;
+  let sheetScrollBound_ = false;
+  let sheetScrollRaf_ = null;
+
+  // Writes the mounted slice, with one spacer row standing in for everything
+  // above it and another for everything below, each carrying the exact pixel
+  // height of the rows it replaces — so the scroll range, the scrollbar and
+  // the row numbers all describe the real tab rather than the mounted part.
+  function paintSheetWindow_(start, end){
+    const w = sheetWin_;
+    if(!w || !w.tbody) return;
+    w.start = start; w.end = end;
+    const rowH = w.rowH;
+    const spacer = (n)=> (n > 0 && rowH)
+      ? `<tr class="sh-spacer" style="height:${n * rowH}px"><td colspan="${w.span}"></td></tr>` : '';
+    const body = w.rows.slice(start, end).map((e, i) => `<tr data-row-id="${escapeHTML(e.id)}">
+      <th class="sh-rownum">${start + i + 2}</th>
+      ${w.cols.map(c => sheetCellHTML_(e, c, w.kind, w.canEdit, w.socioBase)).join('')}
+      ${w.canDelete ? `<td class="sh-del"><button type="button" data-sh-del="${escapeHTML(e.id)}" title="Excluir linha" aria-label="Excluir linha">×</button></td>` : ''}
+    </tr>`).join('');
+    w.tbody.innerHTML = spacer(start) + body + spacer(w.rows.length - end) + w.newRowHTML;
+
+    // The row height is MEASURED from a row that actually rendered, never
+    // assumed: it differs between the touch and desktop breakpoints, and a
+    // guess a pixel or two out would accumulate across thousands of rows into
+    // a visibly wrong scroll range. Same discipline as --sh-letters-h.
+    if(!w.rowH){
+      const first = w.tbody.querySelector('tr[data-row-id]');
+      if(first && first.offsetHeight){ w.rowH = first.offsetHeight; paintSheetWindow_(start, end); }
+    }
+  }
+
+  // Which rows the viewport is currently over. Deliberately derived from the
+  // tbody's own on-screen rect rather than from a particular scroller's
+  // scrollTop, so it stays correct whichever element is doing the scrolling.
+  function updateSheetWindow_(){
+    const w = sheetWin_;
+    if(!w || !w.tbody || !w.tbody.isConnected){ sheetWin_ = null; return; }
+    if(!w.rowH) return;
+    // Never unmount the cell someone is typing in — the caret would vanish
+    // mid-word and the rest of the keystrokes land nowhere. The same reason
+    // renderEntries() bails on a focused grid.
+    if(sheetHasFocus_()) return;
+    const rect = w.tbody.getBoundingClientRect();
+    const viewH = window.innerHeight || 800;
+    const above = Math.max(0, Math.floor(-rect.top / w.rowH));
+    const fits = Math.ceil(viewH / w.rowH);
+    const start = Math.max(0, above - SHEET_OVERSCAN);
+    const end = Math.min(w.rows.length, above + fits + SHEET_OVERSCAN);
+    if(start === w.start && end === w.end) return;
+    paintSheetWindow_(start, end);
+  }
+
+  function bindSheetScroll_(){
+    if(sheetScrollBound_) return;
+    sheetScrollBound_ = true;
+    const onScroll = ()=>{
+      if(sheetScrollRaf_) return;                 // one recompute per frame, no more
+      sheetScrollRaf_ = requestAnimationFrame(()=>{ sheetScrollRaf_ = null; updateSheetWindow_(); });
+    };
+    // Capture phase: `scroll` does not bubble, and the grid may be scrolled by
+    // the page scroller, by .sheet-wrap, or by neither depending on the view.
+    document.addEventListener('scroll', onScroll, true);
+    window.addEventListener('resize', onScroll);
+  }
+
+  // Mounts the row at `i` if the window does not already cover it, so a
+  // keyboard move to a neighbouring row can never land on nothing. Safe to
+  // repaint here because the caller has already blurred the cell it was in.
+  function ensureSheetRowMounted_(i){
+    const w = sheetWin_;
+    if(!w || i < 0 || i >= w.rows.length) return;
+    if(i >= w.start && i < w.end) return;
+    const start = Math.max(0, i - SHEET_OVERSCAN);
+    paintSheetWindow_(start, Math.min(w.rows.length, start + SHEET_WINDOW_ROWS + SHEET_OVERSCAN));
   }
 
   // A re-render while someone is typing would destroy the focused input and
@@ -5860,33 +5983,50 @@
   function attachSheetHandlers_(box, kind, cols){
     const listKey = kind === 'caixa' ? 'caixaObra' : 'empreiteiro';
 
-    // Commit on `change` (fires on blur or Enter) rather than on every
-    // keystroke — one sync per finished edit, not one per character.
-    box.querySelectorAll('.sh-cell:not(.sh-new-cell)').forEach(inp=>{
-      inp.addEventListener('change', ()=> commitSheetCell_(inp, kind, listKey));
+    // Delegated, never per cell. Attaching a `change` and a `keydown` to each
+    // cell individually meant tens of thousands of listeners on a fully
+    // loaded tab — a cost paid on every render, on top of the elements
+    // themselves — and it would have to be paid again on every window slide.
+    // `change` and `keydown` both bubble, so the behaviour is identical.
+    box.addEventListener('change', (ev)=>{
+      const el = ev.target;
+      if(!el || !el.classList) return;
+      if(el.classList.contains('sh-new-cell')) commitSheetNewRow_(box, kind, listKey, cols);
+      else if(el.classList.contains('sh-cell')) commitSheetCell_(el, kind, listKey);
     });
 
     // Enter moves DOWN the column, as a spreadsheet does; Tab already moves
     // across for free because these are real inputs in document order.
-    box.querySelectorAll('.sh-cell').forEach(inp=>{
-      inp.addEventListener('keydown', (ev)=>{
-        if(ev.key !== 'Enter') return;
-        ev.preventDefault();
-        inp.blur();  // commit first
-        const col = inp.dataset.col;
-        const row = inp.closest('tr');
-        const next = row && row.nextElementSibling;
-        const target = next && next.querySelector(`[data-col="${col}"]`);
-        if(target) target.focus();
-      });
+    box.addEventListener('keydown', (ev)=>{
+      if(ev.key !== 'Enter') return;
+      const inp = ev.target;
+      if(!inp || !inp.classList || !inp.classList.contains('sh-cell')) return;
+      ev.preventDefault();
+      const col = inp.dataset.col;
+      const row = inp.closest('tr');
+      const id = row && row.getAttribute('data-row-id');
+      inp.blur();  // commit first
+      // Resolved through the row LIST, not through nextElementSibling: the
+      // next row may not be mounted, and the sibling could be a spacer.
+      const w = sheetWin_;
+      if(w && id){
+        const i = w.rows.findIndex(r => r.id === id);
+        if(i > -1 && i + 1 < w.rows.length){
+          ensureSheetRowMounted_(i + 1);
+          const nextRow = w.tbody.querySelector(`tr[data-row-id="${cssEscape_(w.rows[i + 1].id)}"]`);
+          const target = nextRow && nextRow.querySelector(`[data-col="${col}"]`);
+          if(target){ target.focus(); return; }
+        }
+      }
+      // Past the last row, step into the blank "add a row" line if there is one.
+      const newCell = box.querySelector(`tr.sh-new [data-col="${col}"]`);
+      if(newCell) newCell.focus();
     });
 
-    box.querySelectorAll('.sh-new-cell').forEach(inp=>{
-      inp.addEventListener('change', ()=> commitSheetNewRow_(box, kind, listKey, cols));
-    });
-
-    box.querySelectorAll('[data-sh-del]').forEach(btn=>{
-      btn.addEventListener('click', withGuard(async ()=>{
+    box.addEventListener('click', withGuard(async (ev)=>{
+      const btn = ev.target && ev.target.closest && ev.target.closest('[data-sh-del]');
+      if(!btn) return;
+      {
         const id = btn.dataset.shDel;
         const list = listKey === 'caixaObra' ? caixaObra : empreiteiro;
         const target = list.find(x=>x.id === id);
@@ -5902,8 +6042,15 @@
         renderAll();
         showToast('Lançamento excluído.');
         await saveKey(listKey, listKey === 'caixaObra' ? caixaObra : empreiteiro);
-      }));
-    });
+      }
+    }));
+  }
+
+  // Row ids are minted by uid() and contain nothing a selector cares about,
+  // but a value read back out of state and dropped into a selector is exactly
+  // the kind of thing that stops being true later.
+  function cssEscape_(s){
+    return (window.CSS && CSS.escape) ? CSS.escape(String(s)) : String(s).replace(/["\\]/g, '\\$&');
   }
 
   // Reads one cell back into its record. Returns false (and restores the
