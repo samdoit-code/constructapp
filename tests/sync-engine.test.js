@@ -122,6 +122,7 @@ test('F1: runSync_ always clears syncInFlight, even on a verdict', async () => {
     stubs: {
       pendingTotal_: () => 1,
       googleIdToken: 'tok',
+      hasCredential_: () => true,
       navigator: { onLine: true },
       renderUploadTray_: () => {},
       scheduleSync_: (ms) => ticks.push(ms),

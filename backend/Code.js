@@ -98,15 +98,274 @@ function verifyIdToken_(idToken) {
   }
   if (info.aud !== GOOGLE_CLIENT_ID) throw new Error('não autenticado');
   if (!info.email || info.email_verified !== 'true') throw new Error('não autenticado');
-  return { email: String(info.email).toLowerCase().trim(), name: info.name || info.email };
+  return {
+    email: String(info.email).toLowerCase().trim(),
+    name: info.name || info.email,
+    // Seconds since epoch, as tokeninfo reports it. Only consulted when
+    // deciding whether this sign-in is fresh enough to open an app session.
+    iat: Number(info.iat) || 0,
+    via: 'google',
+  };
 }
 
-// The single entry point every request goes through. Verifies the token,
-// then confirms the email is a known, active row in Usuarios. Returns the
-// user record (role/projects included now so Phase B has zero contract
-// changes to make) or throws — callers don't need to know which failed.
-function getCurrentUser_(idToken) {
-  const identity = verifyIdToken_(idToken);
+// ------------------------------------------------------------------
+// APP SESSIONS — "Google once, then the app's own login".
+//
+// Why this exists: a Google ID token lives about an hour and an iPhone
+// home-screen app cannot renew one silently (separate storage partition from
+// Safari — see CLAUDE.md §4). So every cold launch cost two taps. Google is
+// now asked "who is this?" exactly once per device; the backend then issues
+// its OWN long random code for that device, which the app stores and sends
+// instead.
+//
+// The rules, each load-bearing:
+//   - A session is opened ONLY from a Google sign-in that is minutes old
+//     (SESSION_MINT_MAX_AGE_S) and ONLY for an active Usuarios row. A Google
+//     token lifted from memory an hour later cannot be turned into a year.
+//   - The Sessoes tab stores a SHA-256 FINGERPRINT of the code, never the code.
+//     The tab, the spreadsheet and its 30 daily backup copies therefore hold
+//     nothing anyone could sign in with.
+//   - One row per device. Deleting a row (or typing SIM under `revogado`)
+//     signs out that device on its next request and nothing else.
+//   - Expiry: SESSION_IDLE_MS unused, SESSION_MAX_MS absolute (`expiraEm`).
+//   - The code never rotates. Rotation sounds safer but a lost response would
+//     sign the device out, and two tabs would fight over which code is live.
+//   - Authorization is untouched: getCurrentUser_ still reads Usuarios live on
+//     every request, so `ativo` = NAO still blocks on the very next request.
+//   - "Could not read Sessoes" is 'Servidor ocupado' (retry), never an auth
+//     failure — the same verdict-vs-outage rule as verifyIdToken_ above.
+//
+// No secret key exists anywhere, deliberately: a signed (stateless) token
+// would need one, and whoever read it could mint a login for any email.
+// ------------------------------------------------------------------
+const SESSION_TAB = 'Sessoes';
+const SESSION_COLS = ['tokenHash', 'email', 'dispositivo', 'criadoEm', 'ultimoUso', 'expiraEm', 'revogado'];
+const SESSION_IDLE_MS = 90 * 24 * 60 * 60 * 1000;
+const SESSION_MAX_MS = 365 * 24 * 60 * 60 * 1000;
+const SESSION_TOUCH_MS = 24 * 60 * 60 * 1000;   // ultimoUso is written at most once a day per device
+const SESSION_MINT_MAX_AGE_S = 5 * 60;
+const SESSION_MAX_PER_USER = 10;
+const SESSION_TOKEN_PREFIX = 'cms1.';
+// Until this moment, a Google ID token is still accepted on EVERY action, so a
+// copy of the old frontend still cached on someone's phone keeps working while
+// it updates itself. After it, a Google token is only good for `verify` (the
+// sign-in that opens a session) and every data action requires a session.
+const GOOGLE_TOKEN_DATA_ACTIONS_UNTIL = Date.UTC(2026, 10, 20);   // 20 Nov 2026
+
+function sessionsSheet_(create) {
+  const ss = SpreadsheetApp.openById(AUTH_SHEET_ID);
+  let sheet = ss.getSheetByName(SESSION_TAB);
+  if (!sheet && create) {
+    sheet = ss.insertSheet(SESSION_TAB);
+    sheet.getRange(1, 1, 1, SESSION_COLS.length).setValues([SESSION_COLS]);
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+
+function hashSessionToken_(token) {
+  const bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(token), Utilities.Charset.UTF_8);
+  return bytes.map(function (b) { return ((b + 256) % 256).toString(16).padStart(2, '0'); }).join('');
+}
+
+// ~244 bits from two v4 UUIDs (Java's SecureRandom underneath). Guessing one is
+// not a threat worth a rate limiter.
+function newSessionToken_() {
+  return SESSION_TOKEN_PREFIX + (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
+}
+
+function sessionCol_(name) { return SESSION_COLS.indexOf(name); }
+
+function readSessionRows_(sheet) {
+  const last = sheet.getLastRow();
+  if (last < 2) return [];
+  return sheet.getRange(2, 1, last - 1, SESSION_COLS.length).getValues();
+}
+
+// Why a row can no longer be used, or '' if it can. A cell that cannot be read
+// as a time fails CLOSED — a hand edit that mangles a date ends that session.
+function sessionDeadReason_(row, now) {
+  if (String(row[sessionCol_('revogado')]).toUpperCase().trim() === 'SIM') return 'revoked';
+  const lastUse = Number(coerceTimestamp_(row[sessionCol_('ultimoUso')]));
+  const expires = Number(coerceTimestamp_(row[sessionCol_('expiraEm')]));
+  if (!lastUse || !expires) return 'unreadable';
+  if (now >= expires) return 'expired';
+  if (now - lastUse > SESSION_IDLE_MS) return 'idle';
+  return '';
+}
+
+// Lock-free lookup: reads never need the lock (same as getAll's reads).
+function verifySessionToken_(token) {
+  const t = String(token || '');
+  if (t.indexOf(SESSION_TOKEN_PREFIX) !== 0) throw new Error('sessão expirada');
+  let rows;
+  try {
+    const sheet = sessionsSheet_(false);
+    if (!sheet) throw new Error('sessão expirada');
+    rows = readSessionRows_(sheet);
+  } catch (e) {
+    if (e && e.message === 'sessão expirada') throw e;
+    throw new Error('Servidor ocupado, tente novamente.');
+  }
+  const hash = hashSessionToken_(t);
+  const now = Date.now();
+  for (let i = 0; i < rows.length; i++) {
+    if (String(rows[i][sessionCol_('tokenHash')]) !== hash) continue;
+    if (sessionDeadReason_(rows[i], now)) throw new Error('sessão expirada');
+    return {
+      email: String(rows[i][sessionCol_('email')]).toLowerCase().trim(),
+      name: null,
+      via: 'session',
+      sessionHash: hash,
+      lastUse: Number(coerceTimestamp_(rows[i][sessionCol_('ultimoUso')])),
+    };
+  }
+  throw new Error('sessão expirada');
+}
+
+// Every WRITE to Sessoes (open, touch, revoke, cleanup) takes the script lock,
+// because each one locates its row by position and a concurrent delete would
+// otherwise shift it. Callers are all OUTSIDE doPost's write lock — verify and
+// logout return before it is taken, getCurrentUser_ runs before it, and the
+// daily trigger is its own execution — so this never nests (see the
+// LockService note on resolveOrCreateEntrySheet_).
+function withSessionLock_(fn) {
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(10000);
+  } catch (err) {
+    throw new Error('Servidor ocupado, tente novamente.');
+  }
+  try {
+    return fn();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// Deletes, bottom-up so positions stay valid, every row `shouldDrop` picks.
+function dropSessionRows_(sheet, shouldDrop) {
+  const rows = readSessionRows_(sheet);
+  let dropped = 0;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (shouldDrop(rows[i])) { sheet.deleteRow(i + 2); dropped++; }
+  }
+  return dropped;
+}
+
+function createSession_(email, device) {
+  return withSessionLock_(function () {
+    const sheet = sessionsSheet_(true);
+    const now = Date.now();
+    // Housekeeping on the way in keeps the tab small without a scheduled job
+    // having to exist: dead rows go, and one person keeps at most
+    // SESSION_MAX_PER_USER devices (their oldest are signed out first).
+    dropSessionRows_(sheet, function (row) { return !!sessionDeadReason_(row, now); });
+    const mine = readSessionRows_(sheet)
+      .map(function (row, i) { return { i: i, email: String(row[sessionCol_('email')]).toLowerCase().trim(), at: Number(coerceTimestamp_(row[sessionCol_('criadoEm')])) || 0 }; })
+      .filter(function (r) { return r.email === email; })
+      .sort(function (a, b) { return a.at - b.at; });
+    const excess = mine.length - (SESSION_MAX_PER_USER - 1);
+    if (excess > 0) {
+      const doomed = {};
+      mine.slice(0, excess).forEach(function (r) { doomed[r.i] = true; });
+      const rows = readSessionRows_(sheet);
+      for (let i = rows.length - 1; i >= 0; i--) if (doomed[i]) sheet.deleteRow(i + 2);
+    }
+    const token = newSessionToken_();
+    const label = String(device || '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, 80) || 'dispositivo';
+    sheet.appendRow([
+      hashSessionToken_(token), email, sanitizeCell_(label),
+      new Date(now), new Date(now), new Date(now + SESSION_MAX_MS), 'NAO',
+    ]);
+    return { token: token, expiresAt: now + SESSION_MAX_MS };
+  });
+}
+
+// Re-finds the row by fingerprint under the lock rather than trusting a row
+// number from the earlier lock-free read.
+function touchSession_(hash) {
+  withSessionLock_(function () {
+    const sheet = sessionsSheet_(false);
+    if (!sheet) return;
+    const rows = readSessionRows_(sheet);
+    for (let i = 0; i < rows.length; i++) {
+      if (String(rows[i][sessionCol_('tokenHash')]) === hash) {
+        sheet.getRange(i + 2, sessionCol_('ultimoUso') + 1).setValue(new Date());
+        return;
+      }
+    }
+  });
+}
+
+function revokeSessionsWhere_(shouldDrop) {
+  return withSessionLock_(function () {
+    const sheet = sessionsSheet_(false);
+    return sheet ? dropSessionRows_(sheet, shouldDrop) : 0;
+  });
+}
+
+// Run from the daily backup trigger. Expiry is enforced on every request
+// anyway; this keeps the tab tidy and — the part that matters — removes the
+// sessions of anyone no longer active, so switching a person back on LATER
+// does not quietly revive a phone that was meant to be cut off.
+function cleanupSessions_() {
+  const active = {};
+  const sheet = authSheet_();
+  const last = sheet.getLastRow();
+  if (last >= 2) {
+    sheet.getRange(2, 1, last - 1, 6).getValues().forEach(function (row) {
+      const ok = (row[4] === true || String(row[4]).toUpperCase() === 'SIM');
+      if (ok) active[String(row[0]).toLowerCase().trim()] = true;
+    });
+  }
+  const now = Date.now();
+  return revokeSessionsWhere_(function (row) {
+    return !!sessionDeadReason_(row, now) || !active[String(row[sessionCol_('email')]).toLowerCase().trim()];
+  });
+}
+
+// Manual, from the editor's function dropdown: signs out EVERY device of
+// everyone. Each person then signs in with Google once more. For one lost
+// phone, delete that phone's row in Sessoes instead.
+function revokeAllSessions() {
+  const n = revokeSessionsWhere_(function () { return true; });
+  Logger.log('revokeAllSessions: ' + n + ' sessão(ões) encerrada(s).');
+  return n;
+}
+
+// Who is calling, from whichever credential the request carries. Identity
+// only — getCurrentUser_ still decides whether that identity may come in.
+function identifyCaller_(body, action) {
+  if (body.sessionToken) return verifySessionToken_(body.sessionToken);
+  if (body.idToken) {
+    if (action !== 'verify' && Date.now() >= GOOGLE_TOKEN_DATA_ACTIONS_UNTIL) throw new Error('não autenticado');
+    return verifyIdToken_(body.idToken);
+  }
+  throw new Error('não autenticado');
+}
+
+// The single entry point every request goes through. Takes the identity
+// established by identifyCaller_, then confirms the email is a known, active
+// row in Usuarios. Returns the user record (role/projects included now so
+// Phase B has zero contract changes to make) or throws — callers don't need
+// to know which failed.
+function getCurrentUser_(identity) {
+  try {
+    return lookupUser_(identity);
+  } catch (err) {
+    // A session belonging to someone who is no longer let in is ended for
+    // good, so re-activating them later never revives this device. Best
+    // effort: the refusal itself is what protects this request.
+    const refused = err && (err.message === 'usuário desativado' || err.message === 'usuário não cadastrado');
+    if (refused && identity.sessionHash) {
+      try { revokeSessionsWhere_(function (row) { return String(row[sessionCol_('tokenHash')]) === identity.sessionHash; }); } catch (e) {}
+    }
+    throw err;
+  }
+}
+
+function lookupUser_(identity) {
   const sheet = authSheet_();
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) throw new Error('não autorizado');
@@ -123,7 +382,7 @@ function getCurrentUser_(idToken) {
     const projetosRaw = String(row[3] || '').trim();
     return {
       email: email,
-      nome: row[1] || identity.name,
+      nome: row[1] || identity.name || email,
       role: String(row[2] || '').toLowerCase().trim(),
       // '*' means all projects; otherwise a plain array to check membership against.
       projects: projetosRaw === '*' ? '*' : projetosRaw.split(',').map(p => p.trim()).filter(Boolean),
@@ -2810,17 +3069,42 @@ function doPost(e) {
   }
 
   try {
-    const user = getCurrentUser_(body.idToken); // AUTH: identity only
-    user.sections = sectionsForRole_(user.role); // AUTHZ: effective permissions, resolved fresh every request
     const action = body.action;
+    const identity = identifyCaller_(body, action);
+    const user = getCurrentUser_(identity); // AUTH: identity only
+    user.sections = sectionsForRole_(user.role); // AUTHZ: effective permissions, resolved fresh every request
 
-    // Identity/permissions only, no sheet data, no lock — the cheapest
-    // possible confirmation that a token is genuinely valid. Lets the
+    // Identity/permissions only, no sheet data, no write lock — the cheapest
+    // possible confirmation that a credential is genuinely valid. Lets the
     // frontend open the app (render from local cache) the moment identity
     // is proven, instead of waiting on the full getAll to even open the
     // gate. See onGoogleSignIn/loadAll in index.html.
+    //
+    // It is also where app sessions are opened and kept alive: a FRESH Google
+    // sign-in gets a session code back; a session in use gets its ultimoUso
+    // bumped (at most once a day — the only write on this path).
     if (action === 'verify') {
-      return jsonOut_({ currentUser: user });
+      const out = { currentUser: user };
+      if (identity.via === 'google') {
+        const ageS = Date.now() / 1000 - identity.iat;
+        if (identity.iat && ageS >= -60 && ageS <= SESSION_MINT_MAX_AGE_S) {
+          const s = createSession_(user.email, body.device);
+          out.sessionToken = s.token;
+          out.sessionExpiresAt = s.expiresAt;
+        }
+      } else if (identity.via === 'session' && Date.now() - identity.lastUse > SESSION_TOUCH_MS) {
+        try { touchSession_(identity.sessionHash); } catch (e) { /* a missed touch costs nothing today */ }
+      }
+      return jsonOut_(out);
+    }
+
+    // Ends THIS device's session on the server. The client purges itself
+    // regardless of whether this arrives, so it is best-effort by design.
+    if (action === 'logout') {
+      if (identity.sessionHash) {
+        revokeSessionsWhere_(function (row) { return String(row[sessionCol_('tokenHash')]) === identity.sessionHash; });
+      }
+      return jsonOut_({ ok: true });
     }
 
     if (action === 'getAll') {
@@ -3459,6 +3743,13 @@ function backupSpreadsheet_() {
     DriveApp.getFileById(AUTH_SHEET_ID).makeCopy('Backup Usuarios ' + dateStr, backupFolder);
   } catch (e) {
     Logger.log('auth spreadsheet backup failed: ' + (e && e.message));
+  }
+  // Same daily run, same best-effort isolation: a failure here must never cost
+  // the backups, and expiry is enforced per request whether or not this runs.
+  try {
+    cleanupSessions_();
+  } catch (e) {
+    Logger.log('session cleanup failed: ' + (e && e.message));
   }
 
   // Keep the last 30 days of backups, delete anything older.

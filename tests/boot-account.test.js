@@ -30,6 +30,7 @@ function buildBoot(opts) {
     vars: { googleIdToken: opts.googleIdToken || null, currentUser: null, offlineMode: false },
     stubs: {
       lastKnownUserEmail_: () => opts.storedEmail,
+      hasCredential_: () => !!opts.googleIdToken,
       openLocalDb_: async (email) => { events.push('openLocalDb_:' + email); },
       readSessionRecord_: async () => (opts.session === undefined
         ? { email: opts.storedEmail, nome: 'Stored', role: 'admin', projects: '*', sections: {} }

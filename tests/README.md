@@ -194,3 +194,15 @@ Worth knowing, so nothing here is mistaken for more coverage than it is:
 2. Say in the test name or a comment WHAT breaks if it fails — a bare
    `equal(a, b)` tells the next person nothing about why it mattered.
 3. Negative-control it (above) before trusting it.
+
+## Browser pass for sign-in and sessions (`tests/e2e/`)
+
+`tests/e2e/session.e2e.js` drives the real `index.html` in Chromium against the
+real `backend/Code.js` in the mocked sandbox, with Google's sign-in script
+replaced by a fake button: first sign-in, relaunch with no Google at all, a
+write on the session, a revoked device keeping its unsent write until it signs
+in again, an offline launch whose queued write sends on reconnect with no
+sign-in, and sign-out revoking server-side. It is not part of `run.js` because
+it needs Playwright; run it after any change to sign-in, sessions or boot
+(usage at the top of the file). Pointing `CMOREIRA_BACKEND` at an older
+`Code.js` checks the deploy-order fallback (Google-token mode still works).

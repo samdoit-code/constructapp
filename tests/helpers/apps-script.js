@@ -248,6 +248,9 @@ function createSandbox(opts) {
             email: known.email,
             email_verified: known.email_verified === undefined ? 'true' : known.email_verified,
             name: known.name || known.email,
+            // A real tokeninfo always reports when the token was issued. Fresh
+            // by default; a fixture sets `iat` to test the session freshness rule.
+            iat: String(known.iat === undefined ? Math.floor(Date.now() / 1000) : known.iat),
           }),
         };
       },
@@ -270,6 +273,12 @@ function createSandbox(opts) {
       formatDate: (d) => d.toISOString().slice(0, 10),
       base64Decode: (b64) => Buffer.from(String(b64 || ''), 'base64').toJSON().data,
       newBlob: (bytes, mime, name) => ({ bytes, mime, name }),
+      getUuid: () => require('crypto').randomUUID(),
+      // Signed bytes, like the real one (Java bytes are -128..127).
+      computeDigest: (_alg, value) => Array.from(require('crypto').createHash('sha256').update(String(value), 'utf8').digest())
+        .map((b) => (b > 127 ? b - 256 : b)),
+      DigestAlgorithm: { SHA_256: 'SHA_256' },
+      Charset: { UTF_8: 'UTF_8' },
     },
     ContentService: {
       createTextOutput: (s) => ({ _json: s, setMimeType() { return this; } }),

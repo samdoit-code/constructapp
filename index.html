@@ -4,9 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Construtora Moreira</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <!-- PWA / home-screen icons — see assets/README.md for how these were generated from the source logo -->
 <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16.png">
@@ -15,8 +12,18 @@
 <link rel="manifest" href="assets/manifest.json">
 <meta name="theme-color" content="#211d19">
 <meta name="apple-mobile-web-app-title" content="C. Moreira">
-<script src="https://accounts.google.com/gsi/client" async defer></script>
+<!-- Google's sign-in script is NOT loaded here: a returning device opens on its
+     app session and never needs it. ensureGisLoaded_() injects it only when the
+     sign-in screen is actually shown — less third-party code running with access
+     to this origin's storage, and nothing external on the launch path. -->
 <style>
+  /* Self-hosted (assets/fonts, SIL OFL — see assets/fonts/README.md). The
+     Google Fonts stylesheet this replaces was render-BLOCKING: on weak job-site
+     signal the first paint waited for a third-party server. Same-origin files
+     are also cached by sw.js, so the app looks right offline too. Both are
+     variable fonts, so one file covers every weight in use. */
+  @font-face{font-family:'Inter'; font-style:normal; font-weight:400 700; font-display:swap; src:url(assets/fonts/inter-latin.woff2) format('woff2');}
+  @font-face{font-family:'Oswald'; font-style:normal; font-weight:500 700; font-display:swap; src:url(assets/fonts/oswald-latin.woff2) format('woff2');}
   :root{
     --ink:#211d19;
     --ink-soft:#5b544c;
@@ -2294,10 +2301,48 @@
   // sign-in screen instead of just showing a toast.
   let googleIdToken = null;
   let googleIdTokenObtainedAt = null; // in-memory only, same lifetime as the token itself
+  // The app's OWN login for this device ("Google once, then the app session" —
+  // see APP SESSIONS in Code.js and CLAUDE.md §4). Unlike the Google token it
+  // IS stored: in this account's IndexedDB (meta 'auth'), so it is
+  // account-scoped by construction and every path that drops the database
+  // (purgeLocalData_) drops it too. The backend keeps only a fingerprint.
+  // While it is set, Google is not involved in anything this device does.
+  let sessionToken = null;
+  // A launch on the stored session whose verify could not reach the server.
+  // The session still works for every request; this only means the
+  // permissions on screen have not been re-confirmed yet, so the next
+  // connectivity/foreground moment re-runs verify.
+  let sessionVerifyPending = false;
+  function hasCredential_(){
+    return !!(sessionToken || googleIdToken);
+  }
   let currentUser = null;
-  const AUTH_ERROR_MESSAGES = new Set(['não autenticado', 'não autorizado', 'usuário desativado', 'usuário não cadastrado']);
+  // Two DIFFERENT kinds of "auth" answer, with opposite handling — the split is
+  // load-bearing (CLAUDE.md §4):
+  //  - a CREDENTIAL problem: the login on this device ended (expired, revoked,
+  //    signed out elsewhere) or never existed. The account is fine and so is
+  //    everything on this device: sign in again, nothing is deleted, unsent
+  //    work goes out afterwards.
+  //  - an ACCOUNT refusal: this person is no longer let in at all. Only this
+  //    purges the device.
+  // Collapsing them is what used to wipe unsent work on a routine token expiry.
+  const CREDENTIAL_ERROR_MESSAGES = new Set(['não autenticado', 'sessão expirada']);
+  const ACCOUNT_REFUSAL_MESSAGES = new Set(['não autorizado', 'usuário desativado', 'usuário não cadastrado']);
+  function isCredentialError(err){
+    return !!err && CREDENTIAL_ERROR_MESSAGES.has(String(err.message || err));
+  }
+  function isAccountRefusal(err){
+    return !!err && ACCOUNT_REFUSAL_MESSAGES.has(String(err.message || err));
+  }
   function isAuthError(err){
-    return err && AUTH_ERROR_MESSAGES.has(String(err.message || err));
+    return isCredentialError(err) || isAccountRefusal(err);
+  }
+  // Shown in the Sessoes tab so a person managing logins can tell devices apart.
+  function deviceLabel_(){
+    const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
+    const kind = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android'
+      : /Macintosh/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows' : /Linux/.test(ua) ? 'Linux' : 'Dispositivo';
+    return kind + (isStandalone ? ' · app' : ' · navegador');
   }
   // Phase B rejections — a correctly signed-in user whose ROLE or PROJECT
   // access doesn't permit this action. Distinct from AUTH_ERROR_MESSAGES on
@@ -2414,7 +2459,9 @@
       const resp = await fetch(APPS_SCRIPT_URL, {
         method: 'POST',
         headers: {'Content-Type': 'text/plain;charset=utf-8'},
-        body: JSON.stringify(Object.assign({idToken: googleIdToken || ''}, body)),
+        // The app session when this device has one; a Google token only for
+        // the sign-in itself (or against a backend that predates sessions).
+        body: JSON.stringify(Object.assign(sessionToken ? {sessionToken} : {idToken: googleIdToken || ''}, body)),
         signal: controller.signal,
       });
       if(!resp.ok) throw new Error('HTTP ' + resp.status);
@@ -2700,7 +2747,7 @@
   async function runSync_(){
     if(syncInFlight) return;
     if(!pendingTotal_()) { syncBlockedReason = null; renderUploadTray_(); return; }
-    if(!googleIdToken){ syncBlockedReason = 'auth'; renderUploadTray_(); return; }
+    if(!hasCredential_()){ syncBlockedReason = 'auth'; renderUploadTray_(); return; }
     if(typeof navigator !== 'undefined' && navigator.onLine === false){
       syncBlockedReason = 'offline'; renderUploadTray_();
       scheduleSync_(SYNC_BACKOFF_MS[Math.min(syncFailures, SYNC_BACKOFF_MS.length - 1)]);
@@ -2755,12 +2802,16 @@
         delete dirtyConfig[key];
         await persistConfig_();
       }catch(e){
-        if(isPermissionError(e) || isAuthError(e)){
+        // Only a REFUSAL drops the change. A login that ended is not a verdict
+        // on the data: the change stays pending and goes out after sign-in
+        // (this used to throw it away on a routine token expiry).
+        if(isPermissionError(e) || isAccountRefusal(e)){
           delete dirtyConfig[key];
           await persistConfig_();
           reportSyncVerdict_(e);
           return 'verdict';
         }
+        if(isCredentialError(e)) reportSyncVerdict_(e);
         return 'retry';
       }
     }
@@ -3108,21 +3159,13 @@
       if(msg.indexOf('sem permissão') === 0) return 'Sua conta não tem permissão para esta ação.';
     }
     if(isAuthError(err)){
-      // Their session was revoked or expired mid-use — retrying the save
-      // won't help, so send them back to sign-in instead of a dead-end toast.
-      setTimeout(()=>{
-        googleIdToken = null;
-        clearSessionHint();
-        // Purge the local data cache on this path too. The other two
-        // revocation paths (onGoogleSignIn's catch and the manual sync button)
-        // already did; this one didn't, so a user deactivated mid-session left
-        // the business data sitting on the device. Same reasoning as there —
-        // a revoked device shouldn't keep old business data around.
-        purgeLocalData_();
-        showAuthGate(String(err.message || err), true);
-        renderGoogleButton(); // the slot may still hold the "Entrando..." spinner from original sign-in — must restore the actual button or there's nothing left to click
-      }, 800);
-      return 'Sua sessão não é mais válida. Entre novamente.';
+      // Retrying won't help either way, so send them back to sign-in instead
+      // of a dead-end toast. WHAT happens to this device's data depends on
+      // which kind of answer it was — see handleAuthFailure_.
+      setTimeout(()=> handleAuthFailure_(err), 800);
+      return isAccountRefusal(err)
+        ? 'Sua conta não tem mais acesso. Entre novamente.'
+        : 'Sua sessão terminou. Entre novamente — nada do que está neste aparelho foi perdido.';
     }
     if(isNetworkError(err)) return 'Sem internet — não foi possível salvar. Tente novamente quando reconectar.';
     return 'Erro ao salvar no Google Sheets. Tente novamente.';
@@ -3483,12 +3526,19 @@
   // their own token. Same class of crossover bootFromLocalSession_ guards
   // against on the data side.
   function clearUploadSession_(){
+    suspendUploadSession_();
+    try{ localStorage.removeItem(UPLOAD_JOURNAL_KEY); }catch(e){}
+  }
+  // Stops everything in flight but leaves what is DURABLE alone — the journal
+  // and the account's blobs store — so the same account picks the work back up
+  // after signing in again. For a login that merely ended (a credential
+  // problem), never for an account refusal or sign-out.
+  function suspendUploadSession_(){
     pendingUploads.forEach(rec=>{ rec.cancelled = true; releasePreview_(rec); });
     pendingUploads.clear();
     uploadQueue.length = 0;
     uploadBatch = {total:0, done:0, failed:0, cancelled:0};
     queuedBlobBytes = 0;
-    try{ localStorage.removeItem(UPLOAD_JOURNAL_KEY); }catch(e){}
   }
   function purgeLocalData_(){
     const email = (currentUser && currentUser.email) || lastKnownUserEmail_();
@@ -3496,9 +3546,44 @@
     try{ localStorage.removeItem(LAST_USER_KEY); }catch(e){}
     if(email) dropUserDatabase_(email).catch(e=> console.error('purge failed', e));
     clearUploadSession_();
+    sessionToken = null;           // lived in the database just dropped; never outlives it
+    sessionVerifyPending = false;
+    resetSyncMemory_();
+  }
+  function resetSyncMemory_(){
     sheetSnapshot = {}; pendingCounts = {}; dirtyConfig = {};
     pendingFileDeletes = {photo: [], doc: []};
     pendingSince_ = null;
+  }
+  // The ONE place that decides what an auth answer does to this device.
+  //  - Account refusal: purge, exactly as before.
+  //  - Credential problem: the login ended, the data did not. The stored
+  //    session code is dropped (it is dead), memory is cleared so nothing of
+  //    this account lingers behind the gate if someone ELSE signs in, but the
+  //    database — unsent changes, photo bytes, the upload journal — stays.
+  //    Signing back in as the same account reloads all of it from disk and
+  //    sends what is pending.
+  function handleAuthFailure_(err){
+    const refused = isAccountRefusal(err);
+    googleIdToken = null;
+    googleIdTokenObtainedAt = null;
+    clearSessionHint();
+    if(refused){
+      purgeLocalData_();
+    } else {
+      sessionToken = null;
+      sessionVerifyPending = false;
+      detachLocalDbForSignIn_();
+      suspendUploadSession_();
+      resetSyncMemory_();
+    }
+    clearInMemoryData_();
+    offlineMode = false;
+    showAuthGate(refused
+      ? String((err && err.message) || err)
+      : 'Sua sessão terminou. Entre novamente — suas alterações não enviadas continuam guardadas neste aparelho.', refused);
+    ensureGisLoaded_();
+    renderGoogleButton();
   }
   // Companion to purgeLocalData_ for the one path that needs it: a refusal
   // that arrives AFTER the app has already drawn this account's data. Wiping
@@ -3599,14 +3684,28 @@
           nome: rec.filename || '', mimeType: rec.mimeType || '',
         });
       });
-      if(jobs.length) localStorage.setItem(UPLOAD_JOURNAL_KEY, JSON.stringify(jobs));
+      // Stamped with its owner: this key is device-wide, not account-scoped,
+      // and a login that merely ENDS keeps it (handleAuthFailure_) so the same
+      // person resumes — which means the next person must be able to tell it
+      // is not theirs.
+      const owner = (currentUser && currentUser.email) || localDbEmail || '';
+      // Nobody signed in (a login just ended): leave the stored journal exactly
+      // as it is. A cancelled upload finishing late would otherwise rewrite it
+      // from the now-empty in-flight map and erase the record of photos that
+      // already reached Drive.
+      if(!owner) return;
+      if(jobs.length) localStorage.setItem(UPLOAD_JOURNAL_KEY, JSON.stringify({email: owner, jobs}));
       else localStorage.removeItem(UPLOAD_JOURNAL_KEY);
     }catch(e){ console.error('upload journal write failed', e); }
   }
   function readUploadJournal_(){
     try{
       const raw = localStorage.getItem(UPLOAD_JOURNAL_KEY);
-      return raw ? (JSON.parse(raw) || []) : [];
+      const v = raw ? JSON.parse(raw) : null;
+      if(!v) return [];
+      if(Array.isArray(v)) return v;   // written before entries carried an owner
+      const me = (currentUser && currentUser.email) || localDbEmail || '';
+      return (v.email && v.email === me) ? (v.jobs || []) : [];
     }catch(e){ return []; }
   }
   // Runs after a boot hydration. Any journaled job whose row is genuinely
@@ -4069,6 +4168,37 @@
       projects: currentUser.projects, sections: currentUser.sections,
       verifiedAt: Date.now(),
     });
+  }
+  // The app session code, in THIS account's database.
+  async function persistAuth_(){
+    if(!sessionToken || !currentUser) return;
+    await persistMeta_('auth', {token: sessionToken, email: currentUser.email, savedAt: Date.now()});
+  }
+  async function readStoredAuth_(){
+    try{ return await idbGet_('meta', 'auth'); }catch(e){ return null; }
+  }
+  // For a login that ENDED (handleAuthFailure_): drops the dead code and
+  // detaches this account's database, which stays on disk intact. Detaching is
+  // the load-bearing half: memory is cleared right after, and every persist
+  // path (persistPending_ above all) writes whatever memory holds — a save or
+  // upload completing late would otherwise overwrite the stored unsent work
+  // with the empty lists. With no open handle those writes are no-ops; the
+  // next sign-in reopens the database and finds everything where it was.
+  function detachLocalDbForSignIn_(){
+    const db = localDb;
+    localDb = null;
+    localDbEmail = null;
+    if(!db) return;
+    try{
+      db.transaction('meta', 'readwrite').objectStore('meta').delete('auth');
+    }catch(e){}
+    try{ db.close(); }catch(e){}   // close() lets the delete above finish first
+  }
+  // Asks the browser not to evict this origin's storage under pressure. Daily
+  // use already keeps iOS from clearing a home-screen app's data, and the
+  // worst case is one Google sign-in, so this is cheap insurance, not a promise.
+  function requestPersistentStorage_(){
+    try{ if(navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(()=>{}); }catch(e){}
   }
   async function readSessionRecord_(){
     try{
@@ -4730,7 +4860,7 @@
   // would unlock is already on the device, and the only way to have put it
   // there was a previously verified session for that same account.
   async function bootFromLocalSession_(provisional, expectedEmail){
-    if(!provisional && googleIdToken) return false;   // a real session is in progress
+    if(!provisional && hasCredential_()) return false;   // a real session is in progress
     // Provisional always means "a credential just arrived and verify is in
     // flight", so the caller must say whose it is.
     if(provisional && !expectedEmail) return false;
@@ -4771,8 +4901,12 @@
   // Google Identity Services is loaded from accounts.google.com, so a launch
   // with no connectivity leaves window.google undefined forever. Re-injecting
   // the tag is the only way to get it once the network returns.
+  // Also the ONLY way Google's script is ever loaded now (see the note in
+  // <head>), so it must leave the button usable whichever state it finds:
+  // already loaded but never initialized happens when a stored session took
+  // the launch and then ended.
   function ensureGisLoaded_(){
-    if(window.google && google.accounts && google.accounts.id) return;
+    if(window.google && google.accounts && google.accounts.id){ initAuth(); return; }
     if(document.getElementById('gisReload')) return;
     const el = document.createElement('script');
     el.id = 'gisReload';
@@ -4819,6 +4953,7 @@
       console.error('local store unavailable', e);  // degrade to online-only rather than block sign-in
     }
     await persistSessionRecord_();
+    await persistAuth_();
 
     if(alreadyRendered){
       // The authoritative answer just arrived. Re-apply it to what is already
@@ -5213,7 +5348,7 @@
       // in again. Everything stays where it is either way.
       if(offlineMode || syncBlockedReason === 'auth'){
         offerReconnect_();
-        if(!googleIdToken) showAuthGate('Entre novamente para sincronizar suas alterações.');
+        if(!hasCredential_()){ showAuthGate('Entre novamente para sincronizar suas alterações.'); ensureGisLoaded_(); }
         return;
       }
       // A pending queue with a live session just needs a nudge past its backoff.
@@ -7261,7 +7396,7 @@
     // 'não autenticado', every file would be marked failed, and a tray full of
     // manual retries would be waiting after the user signs back in. The queue
     // waits instead; loadAll restarts it once the token is real.
-    if(!googleIdToken) return;
+    if(!hasCredential_()) return;
     while(activeUploadWorkers < UPLOAD_CONCURRENCY && activeUploadWorkers < uploadQueue.length){
       activeUploadWorkers++;
       runUploadWorker_();   // deliberately NOT awaited — the caller must never block on uploads
@@ -8815,15 +8950,29 @@
       okLabel: unsent === 0 ? 'Sair' : 'Sair e descartar',
     });
     if(!ok) return;
+    // End this device's session on the server too, so the code is dead even if
+    // a copy of it survived somewhere (a device backup). Fire-and-forget: the
+    // device purges itself either way, and sign-out must never hang on a
+    // network.
+    if(sessionToken){
+      try{
+        fetch(APPS_SCRIPT_URL, {
+          method: 'POST', keepalive: true,
+          headers: {'Content-Type': 'text/plain;charset=utf-8'},
+          body: JSON.stringify({action: 'logout', sessionToken}),
+        }).catch(()=>{});
+      }catch(e){}
+    }
     googleIdToken = null;
     currentUser = null;
     offlineMode = false;
     clearSessionHint();
-    purgeLocalData_();   // cancels in-flight uploads and drops the journal too
+    purgeLocalData_();   // cancels in-flight uploads, drops the journal and the session code too
     renderUploadTray_();
     if(window.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect();
     $('#settingsModal').classList.remove('open');
     showAuthGate();
+    ensureGisLoaded_();
     renderGoogleButton();
   });
   $('#syncBtn').addEventListener('click', async ()=>{
@@ -8846,11 +8995,7 @@
     }catch(err){
       btn.classList.remove('syncing');
       if(isAuthError(err)){
-        googleIdToken = null;
-        clearSessionHint();
-        purgeLocalData_();
-        showAuthGate(String(err.message || err), true);
-        renderGoogleButton();
+        handleAuthFailure_(err);
       } else {
         showToast('Não consegui sincronizar. Tente novamente.');
       }
@@ -9657,6 +9802,10 @@
     }
     googleIdToken = response.credential;
     googleIdTokenObtainedAt = Date.now();
+    // A real Google sign-in replaces whatever app session this device had —
+    // sheetsPostRaw prefers a session code, so a dead one left here would be
+    // sent instead of the fresh credential.
+    sessionToken = null;
     $('#googleSignInSlot').innerHTML = '<div class="auth-spinner">Entrando...</div>';
 
     // RACE, don't wait. A returning user's data is already on this device and
@@ -9676,12 +9825,49 @@
     // PREVIOUS person. See bootFromLocalSession_.
     const signingInAs = emailFromCredential_(response.credential);
     const rendered = await bootFromLocalSession_(true, signingInAs);
-
+    await reconcileSignIn_(rendered, signingInAs);
+  }
+  // Opens the app on this device's stored app session: no Google script, no
+  // button, no account chooser — the whole point of app sessions. Same race as
+  // onGoogleSignIn (render from the device, let verify win), keyed to the
+  // account whose database holds the code, so it cannot cross accounts: the
+  // code lives INSIDE that account's database, and verify must name the same
+  // person or the code is thrown away.
+  async function bootFromStoredSession_(){
+    const email = lastKnownUserEmail_();
+    if(!email) return false;
+    try{ await openLocalDb_(email); }catch(e){ return false; }
+    const auth = await readStoredAuth_();
+    if(!auth || !auth.token || auth.email !== email) return false;
+    sessionToken = auth.token;
+    $('#googleSignInSlot').innerHTML = '<div class="auth-spinner">Entrando...</div>';
+    const rendered = await bootFromLocalSession_(true, email);
+    await reconcileSignIn_(rendered, email);
+    return true;
+  }
+  // The authoritative half of every sign-in — a fresh Google credential or a
+  // stored app session alike. verify's answer wins in every branch:
+  //   - ok: adopt the confirmed identity; a Google sign-in also receives the
+  //     app session code here, after which Google is out of the picture;
+  //   - credential problem: the login ended, the data stays (handleAuthFailure_);
+  //   - account refusal: purge (handleAuthFailure_);
+  //   - unreachable: keep working on what is on the device.
+  async function reconcileSignIn_(rendered, signingInAs){
     try{
-      const verified = await sheetsPost({action:'verify'});
+      const verified = await sheetsPost({action:'verify', device: deviceLabel_()});
+      if(signingInAs && verified.currentUser && verified.currentUser.email !== signingInAs){
+        throw new Error('sessão expirada');   // a code that names someone else is no code for this account
+      }
+      if(verified.sessionToken){
+        sessionToken = verified.sessionToken;
+        googleIdToken = null;
+        googleIdTokenObtainedAt = null;
+      }
       currentUser = verified.currentUser;
       offlineMode = false;
+      sessionVerifyPending = false;
       clearBootFailures_();
+      requestPersistentStorage_();
       await loadAll(rendered);
       // Only greet someone who actually just watched the app open. After a
       // provisional render they have been using it for a round trip already,
@@ -9689,18 +9875,8 @@
       // notification rather than a welcome.
       if(!rendered) showToast('Bem-vindo, ' + (currentUser.nome || currentUser.email) + '.');
     }catch(err){
-      googleIdToken = null;
       if(isAuthError(err)){
-        // A VERDICT: this account is no longer allowed in. Everything it had
-        // on this device goes, which is the whole point of the check — and
-        // that includes whatever the provisional render just put on screen,
-        // so the in-memory copy is cleared too, not just the stored one.
-        clearSessionHint();
-        purgeLocalData_();
-        clearInMemoryData_();
-        offlineMode = false;
-        showAuthGate(String(err.message), true);
-        renderGoogleButton();
+        handleAuthFailure_(err);
         return;
       }
       // An OUTAGE, not a refusal. The old code deleted the entire local
@@ -9708,9 +9884,22 @@
       // device 987KB of data and left it unable to work at all. Stay on the
       // stored session instead; the data is already on the device and the
       // server gets to re-check the moment it can be reached.
+      if(sessionToken){
+        // Still a valid login — every request will work the moment the
+        // network does, so this is NOT the offline posture (which means "no
+        // credential"). Only the re-confirmation of permissions is owed.
+        sessionVerifyPending = true;
+        if(rendered){
+          renderUploadTray_();
+          clearBootFailures_();
+          showToast('Sem conexão — trabalhando com os dados salvos neste aparelho.', false, 5000);
+          return;
+        }
+      }
+      googleIdToken = null;
       if(rendered){
         // Already on screen from the stored session — just change posture.
-        offlineMode = true;
+        offlineMode = !sessionToken;
         renderUploadTray_();
         clearBootFailures_();
         showToast('Sem conexão — trabalhando com os dados salvos neste aparelho.', false, 5000);
@@ -9718,8 +9907,12 @@
       }
       // Same crossover guard as the provisional render above: B's sign-in
       // failing for a network reason must not fall back to opening A's session.
+      const keep = sessionToken;
+      sessionToken = null;   // bootFromLocalSession_(false) is the no-credential posture
       const wentOffline = await bootFromLocalSession_(false, signingInAs);
+      sessionToken = keep;
       if(wentOffline){
+        if(sessionToken){ offlineMode = false; renderUploadTray_(); }
         clearBootFailures_();
         showToast('Sem conexão — trabalhando com os dados salvos neste aparelho.', false, 5000);
         return;
@@ -9728,9 +9921,22 @@
       // stored data itself is what breaks the boot, a second consecutive
       // failure clears it rather than looping forever.
       if(bumpBootFailure_() >= BOOT_FAIL_LIMIT){ clearSessionHint(); purgeLocalData_(); }
+      sessionToken = null;
       showAuthGate('Não consegui entrar. Tente novamente.', true);
+      ensureGisLoaded_();
       renderGoogleButton();
     }
+  }
+  // A stored-session launch that could not reach the server re-confirms the
+  // moment it can. Background only: on screen nothing changes unless the
+  // answer is a refusal or narrower permissions.
+  let reverifyInFlight = false;
+  async function reverifyStoredSession_(){
+    if(!sessionVerifyPending || !sessionToken || reverifyInFlight || !currentUser) return;
+    if(typeof navigator !== 'undefined' && navigator.onLine === false) return;
+    reverifyInFlight = true;
+    try{ await reconcileSignIn_(true, currentUser.email); }
+    finally{ reverifyInFlight = false; }
   }
   // Apps Script cold-starts its container on the first request after a period
   // of idleness, and that boot is a real part of the wait. Firing a throwaway
@@ -9793,7 +9999,11 @@
   const isStandalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 
   let gisWaitTicks = 0;
+  let gisInitialized = false;
   function initAuth(){
+    if(gisInitialized) return;
+    // A stored app session took over the launch while this was waiting.
+    if(sessionToken) return;
     if(!window.google || !google.accounts || !google.accounts.id){
       // Google's script comes from accounts.google.com, so with no
       // connectivity this condition is permanent — the old code retried every
@@ -9813,6 +10023,7 @@
     // Google's account chooser. Both were shipped and tested on a real iPhone
     // PWA; neither changed anything. See CLAUDE.md section 4 for the evidence
     // and why the second tap is not reachable from this config object.
+    gisInitialized = true;
     google.accounts.id.initialize({
       client_id: GOOGLE_CLIENT_ID,
       callback: onGoogleSignIn,
@@ -9860,7 +10071,10 @@
   // Connectivity came back: stop waiting out the backoff and go now. This is
   // deliberately the plain `online` event rather than the Background Sync API,
   // which iOS Safari — the primary target — does not implement at all.
-  window.addEventListener('online', ()=>{ offerReconnect_(); syncNowIfPending_(); startUploadRunner_(); });
+  window.addEventListener('online', ()=>{
+    offerReconnect_(); reverifyStoredSession_(); syncNowIfPending_(); startUploadRunner_();
+    if(!hasCredential_() && $('#authGate').style.display !== 'none') ensureGisLoaded_();
+  });
   window.addEventListener('offline', ()=>{ renderUploadTray_(); });
 
   document.addEventListener('visibilitychange', ()=>{
@@ -9871,6 +10085,11 @@
     // the reliable moment to re-check.
     syncNowIfPending_();
     startUploadRunner_();
+    reverifyStoredSession_();
+    // An app session has no hourly expiry, so nothing below applies to it —
+    // this refresh only exists for the Google-token fallback (a backend that
+    // predates sessions).
+    if(sessionToken) return;
     if(!googleIdToken || !googleIdTokenObtainedAt) return; // not signed in / gate already showing — nothing to proactively refresh
     if($('#authGate').style.display !== 'none') return; // already on the sign-in screen for some other reason
     const age = Date.now() - googleIdTokenObtainedAt;
@@ -9888,8 +10107,19 @@
     google.accounts.id.prompt();
   });
 
-  showAuthGate();
-  initAuth();
+  // Launch: a device with a stored app session opens straight into the app
+  // and never loads Google's script. Anything else gets the sign-in screen,
+  // and only then is Google's script fetched.
+  (async ()=>{
+    showAuthGate();
+    $('#googleSignInSlot').innerHTML = '<div class="auth-spinner">Abrindo...</div>';
+    let took = false;
+    try{ took = await bootFromStoredSession_(); }catch(e){ console.error('stored session boot failed', e); }
+    if(took) return;
+    $('#googleSignInSlot').innerHTML = '';
+    ensureGisLoaded_();
+    initAuth();
+  })();
 
   // Registered lazily on load so it never competes with the initial page
   // load's own critical requests. See sw.js — network-first, only a fallback
