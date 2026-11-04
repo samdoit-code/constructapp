@@ -74,6 +74,11 @@
   }
   *{box-sizing:border-box; -webkit-tap-highlight-color: transparent;}
   html,body{margin:0;padding:0; height:100%; overflow:hidden; overscroll-behavior:none; background:var(--ink);}
+  /* The app's font is set on #appScroll, but modals, dialogs, the activity hub
+     and the sign-in gate are siblings of it, not children — they inherited the
+     browser default (a serif) instead. Only the family is set here: sizes and
+     line-heights outside #appScroll are already set per component. */
+  body{font-family:'Inter', sans-serif; -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;}
   #appScroll{
     /* overflow-x:hidden is load-bearing for the spreadsheet view: the grid's
        table is width:max-content and wider than the viewport, and without an
