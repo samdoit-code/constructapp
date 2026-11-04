@@ -74,6 +74,11 @@
   }
   *{box-sizing:border-box; -webkit-tap-highlight-color: transparent;}
   html,body{margin:0;padding:0; height:100%; overflow:hidden; overscroll-behavior:none; background:var(--ink);}
+  /* Without this, iOS Safari enlarges blocks of running text on its own in
+     landscape (and can keep them enlarged after rotating back) — seen as the
+     Tarefas text "shifting to a larger font". The type scale is already sized
+     for the reader; the OS must not second-guess it. */
+  html{-webkit-text-size-adjust:100%; text-size-adjust:100%;}
   /* The app's font is set on #appScroll, but modals, dialogs, the activity hub
      and the sign-in gate are siblings of it, not children — they inherited the
      browser default (a serif) instead. Only the family is set here: sizes and
@@ -5380,6 +5385,49 @@
   }
   window.addEventListener('orientationchange', ()=> setTimeout(()=>{ syncTopbarOffset(); syncTrayOffset(); syncNoteComposer_(); }, 150));
   window.addEventListener('resize', ()=>{ syncTopbarOffset(); syncTrayOffset(); syncNoteComposer_(); });
+
+  // The DOCUMENT itself must never be scrolled. Everything visible is fixed
+  // (topbar, tab bar, and #appScroll, which does all the real scrolling), so
+  // window.scrollY is 0 by design. iOS can still scroll the document to bring
+  // a focused field above the keyboard or a picker, and sometimes leaves it
+  // there once they close. Nothing on screen moves, because everything is
+  // fixed, but taps are then hit-tested at the shifted position: every tap
+  // lands on whatever sits a fixed distance BELOW the finger, and the tab bar
+  // at the very bottom stops responding at all. Reported as "the menu froze,
+  // and tapping the logo opens the project picker"; only killing the app
+  // cleared it. This puts the document back. It is a no-op whenever nothing
+  // is shifted, and it never runs while a field still has focus, so it can't
+  // fight iOS while the keyboard is actually up.
+  function isEditable_(el){
+    if(!el) return false;
+    const tag = el.tagName;
+    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
+  }
+  function resetDocumentShift_(){
+    if(isEditable_(document.activeElement)) return;
+    const vv = window.visualViewport;
+    const shifted = window.scrollX || window.scrollY
+      || document.documentElement.scrollTop || document.body.scrollTop
+      || (vv && (vv.offsetTop || vv.offsetLeft));
+    if(!shifted) return;
+    window.scrollTo(0, 0);
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+  }
+  // Twice: once right away, and once after iOS's keyboard/picker dismissal
+  // animation, which is when the stale offset actually settles.
+  function scheduleDocumentShiftReset_(){
+    setTimeout(resetDocumentShift_, 0);
+    setTimeout(resetDocumentShift_, 400);
+  }
+  document.addEventListener('focusout', scheduleDocumentShiftReset_);
+  window.addEventListener('orientationchange', scheduleDocumentShiftReset_);
+  window.addEventListener('pageshow', scheduleDocumentShiftReset_);
+  document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) scheduleDocumentShiftReset_(); });
+  if(window.visualViewport) window.visualViewport.addEventListener('resize', scheduleDocumentShiftReset_);
+  // Any scroll of the document itself is by definition the bug, as long as no
+  // field is focused (while one is, iOS may legitimately be positioning it).
+  window.addEventListener('scroll', ()=>{ if(!isEditable_(document.activeElement)) scheduleDocumentShiftReset_(); }, {passive:true});
   syncTopbarOffset();
   $('#photoSelectToggle').addEventListener('click', ()=>{
     photoSelectMode = !photoSelectMode;
